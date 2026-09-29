@@ -1,5 +1,6 @@
 # The ready-made Linux engine setup.py downloads (strata-linux-x64.zip), compiled here: CUDA 12.8, for the
-# architectures asked for (80 = A100 by default), with ggml's CPU backend at the AVX2 baseline (STRATA_PORTABLE;
+# architectures asked for (80 = A100 by default), with the image encoder (strata-vision), and ggml's CPU backend
+# at the AVX2 baseline (STRATA_PORTABLE;
 # Strata's own AVX-512 kernels are still chosen at run time on CPUs that have them). CUDA 12.8 runs on drivers
 # from 525 up, which is what cloud GPUs such as Colab's tend to have; setup.py uses it with STRATA_CUDA=12.
 # Compiling needs no GPU, and nothing here runs the engine.
@@ -60,13 +61,23 @@ jobs:
           cmake --build build --target strata -j 4 || cmake --build build --target strata -j 2 \
             || cmake --build build --target strata -j 1
 
-      - name: What it links (cuBLAS and the CUDA 12 runtime come from NVIDIA's pip packages at setup)
-        run: ldd build/strata | grep -E "cuda|cublas|stdc\+\+|libc\.so|libgomp" || true
+      - name: Compile the image encoder (strata-vision - llama.cpp's mtmd on CUDA, linked statically)
+        run: |
+          cmake -G Ninja -S tools/vision -B build-vision -DCMAKE_BUILD_TYPE=Release \
+            -DLLAMA_DIR="$PWD/third_party/llama.cpp" -DSTRATA_VISION_CUDA=ON -DSTRATA_PORTABLE=ON \
+            -DCMAKE_CUDA_ARCHITECTURES="$(echo $ARCHS | tr ' ' ';')" -DCMAKE_CUDA_COMPILER="$CUDA_HOME/bin/nvcc"
+          cmake --build build-vision --target strata-vision -j 4 || cmake --build build-vision --target strata-vision -j 2 \
+            || cmake --build build-vision --target strata-vision -j 1
+
+      - name: What they link (cuBLAS and the CUDA 12 runtime come from NVIDIA's pip packages at setup)
+        run: |
+          ldd build/strata | grep -E "cuda|cublas|stdc\+\+|libc\.so|libgomp" || true
+          ldd build-vision/bin/strata-vision | grep -E "cuda|cublas|stdc\+\+|libc\.so|libgomp" || true
 
       - name: Package strata-linux-x64.zip (what setup.py's get_prebuilt unpacks into engine/)
         run: |
           mkdir -p dist/pkg
-          cp build/strata LICENSE dist/pkg/
+          cp build/strata build-vision/bin/strata-vision LICENSE dist/pkg/
           python3 - <<'EOF'
           import json, os, re, subprocess
           ver = re.search(r"project\(strata VERSION ([\d.]+)",
@@ -74,12 +85,12 @@ jobs:
           archs = [int(a.split("-")[0]) for a in os.environ["ARCHS"].split()]
           cuda = re.search(r"release (\d+\.\d+)",
                            subprocess.run(["nvcc", "--version"], capture_output=True, text=True).stdout).group(1)
-          meta = {"version": ver, "archs": archs, "ptx": False, "cuda": cuda, "vision": "none",
+          meta = {"version": ver, "archs": archs, "ptx": False, "cuda": cuda, "vision": "gpu",
                   "cpu": "AVX2 baseline (STRATA_PORTABLE)", "commit": os.environ["GITHUB_SHA"]}
           json.dump(meta, open("dist/pkg/BUILD.json", "w"), indent=1)
           print(meta)
           EOF
-          (cd dist/pkg && zip -9 -q ../strata-linux-x64.zip strata LICENSE BUILD.json)
+          (cd dist/pkg && zip -9 -q ../strata-linux-x64.zip strata strata-vision LICENSE BUILD.json)
           (cd dist && sha256sum strata-linux-x64.zip | tee strata-linux-x64.zip.sha256)
           ls -la dist
 
