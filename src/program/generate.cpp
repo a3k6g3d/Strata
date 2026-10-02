@@ -5557,6 +5557,7 @@ int main(int argc, char** argv) {
         // confirms every emitted token against the real model regardless of where the draft came from.
         const bool use_mtp = !o.mtp.empty();
         strata::prefill::Prefill sp;
+        sp.set_cpu_pool(o.no_pool ? nullptr : &pool);   // STRATA_PREFILL_CPU: the pool's share of a short chunk
         void* borrow = nullptr;
         uint64_t borrow_bytes = 0;
         int32_t lend_first = -1;          // the first slot the prompt path may borrow (its largest chunk)
@@ -10270,6 +10271,7 @@ int main(int argc, char** argv) {
     int64_t spec_pos = 0;   // plan v0.3 P6: where the speculative loop starts (0 = not used)
     strata::prefill::Prefill prefill;
     bool kvg_started = false;   // the elastic K/V took this run's cells
+    prefill.set_cpu_pool(o.no_pool ? nullptr : &pool);   // STRATA_PREFILL_CPU: the pool's share of a short chunk
     double prefill_batched_ms = 0;
     std::FILE* final_r = o.dump_final_r.empty() ? nullptr : std::fopen(o.dump_final_r.c_str(), "wb");
     std::vector<float> final_r_host(final_r ? (size_t) (g.hc * g.n_embd) : 0);
