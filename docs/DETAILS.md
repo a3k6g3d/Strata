@@ -214,6 +214,21 @@ whole chunk at once; unpinned experts are copied by helper threads. Measured on 
 switch to `--prefill auto` the next time START-HERE / setup.sh starts them. The raw numbers:
 [`bench/results/`](../bench/results/). The [paper](paper/Strata-Paper.pdf) explains every number.
 
+**Equal chunks (fork: `carry/prompt-chunks`):** a prompt reads in as few chunks as the chunk size allows, all the same
+size. 20,036 tokens with an 8,192-token limit read as 3 × 6,912, not 2 × 8,192 + 3,652.
+- **Why the count matters:**
+  - A chunk of 1,024 tokens or more streams nearly every expert the GPU does not hold, whatever its length.
+  - So a prompt costs about one full stream per chunk, and equal chunks borrow no more cache slots than that count
+    needs.
+  - A last chunk under 1,024 tokens moves only the experts its own tokens route to. So full chunks and that short
+    one stay: 16,402 tokens read as 2 × 8,192 + 18.
+- **Measured** with v0.1.38 on an RTX 5070 Ti 16 GB (PCIe 3.0), IQ3_XXS, 4,170 cache slots, prompt reading in
+  tokens/s: 8,192-token chunks against equal chunks at the same limit - 9K 1,511 / 1,517, 20K 2,101 / 2,148, 32K
+  2,570 / 2,583, 64K 2,597 / 2,602, 100K 2,428 / 2,451. The same carry on v0.1.38 also tried every 1,024 tokens above
+  8,192 under `--prefill auto:16384` (13,312 fit where 16,384 did not: 32K 3,120, 100K 3,275); since 0.1.39 the
+  upstream scan finds the largest chunk on a 256-token grid itself (#583). Details:
+  [`bench/results/2026-10-03-prompt-chunks`](../bench/results/2026-10-03-prompt-chunks/README.md).
+
 ## Other GPUs (estimated)
 
 Not measured - estimated from the runs above (same CPU and 64 GB RAM): the GPU part scaled by memory bandwidth, the CPU
