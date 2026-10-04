@@ -5,6 +5,9 @@
 <p align="center"><b>Run a 125-billion-parameter AI model on your own gaming PC</b><br>
 NVIDIA or AMD graphics card (12 GB or more) · Windows or Linux · free and open source</p>
 
+<p align="center"><b>On two GPUs this fork finishes a coding-agent session 23% sooner than Strata 0.1.39</b> and writes
+1.2-1.5x faster; on one GPU it read prompts up to 1.56x faster than Strata 0.1.36 · <a href="#about-this-fork">about this fork</a></p>
+
 <p align="center"><a href="https://github.com/Niko1221/Strata/releases/download/v0.1.10/Pagoda.mp4"><img src="docs/media/pagoda-preview.webp" width="720" alt="A voxel pagoda garden that Strata's model wrote, running in the browser"></a><br>
 <sub>A voxel pagoda garden, 1 shot prompt running on an RTX 5070 with Strata (IQ3_S, 128K context) ·
 <a href="https://github.com/Niko1221/Strata/releases/download/v0.1.10/Pagoda.mp4">full video (49 s)</a></sub></p>
@@ -12,6 +15,111 @@ NVIDIA or AMD graphics card (12 GB or more) · Windows or Linux · free and open
 Strata runs **[Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next)** on a normal PC. This is a
 large, smart AI model that usually needs a server. It chats, writes code, reads pictures and works with your apps
 and coding agents. Nothing leaves your PC.
+
+## About this fork
+
+This fork of [Niko1221/Strata](https://github.com/Niko1221/Strata) is tuned for speed. Its default branch, `best`, is
+the latest Strata release (v0.1.39) plus the changes below. Three of its earlier PRs are in Strata itself since
+v0.1.38: Q4_0 KV prompt attention on tensor cores ([#452](https://github.com/Niko1221/Strata/pull/452)), the draft
+layer's K/V in a ring with KV streaming ([#453](https://github.com/Niko1221/Strata/pull/453)), and batched expert
+gathers ([#439](https://github.com/Niko1221/Strata/pull/439), taken up as #372). What the fork adds on top:
+
+- **Two GPUs working at once**, from [Hardin22/Strata-DualGPU](https://github.com/Hardin22/Strata-DualGPU)
+  ([docs/DUAL_GPU.md](docs/DUAL_GPU.md)), merged onto 0.1.39: on a layer split the first card starts the next
+  verify window while the second card finishes the current one, a window waits less on the host, the expert cache
+  adapts in the background, and each card has its own VRAM reserve (`--vram-reserve-later-mib`: a card without a
+  display keeps less free). On top of that the pipelined decode serves the window it already knows is right first, and
+  keeps a copy's prompt lookup going from one window to the next.
+- **CPU assist:** on prompts under 3,072 tokens the CPU computes part of the experts while the GPUs compute the rest -
+  a 1K-token prompt is read 2.1x faster (NVIDIA builds; `STRATA_SPLIT_CPU_ASSIST=1` on a layer split,
+  `STRATA_PREFILL_CPU=0` turns it off).
+- **Prompt chunks sized by the prompt** (`--prefill auto:16384`): as few chunks as fit, all of equal size.
+- Upstream's fused int8 tensor-core experts switched on (`STRATA_PF_FUSED=1`).
+
+Images on demand (`--vision-on-demand`, in the fork's 0.1.38 build) is not in the 0.1.39 build yet: it is to be
+rebuilt on 0.1.39's segmented expert cache.
+
+### Two GPUs: RTX 3060 12 GB + RTX 5070 Ti 16 GB (measured 2026-10-04, Strata 0.1.39)
+
+<p align="center"><img src="docs/fork/two-gpu-039.png" width="900" alt="Strata 0.1.39 on two GPUs: this fork vs stock - session time, writing speed, reading time, several requests at once"></p>
+
+| | Stock 0.1.39 | This fork |
+| --- | ---: | ---: |
+| A coding-agent session: a 100K-token start, 8 turns of 1-5K new tokens, answers a tenth of that | 405 s | **312 s (-23%)** |
+| Writes: a chat / copying code / at 150K context | 51.8 / 69.5 / 46.7 tokens/s | **66.7 / 105.2 / 56.6** |
+| Reads: a 1K prompt / a session turn | 6.0 / 7.7 s | **2.8 / 6.5 s** |
+| Reads: the 100K start / a 150K prompt | **67.8** / 92.6 s | 72.4 / **90.5 s** |
+| Four 1K-token requests sent together, one at a time | 24.9 tokens/s in all | **37.6** |
+
+- One PC: the RTX 3060 runs layers 0-11 and drives the display, the RTX 5070 Ti layers 12-47 (both PCIe 3.0 x8 on an
+  ASRock X370), Ryzen 9 5900XT, 64 GB DDR4-2133; Qwen3.8-Flash-Next IQ3_S, q4_0 KV, 400K context, the experts no card
+  holds mapped from the file; through the server. Stock keeps 1,200 MiB free on both cards (one reserve for every
+  card is all it has, and the 3060 needs it for the desktop) with its per-card weights (`STRATA_STAGE_TRIM=1`); this
+  fork 1,200 MiB on the 3060 and 500 on the 5070 Ti. The session is the mean of two stock runs against one of the
+  fork (engine 52e6a10); on 0.1.38 the fork took 330-346 s for it.
+- The fork reads the 100K start 7% slower than stock (not looked into yet); everywhere else it reads as fast or faster.
+- 0.1.39's `"parallel": 4` (several conversations decoded together) changes little on this PC: four requests together
+  gave 28.3 (stock) and 39.3 tokens/s (fork) in all, but each request then writes at 12-14 tokens/s, without drafts.
+  Most experts run on the CPU here (the two cards hold about a third of them), so four conversations cost about what
+  four requests cost one after the other; what it buys is the wait for the first token (the fourth request's 23 s ->
+  12 s on the fork).
+
+### One GPU: RTX 5070 Ti 16 GB (measured 2026-10-02, the fork's 0.1.36 build against Strata 0.1.36)
+
+<p align="center"><img src="docs/fork/prefill-speed-036.png" width="900" alt="Prompt reading speed by prompt size: this fork vs stock Strata 0.1.36"></p>
+
+| Prompt | Stock 0.1.36 | This fork, int8 KV | This fork, q4_0 KV (fastest) |
+| --- | ---: | ---: | ---: |
+| 512 tokens | 249 tokens/s | 387 (1.56x) | 406 |
+| 2K | 645 | 885 (1.37x) | 944 |
+| 8K | 2,024 | 2,196 (1.09x) | 2,315 |
+| 32K | 2,120 | 2,835 (1.34x) | 2,999 |
+| 64K | 1,969 | 2,954 (1.50x) | 3,109 |
+| Writes answers | 60.4 tokens/s | 63.5 | 65.5 |
+
+Measured before the three PRs were in the stock engine (from v0.1.38 stock has them too, so its lead is smaller
+there), on one card: RTX 5070 Ti 16 GB on PCIe 3.0 x16 (ASRock X370), Ryzen 9 5900XT, 64 GB DDR4-2133, the IQ3_XXS
+model with a 400K context, through the server (median of 4-6 reads per size); stock with its default int8 KV cache.
+q4_0 KV reads ~5% faster than int8, but its predictions drift about 3x as far from an fp16 cache, and more at long
+context.
+
+### How close is it to the official model?
+
+The official Qwen 3.8 Flash (Alibaba's own service, through OpenCode's API) answered 31 prompts greedily with thinking
+off: documents of 1K-32K tokens to continue or summarize, and easy, medium and hard short tasks - 14,960 answer tokens.
+Strata then read exactly those answers, and at every token we checked whether it would have picked the same next
+token (measured 2026-10-02 with the fork's 0.1.36 build on one RTX 5070 Ti; the two 0.1.39 rows on 2026-10-04,
+the same card and answers):
+
+| Local setup | Same next token as the official model | Where the official model was sure (69% of tokens) | Difference in the predictions (5-token KL) |
+| --- | ---: | ---: | ---: |
+| IQ3_XXS, int8 KV + fused experts | 92.6% | 99.9% | 0.064 |
+| IQ3_XXS, q4_0 KV + fused experts (fastest) | 92.6% | 99.9% | 0.067 |
+| IQ3_XXS, fp16 KV + FP16 experts (most exact) | 92.7% | 99.9% | 0.064 |
+| IQ3_S, int8 KV + fused experts | 92.8% | 100.0% | 0.052 |
+| IQ3_S, q4_0 KV + fused experts: stock Strata 0.1.39 (2026-10-04) | 93.0% | 100.0% | 0.054 |
+| IQ3_S, q4_0 KV + fused experts: this fork's 0.1.39 build (2026-10-04) | 93.0% | 100.0% | 0.054 |
+| The official model against itself, asked twice | 97.5%* | | 0.010 |
+
+- **This fork's speed changes leave the predictions where stock's are:** on 0.1.39 (one RTX 5070 Ti, the same 31
+  answers) the fork and stock pick the same next token at 99.6% of the positions; the 5-token KL between them is
+  0.0006, less than the KV format moves them.
+- **The gap is the 3-bit weights, not the speed settings:** the KV format and the fused experts move the predictions
+  by 0.001-0.003; IQ3_S, with more bits per weight, closes about a fifth of the gap. (Whether the service runs
+  exactly the open weights is not known; part of the gap may be that.)
+- **By task:** step-by-step math 96.4%, code 94.3%, long documents 91-93%, free writing (a story, explanations)
+  85.6% - where many words are equally good and the official model itself is least sure.
+- **The official service is not deterministic either:** asked twice at temperature 0, its two answers parted at token
+  9 (median); Strata's would part from it at token 8 (IQ3_XXS) or 13 (IQ3_S).
+
+<sub>* over the 846 tokens before its two answers parted. Strata with fixed test settings (`--expert-cache 3600`,
+IQ3_S 3000), the API's 5 most likely tokens per position (all it returns).</sub>
+
+**Using it:** setup's ready-made engine is upstream's; for the engine changes above run setup with `--build` on this
+branch (it compiles the engine: on Windows that needs the CUDA toolkit and Visual Studio Build Tools). The two-GPU
+setup above is the config keys `"gpu": [1, 0]` (the display card first, so the faster card runs the head and the
+draft layer), `"layer_split": "12"` and the arguments `--vram-reserve-mib 1200 --vram-reserve-later-mib 500`, with
+`"env": {"STRATA_PF_FUSED": "1", "STRATA_SPLIT_CPU_ASSIST": "1"}`. `main` stays identical to upstream.
 
 ## How fast is it?
 

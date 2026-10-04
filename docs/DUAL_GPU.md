@@ -1,5 +1,8 @@
 # Two GPUs and 32 GB of RAM
 
+> From [Hardin22/Strata-DualGPU](https://github.com/Hardin22/Strata-DualGPU), whose two-GPU work this fork merged onto Strata 0.1.39;
+> "the fork" below is that one, and the numbers are from its author's PC (RTX 5080 + RTX 4060 Ti).
+
 This is what the fork changes, why, and what each change measured. Everything was measured on one PC:
 
 - RTX 5080 16 GB (drives two 4K monitors) and RTX 4060 Ti 16 GB (on a PCIe 4.0 x4 chipset slot)
