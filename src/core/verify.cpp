@@ -2599,7 +2599,7 @@ bool Verifier::prestage(int T, const int32_t* tokens, int64_t pos0, const int32_
     return true;
 }
 
-int Verifier::service(PoolMultiFn pool, void* user, std::string& err) {
+int Verifier::service(PoolMultiFn pool, void* user, std::string& err, int max_layers) {
     if (!fl_active_) return 1;
     if (all_resident_ && fl_k_ < fl_total_) {   // a zero-doorbell graph rings no layer: nothing to serve
         *(volatile uint32_t*) h_flag_ = 1u;
@@ -2611,7 +2611,9 @@ int Verifier::service(PoolMultiFn pool, void* user, std::string& err) {
     const int T = fl_T_;
     const int G = groups_[T] > 0 ? groups_[T] : 1;
     const int gtb[2] = {0, (T + 1) / 2}, gte[2] = {G == 2 ? (T + 1) / 2 : T, T};
+    int served = 0;   // this call's layers (a layer's halves count apart when its window is split in two groups)
     while (fl_k_ < fl_total_) {
+        if (max_layers > 0 && served >= max_layers) return 0;
         const uint32_t want = (uint32_t) (fl_k_ + 1);
         if (*(volatile uint32_t*) h_seq_ < want) {
             const double now = now_ms();
@@ -2657,6 +2659,7 @@ int Verifier::service(PoolMultiFn pool, void* user, std::string& err) {
         }
         *(volatile uint32_t*) h_flag_ = want;
         ++fl_k_;
+        ++served;
         ms_pool += ms_since(b);
         fl_since_ms_ = fl_flush_ms_ = now_ms();
     }

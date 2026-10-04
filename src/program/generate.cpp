@@ -8149,8 +8149,9 @@ int main(int argc, char** argv) {
                     bool ready = false, launched = false, finished = false, committed = false, s1 = false, s1_done = false;
                     bool spec = false;     // launched speculatively (behind the window before, ahead of its verdict)
                     bool made = false;     // made from a chain (its outcome can be scored even when the gate held it)
-                    bool sfx = false;      // a lookup window (the suffix drafter's drafts): nothing is speculated after it
+                    bool sfx = false;      // a lookup window (the suffix drafter's drafts; its B is the lookup's, not the chain's)
                     int sfx_match = 0;
+                    bool lookup = false;   // a B taken from the lookup's continuation (pick_lookup, lookup_next)
                 };
                 auto V0 = [&](const PW& w) -> strata::core::Verifier& { return *PV[0][w.seq & 1]; };
                 auto V1 = [&](const PW& w) -> strata::core::Verifier& { return *PV[1][w.seq & 1]; };
@@ -8210,7 +8211,8 @@ int main(int argc, char** argv) {
                                   std::chrono::duration<double, std::milli>(Clock::now() - pl_tr0).count(), ev, seq, x0, x1);
                     pl_trace += b;
                 };
-                auto pump0 = [&](PW& w) -> bool {
+                // `max_layers` > 0: serve at most that many of w's layers now (see the loop's order below)
+                auto pump0 = [&](PW& w, int max_layers = 0) -> bool {
                     if (!w.launched || w.finished) return true;
                     strata::core::Verifier& v = V0(w);
                     // a doomed window (its guess was wrong) gets empty plans: no expert work on the CPU or the GPU for
@@ -8218,7 +8220,7 @@ int main(int argc, char** argv) {
                     // undo restores everything it wrote).  STRATA_PIPELINE_DOOM_SKIP=0: served in full.
                     static const bool doom_skip = [] { const char* e = std::getenv("STRATA_PIPELINE_DOOM_SKIP"); return e == nullptr || std::atoi(e) != 0; }();
                     const bool skip = doom_skip && doomed && &w == &D;
-                    if (v.service(skip ? nullptr : &drive_pool_split, SDf(w), err) < 0) return false;
+                    if (v.service(skip ? nullptr : &drive_pool_split, SDf(w), err, max_layers) < 0) return false;
                     if (v.done(err)) {
                         if (!v.pl_finish(nullptr, err)) return false;
                         w.finished = true;
@@ -8391,9 +8393,40 @@ int main(int argc, char** argv) {
                         B.p_on = pl_lookup_pon;
                         B.ready = true;
                         B.made = true;
+                        B.lookup = true;
                         b_done = true;   // the chain in flight makes no B for this A
                         tre("CD", A.seq + 1, 3, (int) (1000.0f * B.p_on));
                     }
+                };
+                // the next B of a copy: once a B taken from the lookup was on the path (it is A now), the lookup goes on
+                // past it, so the window after it is taken from the lookup too - not from the drafter's chain, which
+                // pick_lookup's B alone used to hand the copy back to.  The chain still runs, and an off-path verdict
+                // starts afresh as before.  STRATA_PIPELINE_LOOKUP_NEXT=0: the chain's B (the previous behaviour).
+                static const bool pl_lookup_next = [] {
+                    const char* v = std::getenv("STRATA_PIPELINE_LOOKUP_NEXT");
+                    return v == nullptr || std::atoi(v) != 0;
+                }();
+                int64_t pl_lk_next = 0;
+                auto lookup_next = [&]() {
+                    if (!pl_lookup_next || o.suffix_draft <= 0 || pl_lookup_pon <= 0.0f || !A.lookup || b_done) return;
+                    const int k = sfx.propose(2 * S - 1, pl_sbuf.data());   // after A's row 0 (its predecessor's bonus)
+                    if (k < A.T) return;                                     // A's drafts and B's row 0 at least
+                    for (int i = 1; i < A.T; ++i)
+                        if (pl_sbuf[(size_t) i - 1] != A.tok[i]) return;     // the lookup no longer runs through A
+                    const int rest = k - (A.T - 1);
+                    B = PW{};
+                    B.seq = A.seq + 1;
+                    B.p = A.p + A.T;
+                    B.T = std::min(S, rest);
+                    for (int i = 0; i < B.T; ++i) B.tok[i] = pl_sbuf[(size_t) (A.T - 1 + i)];
+                    for (int i = 1; i < B.T; ++i) B.prob[i - 1] = 1.0f;
+                    B.p_on = pl_lookup_pon;
+                    B.ready = true;
+                    B.made = true;
+                    B.lookup = true;
+                    b_done = true;   // the chain in flight makes no B for this A
+                    ++pl_lk_next;
+                    tre("CD", A.seq + 1, 4, (int) (1000.0f * B.p_on));
                 };
                 const Clock::time_point pl_t0 = Clock::now();
                 for (int st = 0; st < 2; ++st)
@@ -8417,6 +8450,11 @@ int main(int argc, char** argv) {
                     const char* v = std::getenv("STRATA_PIPELINE_AGREE");
                     return v == nullptr || std::atoi(v) != 0;
                 }();
+                // the verified path served first (see the loop's order); STRATA_PIPELINE_YIELD=0: the previous order
+                static const bool pl_yield = [] {
+                    const char* v = std::getenv("STRATA_PIPELINE_YIELD");
+                    return v == nullptr || std::atoi(v) != 0;
+                }();
                 auto ms_now = [&]() { return std::chrono::duration<double, std::milli>(Clock::now() - pl_t0).count(); };
                 while (true) {
                     g_pl_diag.iters.fetch_add(1, std::memory_order_relaxed);
@@ -8428,8 +8466,14 @@ int main(int argc, char** argv) {
                     g_pl_diag.chain_live.store(mtp.chain_live() ? 1 : 0, std::memory_order_relaxed);
                     g_pl_diag.doomed.store(doomed ? 1 : 0, std::memory_order_relaxed);
                     g_pl_diag.ending.store(ending ? 1 : 0, std::memory_order_relaxed);
-                    // ---- every window in flight served
-                    if ((doomed && !pump0(D)) || !pump0(A) || !pump0(B)) { die(err); return 1; }
+                    // ---- every window in flight served.  Both stages' CPU experts run from this one loop, a layer at a
+                    // time, so a stage whose GPU has reached a layer waits while the loop serves another window's.
+                    // The verified path goes first: A's stage 0, then A's stage 1; the windows off it after - D (a wrong
+                    // guess being undone, no expert work) and B (run ahead of A's verdict, right ~40% of the time) -
+                    // and while A's stage 1 runs, B one layer per pass, so A's stage 1 waits for at most one of B's
+                    // layers instead of every one B has ready.
+                    if (!pl_yield && ((doomed && !pump0(D)) || !pump0(A) || !pump0(B))) { die(err); return 1; }
+                    if (pl_yield && !pump0(A)) { die(err); return 1; }
                     if (A.s1 && !A.s1_done) {
                         strata::core::Verifier& v = V1(A);
                         if (v.service(&drive_pool_split, SDf(A), err) < 0) { die(err); return 1; }
@@ -8439,6 +8483,7 @@ int main(int argc, char** argv) {
                             tre("F1", A.seq, A.T);
                         } else if (!err.empty()) { die(err); return 1; }
                     }
+                    if (pl_yield && ((doomed && !pump0(D)) || !pump0(B, A.s1 && !A.s1_done ? 1 : 0))) { die(err); return 1; }
                     if (drive.d.failed) { die(drive.d.fail ? drive.d.fail : "the expert pool failed"); return 1; }
                     // ---- a wrong speculative window has finished: stage 0 back to the verified window's real commit
                     if (doomed && D.finished) {
@@ -8654,6 +8699,7 @@ int main(int argc, char** argv) {
                         b_done = false;
                         A = B;
                         B = PW{};
+                        lookup_next();   // a copy goes on: the next B from the lookup (else the chain makes it)
                     } else {
                         if (B.launched) {   // a wrong guess: undo once it has finished
                             doomed = true;
@@ -8720,9 +8766,11 @@ int main(int argc, char** argv) {
                 dt_run += pl_ms;
                 if (dec_timing)
                     std::fprintf(stderr, "strata pipeline: %lld windows in %.0f ms (%.2f ms/window): %lld speculative, %lld on "
-                                         "the path, %lld rolled back, %lld below the gate (theta %.2f)\n",
+                                         "the path, %lld rolled back, %lld below the gate (theta %.2f); %lld B from a running "
+                                         "lookup; yield %s\n",
                                  (long long) dec_windows, pl_ms, dec_windows ? pl_ms / (double) dec_windows : 0.0,
-                                 (long long) pl_spec, (long long) pl_on, (long long) pl_undo, (long long) pl_gate, theta);
+                                 (long long) pl_spec, (long long) pl_on, (long long) pl_undo, (long long) pl_gate, theta,
+                                 (long long) pl_lk_next, pl_yield ? "on" : "off");
                 if (dec_timing) {
                     auto avg = [](double a, double n) { return n > 0 ? a / n : 0.0; };
                     std::fprintf(stderr, "strata pipeline classes: fresh %.0f windows %.2f ms %.2f tok | speculative %.0f "
