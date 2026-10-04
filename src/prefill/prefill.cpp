@@ -108,6 +108,14 @@ constexpr int RING_MAX = 1024;          // the arrays; the ring itself is ring_s
 // tokens instead (set by `init`), since the pool helps only there: measured on a 5070 Ti (PCIe 3.0, DDR4-2133,
 // IQ3_XXS) against the streamed walk, mean of two runs: 1K prompts 1.43x, 2K 1.38x, 4K 0.95x, 8K 0.80x.
 int64_t g_stream_min_cpu = 0;
+// EXPERIMENT (exp/h22-merge): STRATA_SPLIT_CPU_ASSIST=1 - CPU assist on a layer split's stages too.  It helps chunks of at
+// most 3,072 tokens, and a prompt that short is one chunk, which the stages run one after the other: one stage at a time
+// drives the pool.  g_pool_busy makes sure of it - a stage that finds the pool taken reads its chunk without it.
+bool split_cpu_assist() {
+    static const bool on = [] { const char* v = std::getenv("STRATA_SPLIT_CPU_ASSIST"); return v != nullptr && v[0] == '1'; }();
+    return on;
+}
+std::atomic<bool> g_pool_busy{false};
 inline int64_t stream_all_min() {
     static const int64_t env = [] { const char* e = std::getenv("STRATA_PREFILL_STREAM_MIN"); return e ? (int64_t) std::atoll(e) : (int64_t) -1; }();
     if (env >= 0) return env;
@@ -885,7 +893,8 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
     }
     // CPU assist on this path (every layer, a pool): its chunks are staged after routing up to 3,072 tokens - before
     // the ring is sized below, and before any request's loan is (bytes_needed counts the ring the same way)
-    if (pool_ != nullptr && cpu_assist().on && stage_lb_ == 0 && stage_le_ == g.n_layers && next_ == nullptr)
+    if (pool_ != nullptr && cpu_assist().on &&
+        (split_cpu_assist() || (stage_lb_ == 0 && stage_le_ == g.n_layers && next_ == nullptr)))
         g_stream_min_cpu = 3072;
     for (int b = 0; next_ != nullptr && b < 2; ++b)
         if (!m.hand[b] && cudaHostAlloc((void**) &m.hand[b], (size_t) chunk * D * 4, cudaHostAllocPortable) != cudaSuccess) {
@@ -1938,8 +1947,19 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
         // CPU assist: where the experts are staged after their routing (the streamed walk issues every copy ahead of
         // it), on a prompt path that runs every layer, for a native pack, and not beside a peer GPU's
         // share (--peer-device splits the layer's experts the same way)
-        const bool cpu_chunk = ca.on && pool_ != nullptr && !stream_all && m.src != nullptr && lay0.native && LB == 0 && m.pp == nullptr &&
-                               LE == g.n_layers && next_ == nullptr && hand_in_ == nullptr && cpu_ready(T);
+        // (a layer split's stage too with STRATA_SPLIT_CPU_ASSIST=1, holding the pool for the chunk)
+        const bool whole_path = LB == 0 && LE == g.n_layers && next_ == nullptr && hand_in_ == nullptr;
+        bool cpu_chunk = ca.on && pool_ != nullptr && !stream_all && m.src != nullptr && lay0.native && m.pp == nullptr &&
+                         (whole_path || split_cpu_assist()) && cpu_ready(T);
+        struct PoolHold {
+            bool held = false;
+            ~PoolHold() { if (held) g_pool_busy.store(false, std::memory_order_release); }
+        } pool_hold;
+        if (cpu_chunk && !whole_path) {
+            bool expect = false;
+            pool_hold.held = g_pool_busy.compare_exchange_strong(expect, true, std::memory_order_acq_rel);
+            if (!pool_hold.held) cpu_chunk = false;
+        }
         struct StreamEntry { int32_t l, e; const uint8_t* blob; int job; };
         std::vector<StreamEntry> seq;
         std::vector<size_t> seq_start;

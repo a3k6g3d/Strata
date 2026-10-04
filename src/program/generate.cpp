@@ -4626,6 +4626,10 @@ int main(int argc, char** argv) {
         }
         strata::prefill::Prefill sp;
         sp.set_cpu_pool(o.no_pool ? nullptr : &pool);   // STRATA_PREFILL_CPU: the pool's share of a short chunk
+        // EXPERIMENT (exp/h22-merge): STRATA_SPLIT_CPU_ASSIST=1 - a layer split's later stages take the pool's share too
+        // (a short prompt is one chunk, which the stages run one after the other; prefill.cpp keeps it to one at a time)
+        if (const char* v = std::getenv("STRATA_SPLIT_CPU_ASSIST"); v != nullptr && v[0] == '1' && !o.no_pool)
+            for (auto& st : stages) st->sp.set_cpu_pool(&pool);
         void* borrow = nullptr;
         uint64_t borrow_bytes = 0;
         int32_t lend_first = -1;          // the first slot the prompt path may borrow (its largest chunk)
