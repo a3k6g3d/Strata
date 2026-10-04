@@ -95,6 +95,10 @@ public:
     /// Null pool: GPU only.
     /// Only a prompt path that runs every layer uses it (no layer split); the pool must be idle during `run`.
     void set_cpu_pool(strata::kernels::cpu::ExpertPool* pool);
+    /// Before any loan is sized (bytes_needed): CPU assist's chunks are staged up to 3,072 tokens, and the buffers
+    /// follow that threshold.  `applies`: a pool on a path that runs every layer, or on every stage of a layer split
+    /// with STRATA_SPLIT_CPU_ASSIST=1 - what `init` checks again.
+    static void arm_cpu_assist(bool applies);
 
     /// Device bytes `init` needs for a chunk of `chunk` tokens (what a borrowed region must hold).
     static uint64_t bytes_needed(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk);

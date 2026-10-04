@@ -5560,8 +5560,11 @@ int main(int argc, char** argv) {
         sp.set_cpu_pool(o.no_pool ? nullptr : &pool);   // STRATA_PREFILL_CPU: the pool's share of a short chunk
         // EXPERIMENT (exp/h22-merge): STRATA_SPLIT_CPU_ASSIST=1 - a layer split's later stages take the pool's share too
         // (a short prompt is one chunk, which the stages run one after the other; prefill.cpp keeps it to one at a time)
-        if (const char* v = std::getenv("STRATA_SPLIT_CPU_ASSIST"); v != nullptr && v[0] == '1' && !o.no_pool)
+        const bool split_assist = [] { const char* v = std::getenv("STRATA_SPLIT_CPU_ASSIST"); return v && v[0] == '1'; }();
+        if (split_assist && !o.no_pool)
             for (auto& st : stages) st->sp.set_cpu_pool(&pool);
+        // its 3,072-token threshold before the auto chunk sizes the loans (bytes_needed reads it; `init` comes after)
+        strata::prefill::Prefill::arm_cpu_assist(!o.no_pool && (!multi_gpu || split_assist));
         void* borrow = nullptr;
         uint64_t borrow_bytes = 0;
         int32_t lend_first = -1;          // the first slot the prompt path may borrow (its largest chunk)
@@ -10276,6 +10279,7 @@ int main(int argc, char** argv) {
     strata::prefill::Prefill prefill;
     bool kvg_started = false;   // the elastic K/V took this run's cells
     prefill.set_cpu_pool(o.no_pool ? nullptr : &pool);   // STRATA_PREFILL_CPU: the pool's share of a short chunk
+    strata::prefill::Prefill::arm_cpu_assist(!o.no_pool && !multi_gpu);   // before the chunk below sizes the loan
     double prefill_batched_ms = 0;
     std::FILE* final_r = o.dump_final_r.empty() ? nullptr : std::fopen(o.dump_final_r.c_str(), "wb");
     std::vector<float> final_r_host(final_r ? (size_t) (g.hc * g.n_embd) : 0);

@@ -809,6 +809,9 @@ strata::kernels::QsaAttnPools pools_of(const strata::kernels::KvHostPools& h, co
 Prefill::Prefill() : impl_(new Impl) {}
 
 void Prefill::set_cpu_pool(strata::kernels::cpu::ExpertPool* pool) { pool_ = pool; }
+void Prefill::arm_cpu_assist(bool applies) {
+    if (applies && cpu_assist().on) g_stream_min_cpu = 3072;
+}
 Prefill::~Prefill() { release(); }
 
 void Prefill::reset() {
