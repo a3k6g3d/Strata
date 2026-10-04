@@ -40,6 +40,13 @@ void gdn_step_norm_multi(float* state, const float* h, int conv_channels, const 
 void wait_flag_ge(const uint32_t* flag, uint32_t value, void* stream);
 /// the GPU's %globaltimer (ns) into buf[i] (a one-thread kernel: the verify window's stage profiler).
 void gpu_stamp(unsigned long long* buf, int i, void* stream);
+/// densefuse: pull device memory regions into L2 (prefetch.global.L2 per 128-byte line) - the next layer's weights
+/// while the GPU would otherwise wait for the CPU experts.  Reads nothing back; values are untouched.
+struct L2Regions { const void* p[16]; unsigned long long bytes[16]; int n; };
+void l2_prefetch(const L2Regions& r, int blocks, void* stream);
+/// densefuse: dst[r][0, w) = src[r][0, w) for `rows` rows of src stride `src_w` floats (the query half of each
+/// q/gate head pair) - the strided cudaMemcpy2DAsync as a kernel, so it stays on the compute queue.
+void copy_rows_strided(float* dst, const float* src, int64_t rows, int64_t w, int64_t src_w, void* stream);
 
 // ---- perf-review E-6: a layer whose routed experts are all in VRAM needs nothing from the host
 /// One group's plan, built on the device when every routed expert of its n*k entries is resident: the host pool's
@@ -73,6 +80,19 @@ void fetch_blobs(const unsigned long long* src, const int32_t* n, uint8_t* dst, 
 /// ptr[k] = base + k * blob_bytes for k < *n (the staged copies `fetch_blobs` made).
 void rebase_ptrs(unsigned long long* ptr, const int32_t* n, uint8_t* base, int64_t blob_bytes, void* stream);
 
+// ---- trims: the layer split's hand-off (src/core/verify.cpp)
+/// hand_out[t*hb + (0 | hcn | hcn+n)] = R[t] | bo[t] | inj2[t] for t < T (mapped memory), then *flag = 1 once every
+/// store is visible system-wide (the next stage's graph, on another GPU, waits for it).  `counter`: device scratch
+/// (one unsigned, zero; left zero).  All sizes multiples of 4, pointers 16-byte aligned.
+void handoff_publish(const float* R, const float* bo, const float* inj2, int T, int64_t hcn, int64_t n, int64_t hc,
+                     float* hand_out, int64_t hb, uint32_t* flag, unsigned int* counter, void* stream);
+/// The reverse, from the mapped hand-off into the stage's R / bo / inj2 (uncached loads).
+void handoff_take(const float* hand_in, int64_t hb, int T, int64_t hcn, int64_t n, int64_t hc, float* R, float* bo,
+                  float* inj2, void* stream);
+/// The MTP chain in one graph: sets the conditional `handle` to 1 when probs[0, j) are all >= *min_p (both read
+/// from mapped memory), else 0.  CUDA only (conditional graph nodes).
+void mtp_chain_gate(unsigned long long handle, const float* probs, int j, const float* min_p, void* stream);
+
 // ---- the MTP draft layer (src/core/mtp.cpp)
 /// R[t][c][:] = h[t][c][:] + e[t][:]  (the embedding branch added to every stream).
 void add_streams_broadcast(const float* h, const float* e, float* R, int64_t n_embd, int hc, int n_tok, void* stream);
@@ -80,6 +100,8 @@ void add_streams_broadcast(const float* h, const float* e, float* R, int64_t n_e
 void ident_hits(const int32_t* ids, int n, int32_t* slot, int32_t* dst, int32_t* count, void* stream);
 /// The draft chain's next input: R_dst[:] = R_src[row], tok_dst[0] = ids[row], out[j] = ids[row], with
 /// row = *row_dev (device memory).  `out` may be mapped host memory.
+/// The drafter's chain, teacher forced: `*tok = force[j]` when force[j] >= 0 (mapped, read at run time), else unchanged.
+void force_token(int32_t* tok, const int32_t* force, int j, void* stream);
 void mtp_select(const float* R_src, int64_t R_stride, const int32_t* ids, const int32_t* row_dev, float* R_dst,
                 int32_t* tok_dst, int32_t* out, int j, void* stream, const float* probs = nullptr,
                 float* out_p = nullptr);

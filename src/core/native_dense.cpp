@@ -34,6 +34,11 @@ bool eligible(const strata::TensorInfo& tensor, bool include_ple_key) {
     for (const char* suffix : suffixes) if (name.ends_with(suffix)) return true;
     return false;
 }
+// the layer of a blk.<l>. tensor, -1 for any other
+int64_t layer_of(const std::string& name) {
+    if (name.rfind("blk.", 0) != 0) return -1;
+    return std::strtoll(name.c_str() + 4, nullptr, 10);
+}
 struct DeviceFree { void operator()(void* p) const { if (p) cudaFree(p); } };
 using DevicePtr = std::unique_ptr<void, DeviceFree>;
 struct Pending {
@@ -72,9 +77,21 @@ bool NativeDense::keep_unquantized_ple_key(const std::string& pack_dir, std::set
     return true;
 }
 
-NativeDense::~NativeDense() {
+NativeDense::~NativeDense() { release(); }
+
+void NativeDense::release() {
     if (scratch_) cudaFree(scratch_);
     for (void* p : weights_) cudaFree(p);
+    scratch_ = nullptr;
+    weights_.clear();
+    layer_bytes_.clear();
+    bytes_ = 0;
+}
+
+uint64_t NativeDense::bytes_in(int64_t lo, int64_t hi) const {
+    uint64_t n = 0;
+    for (int64_t l = std::max<int64_t>(lo, 0); l < hi && l < (int64_t) layer_bytes_.size(); ++l) n += layer_bytes_[(size_t) l];
+    return n;
 }
 
 bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& table, std::string& err,
@@ -91,6 +108,7 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
         std::set<std::string> seen;
         int max_in = 0;
         uint64_t total = 0;
+        std::vector<uint64_t> per_layer;
         uint64_t split_count = 0, split_tensors = 0;
         std::set<uint64_t> split_numbers;
         bool have_architecture = false;
@@ -154,6 +172,7 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
             for (const auto& tensor : gguf.tensors()) {
                 if (!eligible(tensor, include_ple_key) || outside(tensor.name)) continue;
                 if (!in_range(tensor.name) && tensor.name.find("ple") == std::string::npos) continue;
+                const int64_t layer = layer_of(tensor.name);   // its bytes count toward its layer (bytes_in)
                 if (!seen.insert(tensor.name).second) {
                     err = "native dense: duplicate tensor " + tensor.name; return false;
                 }
@@ -183,6 +202,10 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
                 }
                 max_in = (std::max)(max_in, (int) ref.ne0);
                 total += bytes;
+                if (layer >= 0) {
+                    if (per_layer.size() <= (size_t) layer) per_layer.resize((size_t) layer + 1, 0);
+                    per_layer[(size_t) layer] += bytes;
+                }
                 pending.push_back(Pending{&ref, (int) tensor.type, bytes, std::move(data)});
             }
         }
@@ -201,6 +224,7 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
         }
         scratch_ = scratch.release();
         bytes_ = total;
+        layer_bytes_ = std::move(per_layer);
         return true;
     } catch (const std::exception& error) {
         err = std::string("native dense: ") + error.what();

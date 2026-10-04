@@ -4,6 +4,7 @@
 // elementwise.cu) with the same operation order, so a verify window reproduces plain decode bit for bit.
 #include "strata/kernels/verify_kernels.hpp"
 #include "strata/kernels/dp4a.hpp"
+#include "strata/kernels/pdl.hpp"
 
 #include <cuda_runtime.h>
 
@@ -348,6 +349,11 @@ __global__ void mtp_select_kernel(const float* __restrict__ R_src, int64_t strid
     }
 }
 
+__global__ void force_token_kernel(int32_t* tok, const int32_t* force, int j) {
+    const int32_t f = ((const volatile int32_t*) force)[j];
+    if (f >= 0) *tok = f;
+}
+
 __global__ void dense_steps_kernel(const int32_t* __restrict__ cells, int n, int32_t* __restrict__ steps) {
     const int i = threadIdx.x;
     if (i >= n) return;
@@ -382,6 +388,11 @@ void ident_hits(const int32_t* ids, int n, int32_t* slot, int32_t* dst, int32_t*
     if (n < 1 || n > 1024) { std::fprintf(stderr, "ident_hits: n out of range\n"); std::exit(1); }
     ident_hits_kernel<<<1, 1024, 0, (cudaStream_t) stream>>>(ids, n, slot, dst, count);
     check("ident_hits");
+}
+
+void force_token(int32_t* tok, const int32_t* force, int j, void* stream) {
+    force_token_kernel<<<1, 1, 0, (cudaStream_t) stream>>>(tok, force, j);
+    check("force_token");
 }
 
 void mtp_select(const float* R_src, int64_t R_stride, const int32_t* ids, const int32_t* row_dev, float* R_dst,
@@ -675,8 +686,175 @@ namespace { __global__ void gpu_stamp_kernel(unsigned long long* buf, int i) {
 #endif
     buf[i] = t;
 } }
+namespace {
+__global__ void copy_rows_strided_kernel(float4* __restrict__ dst, const float4* __restrict__ src, long long rows,
+                                         int w4, int src_w4) {
+    const long long total = rows * w4;
+    for (long long i = (long long) blockIdx.x * blockDim.x + threadIdx.x; i < total; i += (long long) gridDim.x * blockDim.x) {
+        const long long r = i / w4, c = i - r * w4;
+        dst[i] = src[r * src_w4 + c];
+    }
+}
+}  // namespace
+void copy_rows_strided(float* dst, const float* src, int64_t rows, int64_t w, int64_t src_w, void* stream) {
+    if (rows <= 0) return;
+    if ((w & 3) || (src_w & 3) || ((uintptr_t) dst & 15) || ((uintptr_t) src & 15)) {
+        std::fprintf(stderr, "copy_rows_strided: widths must be multiples of 4 floats, pointers 16-byte aligned\n");
+        std::exit(1);
+    }
+    const long long total = (long long) rows * (w / 4);
+    const unsigned blocks = (unsigned) ((total + 255) / 256 < 256 ? (total + 255) / 256 : 256);
+    copy_rows_strided_kernel<<<blocks, 256, 0, (cudaStream_t) stream>>>((float4*) dst, (const float4*) src, rows,
+                                                                         (int) (w / 4), (int) (src_w / 4));
+    check("copy_rows_strided");
+}
+
+namespace {
+__global__ void l2_prefetch_kernel(L2Regions r, int evict_last) {
+    const unsigned long long tid = (unsigned long long) blockIdx.x * blockDim.x + threadIdx.x;
+    const unsigned long long nt = (unsigned long long) gridDim.x * blockDim.x;
+    for (int k = 0; k < r.n; ++k) {
+        const char* base = (const char*) r.p[k];
+        for (unsigned long long off = tid * 128ull; off < r.bytes[k]; off += nt * 128ull) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
+            if (evict_last) asm volatile("prefetch.global.L2::evict_last [%0];" ::"l"(base + off));
+            else
+#endif
+            asm volatile("prefetch.global.L2 [%0];" ::"l"(base + off));
+        }
+    }
+}
+}  // namespace
+void l2_prefetch(const L2Regions& r, int blocks, void* stream) {
+    if (r.n <= 0) return;
+    // STRATA_DF_L2PF_EL=1: the lines are prefetched with the evict-last policy (kept over streaming traffic)
+    static const int el = [] { const char* v = std::getenv("STRATA_DF_L2PF_EL"); return v ? std::atoi(v) : 0; }();
+    l2_prefetch_kernel<<<(unsigned) (blocks > 0 ? blocks : 1), 256, 0, (cudaStream_t) stream>>>(r, el);
+    check("l2_prefetch");
+}
+
+namespace { __global__ void gpu_stamp_pdl_kernel(unsigned long long* buf, int i) {
+    pdl_trigger();
+    pdl_wait();
+    unsigned long long t;
+#if defined(__HIPCC__)
+    t = wall_clock64() * 10ull;
+#else
+    asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t));
+#endif
+    buf[i] = t;
+} }
+
+bool& pdl_scope() {
+    static thread_local bool on = false;
+    return on;
+}
+
+bool pdl_supported() {
+    static int cached[64];
+    static bool init[64];
+    int dev = 0;
+    cudaGetDevice(&dev);
+    if (dev < 0 || dev >= 64) return false;
+    if (!init[dev]) {
+        const char* v = std::getenv("STRATA_DF_PDL");
+        int cc = 0;
+        cudaDeviceGetAttribute(&cc, cudaDevAttrComputeCapabilityMajor, dev);
+        cached[dev] = (v == nullptr || std::atoi(v) != 0) && cc >= 9;   // sm_90+; STRATA_DF_PDL=0: off
+        init[dev] = true;
+    }
+    return cached[dev] != 0;
+}
+
 void gpu_stamp(unsigned long long* buf, int i, void* stream) {
+    if (pdl_scope()) {   // densefuse: inside a PDL stretch the stamp passes the early launch on
+        launch_pdl(gpu_stamp_pdl_kernel, dim3(1), dim3(1), 0, (cudaStream_t) stream, buf, i);
+        return;
+    }
     gpu_stamp_kernel<<<1, 1, 0, (cudaStream_t) stream>>>(buf, i);
 }
+
+
+// ---- trims: the layer split's hand-off as one kernel each way, and the cross-stage flag
+//
+// handoff_publish: per token t, hand_out[t*HB + (0, HCN, HCN+N)] = R[t] | bo[t] | inj2[t] (the earlier copy kernels'
+// bytes, in one launch) and then *flag = 1: every block fences its stores system-wide before it counts itself done,
+// and the last block raises the flag, so a reader that sees the flag sees the hand-off (the next stage's graph waits
+// for it on its own device, wait_flag_ge).  `counter` (device) is back at 0 when the kernel ends.
+namespace {
+__global__ void handoff_publish_kernel(const float4* __restrict__ R, const float4* __restrict__ bo,
+                                       const float4* __restrict__ inj, int T, int hcn4, int n4, int hc4,
+                                       float4* hand, int hb4, uint32_t* flag, unsigned int* counter) {
+    const int per = hcn4 + n4 + hc4;
+    const int total = T * per;
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < total; i += gridDim.x * blockDim.x) {
+        const int t = i / per, w = i - t * per;
+        float4 v;
+        if (w < hcn4) v = R[(size_t) t * hcn4 + w];
+        else if (w < hcn4 + n4) v = bo[(size_t) t * n4 + (w - hcn4)];
+        else v = inj[(size_t) t * hc4 + (w - hcn4 - n4)];
+        hand[(size_t) t * hb4 + w] = v;   // fenced below, before the flag
+    }
+    __threadfence_system();
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        const unsigned int prev = atomicAdd(counter, 1u);
+        if (prev == gridDim.x - 1) {
+            *counter = 0u;
+            __threadfence_system();
+            *(volatile uint32_t*) flag = 1u;
+            __threadfence_system();
+        }
+    }
+}
+__global__ void handoff_take_kernel(const float4* hand, int hb4, int T, int hcn4, int n4, int hc4, float4* __restrict__ R,
+                                    float4* __restrict__ bo, float4* __restrict__ inj) {
+    const int per = hcn4 + n4 + hc4;
+    const int total = T * per;
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < total; i += gridDim.x * blockDim.x) {
+        const int t = i / per, w = i - t * per;
+        const float4 v = __ldcv(hand + (size_t) t * hb4 + w);   // mapped memory another GPU wrote: no cached copy
+        if (w < hcn4) R[(size_t) t * hcn4 + w] = v;
+        else if (w < hcn4 + n4) bo[(size_t) t * n4 + (w - hcn4)] = v;
+        else inj[(size_t) t * hc4 + (w - hcn4 - n4)] = v;
+    }
+}
+}  // namespace
+
+void handoff_publish(const float* R, const float* bo, const float* inj2, int T, int64_t hcn, int64_t n, int64_t hc,
+                     float* hand_out, int64_t hb, uint32_t* flag, unsigned int* counter, void* stream) {
+    if ((hcn | n | hc | hb) & 3) { std::fprintf(stderr, "handoff_publish: sizes must be multiples of 4\n"); std::exit(1); }
+    handoff_publish_kernel<<<32, 256, 0, (cudaStream_t) stream>>>((const float4*) R, (const float4*) bo,
+                                                                 (const float4*) inj2, T, (int) (hcn / 4), (int) (n / 4),
+                                                                 (int) (hc / 4), (float4*) hand_out, (int) (hb / 4), flag,
+                                                                 counter);
+    check("handoff_publish");
+}
+
+void handoff_take(const float* hand_in, int64_t hb, int T, int64_t hcn, int64_t n, int64_t hc, float* R, float* bo,
+                  float* inj2, void* stream) {
+    if ((hcn | n | hc | hb) & 3) { std::fprintf(stderr, "handoff_take: sizes must be multiples of 4\n"); std::exit(1); }
+    handoff_take_kernel<<<64, 256, 0, (cudaStream_t) stream>>>((const float4*) hand_in, (int) (hb / 4), T, (int) (hcn / 4),
+                                                              (int) (n / 4), (int) (hc / 4), (float4*) R, (float4*) bo,
+                                                              (float4*) inj2);
+    check("handoff_take");
+}
+
+// ---- trims: the MTP draft chain in one graph - draft j runs only while every earlier draft's probability is at
+// least the request's min_p (read from mapped memory, written by the host before the launch): the host loop's own rule
+#if !defined(__HIPCC__) && !defined(STRATA_USE_HIP)
+namespace {
+__global__ void mtp_chain_gate_kernel(cudaGraphConditionalHandle h, const float* probs, int j, const float* min_p) {
+    const float mp = *(const volatile float*) min_p;
+    unsigned int go = 1;
+    for (int i = 0; i < j; ++i) go &= ((const volatile float*) probs)[i] >= mp ? 1u : 0u;
+    cudaGraphSetConditional(h, go);
+}
+}  // namespace
+void mtp_chain_gate(unsigned long long handle, const float* probs, int j, const float* min_p, void* stream) {
+    mtp_chain_gate_kernel<<<1, 1, 0, (cudaStream_t) stream>>>((cudaGraphConditionalHandle) handle, probs, j, min_p);
+    check("mtp_chain_gate");
+}
+#endif
 
 }  // namespace strata::kernels

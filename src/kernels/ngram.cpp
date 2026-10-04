@@ -164,6 +164,11 @@ struct PleTable::Impl {
             for (int b = 0; b < PLE_HEAD_DIM / 32; ++b) strata::dequantize_q5_0(row + (size_t) b * 22, out160 + b * 32);
         else iq4nl_dequant_row(row, out160);
     }
+    // gather_issue / gather_collect: the batch in flight
+    bool batch_pending = false;
+    strata::ngram::PleReader::Ticket batch_ticket;
+    std::vector<uint8_t> batch_raw;
+    std::vector<uint32_t> batch_rows;
 };
 
 PleTable::PleTable() : impl_(new Impl) {}
@@ -437,6 +442,32 @@ bool PleTable::gather_batch(const uint32_t* rows, size_t n_tokens, float* out, s
     }
     wait_prefetches();
     for (size_t i = 0; i < n; ++i) read_row(rows[i], out + i * PLE_HEAD_DIM);
+    return true;
+}
+
+bool PleTable::gather_issue(const uint32_t* rows, size_t n_tokens, std::string& err) {
+    if (impl_->pending || impl_->batch_pending) { err = "PleTable::gather_issue while a read is in flight"; return false; }
+    const size_t n = n_tokens * (size_t) PLE_N_HEADS;
+    impl_->batch_rows.assign(rows, rows + n);
+    if (impl_->mode == PleIo::Direct) {
+        impl_->batch_raw.resize(n * impl_->rb);
+        impl_->batch_ticket = impl_->reader.issue(impl_->batch_rows.data(), n, impl_->batch_raw.data());
+    }
+    impl_->batch_pending = true;
+    return true;
+}
+
+bool PleTable::gather_collect(float* out, std::string& err) {
+    if (!impl_->batch_pending) { err = "PleTable::gather_collect without gather_issue"; return false; }
+    impl_->batch_pending = false;
+    const size_t n = impl_->batch_rows.size();
+    if (impl_->mode == PleIo::Direct) {
+        if (!impl_->reader.collect(impl_->batch_ticket, err)) return false;
+        for (size_t i = 0; i < n; ++i) impl_->decode(impl_->batch_raw.data() + i * impl_->rb, out + i * PLE_HEAD_DIM);
+        impl_->bytes_read += (uint64_t) n * impl_->rb;
+        return true;
+    }
+    for (size_t i = 0; i < n; ++i) read_row(impl_->batch_rows[i], out + i * PLE_HEAD_DIM);
     return true;
 }
 

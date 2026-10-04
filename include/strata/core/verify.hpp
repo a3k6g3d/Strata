@@ -122,6 +122,17 @@ public:
     /// The next stage: `run` and `commit` continue into it (its pool calls get `next_user`); sampling settings
     /// and `final_R` are the last stage's.
     void set_next(Verifier* next, void* next_user) { next_ = next; next_user_ = next_user; }
+    /// TRIMS (layer split): the cross-stage flag, a word of mapped PORTABLE memory per boundary.  The stage that hands
+    /// off raises `out` once its hand-off is visible (one kernel writes the hand-off and then the flag); the next
+    /// stage's graph waits for `in` on its own device before it reads the hand-off.  With both set, `run` launches
+    /// every stage's graph at once and serves them in order: no host wait, staging or launch between the stages
+    /// (STRATA_XSTAGE=0: the old order, each stage launched once the previous one is synchronized).  Before `init`.
+    void set_stage_flags(uint32_t* in_flag, uint32_t* out_flag) { xin_ = in_flag; xout_ = out_flag; }
+    /// TRIMS: `commit` without waiting for the GPU - every stage's commit graph is queued on its stream, where the
+    /// next window's graph follows it anyway.  `commit_wait` waits for all of them (before anything outside the
+    /// verify windows touches the session: the prompt path, checkpoints, the state hash).
+    bool commit_async(int n_keep, std::string& err);
+    bool commit_wait(std::string& err);
     /// floats per token in a hand-off buffer
     static int64_t handoff_floats(const ModelGeometry& g) { return (int64_t) g.hc * g.n_embd + g.n_embd + g.hc; }
 
@@ -189,6 +200,45 @@ public:
     bool window_logprobs(const int32_t* targets, int T, int64_t pos0, int32_t extra_id, std::FILE* out,
                          std::string& err);
 
+    // ---- PIPELINED WINDOWS (--pipeline-windows): the same window, driven without blocking the host, so one host
+    // thread can keep a window in flight on each stage.  `pl_launch` stages and launches (it never captures: call
+    // `capture_all` first), `service` serves the layers whose doorbells have rung and returns at once, `done` polls
+    // the graph's completion, `pl_finish` reads the picks.  No chaining to `next_`: the caller drives every stage.
+    /// The compute stream to use instead of a private one (two verifiers of one stage share it).  Before `init`.
+    void set_stream(cudaStream_t s) { ext_stream_ = s; }
+    /// integ3: the late PLE rows (trims' STRATA_PLE_LATE) need the host's collect between the window's layer 0 and 1
+    /// and allow one batch in flight per table, so the pipelined verifiers (two per stage) read them before the
+    /// launch instead.  Before `init`.
+    void set_no_ple_late(bool v) { no_ple_late_ = v; }
+    cudaStream_t stream() const { return cs_; }
+    int device() const { return device_; }
+    /// Capture every window size and the commit graph now (a capture syncs the stream: never with a window in flight).
+    bool capture_all(std::string& err);
+    bool pl_launch(int T, const int32_t* tokens, int64_t pos0, std::string& err);
+    /// Stage a window ahead of its launch (the host part of `launch`: positions, the PLE rows, which read
+    /// `ple_prev` = the two tokens before the window as they WILL be).  A later `launch` of the same window (T, pos0,
+    /// tokens, and `ss.ple_prev` equal to `ple_prev` then) skips the staging; anything else stages again.
+    bool prestage(int T, const int32_t* tokens, int64_t pos0, const int32_t ple_prev[2], std::string& err);
+    /// 1: every layer served; 0: the GPU has not reached the next layer yet; -1: error (`err`).
+    int service(PoolMultiFn pool, void* user, std::string& err);
+    bool in_flight() const { return fl_active_; }
+    bool all_served() const { return fl_active_ && fl_k_ >= fl_total_; }
+    /// The window's graph (and its profile copy) completed; false while it runs.  An error sets `err`.
+    bool done(std::string& err);
+    /// After `done`: the profile, the last stage's host sampling and picks (`out` may be null for an earlier stage).
+    bool pl_finish(int32_t* out, std::string& err);
+    /// The commit without a host sync and without `next_`; `ss.ple_prev` advances now (host side).
+    bool pl_commit_async(int n_keep, std::string& err);
+    /// An event recorded on this verifier's stream after its last launch / commit (for cross-stream ordering).
+    cudaEvent_t done_event() const { return ev_done_; }
+    cudaEvent_t commit_event() const { return ev_commit_; }
+    int last_t() const { return last_t_; }
+    int64_t last_pos0() const { return last_pos0_; }
+    /// Fold another verifier's counters and GPU profile into this one's (the two verifiers of one stage report once).
+    void absorb_stats(Verifier& o);
+    /// The watchdog's line for a pipelined verifier: in flight, layers served, the GPU's ring and flags, its events.
+    void diag_pipelined(std::FILE* f, const char* name) const;
+
     /// Token t's residual after the last layer, (hc, n_embd) on the device, valid until the next `run`.
     const float* final_R(int t) const;
     const float* final_R_all() const { return next_ ? next_->final_R_all() : R_; }
@@ -205,8 +255,15 @@ public:
     /// the CPU is RAM-bound, Q2_0).  Set before the first `run`.
     void set_pcie_mode(int mode) { sink_.pcie_mode = mode; }
     /// the pool never plans a PCIe share (--pcie-frac 0): the window skips that path.  Before the first run.
+    /// (misspath) The graph then has no flag-B wait, no staging copy and no PCIe groups: ~5 empty launches per layer.
+    void set_no_pcie(bool on) { no_pcie_ = on; }
+    bool no_pcie() const { return no_pcie_; }
 
     double ms_wait = 0, ms_pool = 0, ms_host = 0, ms_commit = 0;
+    /// host time per stage beyond the per-layer loop: the graph launch, the wait for the graph's end (and the copy
+    /// stream), what follows it (profile readback, host-side sampling, hand-over to the next stage)
+    double ms_launch = 0, ms_sync = 0, ms_post = 0;
+    double ms_ple = 0;   ///< trims (late PLE rows): the host's wait for the rows after layer 0
     int64_t windows = 0;
     /// STRATA_VERIFY_PROFILE=1 - GPU stage times of the windows since the last call (ms per
     /// window), as one line; empty when off.
@@ -244,6 +301,36 @@ private:
     void collect_profile();   ///< STRATA_VERIFY_PROFILE: add the last window's stamps to prof_sum_
     bool capture_commit_batch(const int* rows, int S, int hbase, std::string& err);
     bool stage_batch(const int* rows, int S, int hbase, const int32_t* tokens, const int64_t* pos, std::string& err);
+    // `run`, in four steps (a layer split runs them stage by stage, or all prepares/launches first: set_stage_flags)
+    bool prepare(int T, const int32_t* tokens, int64_t pos0, std::string& err);
+    bool launch(std::string& err);
+    bool serve(PoolMultiFn pool, void* user, std::string& err);
+    bool finish(int32_t* out, std::string& err);
+    void release_window();   // an error before this stage was served: let its launched graph run to its end
+    bool run_chain(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool, void* user, int32_t* out,
+                   std::string& err);
+    // TRIMS (STRATA_PLE_LATE, default on): the PLE rows are read from the SSD while the GPU runs the embedding and
+    // layer 0; the host hands them over after serving layer 0 and raises this flag, which the graph waits for just
+    // before layer 1's PLE block (the old order read them before the launch).  The same rows, bit for bit.
+    bool ple_late_ = false;
+    bool ple_issued_ = false;
+    uint32_t* h_pleflag_ = nullptr;
+    uint32_t* m_pleflag_ = nullptr;
+    uint32_t* xin_ = nullptr;             // set_stage_flags (mapped portable: host and device alias)
+    uint32_t* xout_ = nullptr;
+    unsigned int* xcount_ = nullptr;      // handoff_publish's block counter (device)
+    bool stage_window(int T, const int32_t* tokens, int64_t pos0, std::string& err, const int32_t* ple_prev = nullptr);
+    bool prestaged_ = false;
+    bool no_ple_late_ = false;
+    int32_t prestage_prev_[2] = {-1, -1};
+    void accumulate_profile(const unsigned long long* stamps);
+    cudaStream_t ext_stream_ = nullptr;
+    cudaEvent_t ev_done_ = nullptr, ev_commit_ = nullptr;
+    unsigned long long* prof_pin_ = nullptr;   // pinned host copy of the stamps (pipelined windows)
+    bool fl_active_ = false, fl_prof_ = false, commit_live_ = false;
+    int fl_T_ = 0;
+    int64_t fl_k_ = 0, fl_total_ = 0;
+    double fl_since_ms_ = 0, fl_flush_ms_ = 0;
     strata::kernels::SamplerParams sampling_ = [] {
         strata::kernels::SamplerParams s;
         s.greedy = true;
@@ -256,6 +343,7 @@ private:
     int device_ = -1;                    ///< the device `init` ran on: run/commit switch to it (layer split)
     std::atomic<bool> released_{false};  ///< #267: release_gpu_waits ran (maybe on the watchdog thread): no more windows
     bool all_resident_ = false;           ///< 100% of experts in [lb_, le_) resident in VRAM: zero-doorbell graph
+    bool no_pcie_ = false;                ///< set_no_pcie: the PCIe path is not recorded
     bool device_plan_ = false;            ///< E-6: resident-only layers planned on the device (STRATA_VERIFY_DEVICE_PLAN)
     uint32_t* skip_ = nullptr;            ///< E-6: per group, the ring whose plan the device built (0: the host's)
     unsigned long long* slot_off_d_ = nullptr;   ///< E-6: the slot offsets on the device
@@ -283,6 +371,7 @@ private:
     std::vector<unsigned long long> prof_h_;
     double prof_sum_[2][kProfPer] = {};   // [GDN / QSA layers][stage]
     int64_t prof_windows_ = 0;
+    double prof_span_ = 0;   // the stage's first stamp to its last, summed (ns)
 
     const WeightTable* wt_ = nullptr;
     const ModelGeometry* g_ = nullptr;
@@ -359,6 +448,19 @@ private:
     float *sh_gate_ = nullptr, *sh_up_ = nullptr, *sh_g_ = nullptr;
     float* hist_snap_ = nullptr;                              // T * NG_HIST * NG_HC_DIM
     int64_t cap_ = 0, max_blocks_ = 0, attn_scratch_floats_ = 0;
+
+    // densefuse: independent work of a layer captured as parallel graph branches (STRATA_DF_BRANCH, default on).
+    // The same kernels with the same inputs, so every value is unchanged; only their order on the GPU is freer.
+    bool branch_ = false;
+    cudaStream_t side_[2] = {};
+    cudaEvent_t df_fork_ = nullptr;      // densefuse branches (upstream's ev_fork_ / ev_join_: its shared expert)
+    cudaEvent_t df_join_[2] = {};
+    // densefuse: L2 prefetch of the next layer's dense weights after this layer's VRAM experts (STRATA_DF_L2PF_MB,
+    // the per-layer budget; 0 = off), on its own branch joined at the window's end
+    int64_t l2pf_bytes_ = 0;
+    int l2pf_blocks_ = 0;
+    cudaStream_t side_pf_ = nullptr;
+    cudaEvent_t ev_pf_ = nullptr;
 };
 
 }  // namespace strata::core

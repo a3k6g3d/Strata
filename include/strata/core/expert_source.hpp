@@ -483,8 +483,26 @@ public:
     uint8_t* exchange_buffer(int64_t q) const;
     /// Requires `has_resident(layer, in)`, `!has_resident(layer, out)` and `exchange_buffer(q)` holding out's blob.
     bool stage_exchange(int64_t layer, int64_t in, int64_t out, int64_t q);
+    /// --pipeline-windows: size the exchange table now, so a `stage_exchange` on the adaptive tier's thread never
+    /// reallocates it under a concurrent `blob`.
+    void prepare_overrides() { if (override_.empty()) override_.assign((size_t) blobs_, nullptr); }
     /// After the GPU copies of every staged swap have landed.  Returns how many exchanges were applied.
     int64_t commit_exchanges();
+    /// TRIMS: `commit_exchanges` in two halves.  `commit_exchanges_copy` only writes each `out` blob into `in`'s place
+    /// in RAM (the ~1.4 MB memcpy per swap that is the whole cost); it may run on another thread while verify windows
+    /// run, provided every staged `in` is already resident on its GPU (nothing reads `in`'s place then) - `out` is
+    /// still read from its exchange buffer, which the copy only reads.  `commit_exchanges_finish` then swaps the
+    /// residency and frees the buffers, between windows.  Together: exactly `commit_exchanges`.
+    /// `gate` (optional): the copy pauses while it reads true - the CPU expert pool is running, and this copy
+    /// would take RAM bandwidth from it - and goes on in 256 KiB pieces otherwise.
+    void commit_exchanges_copy(const std::atomic<bool>* gate = nullptr);
+    int64_t commit_exchanges_finish();
+    bool exchanges_staged() const { return !staged_.empty(); }
+    /// misspath's names for the same two halves (its asynchronous adaptive tier)
+    void commit_copies(const std::atomic<bool>* gate = nullptr) { commit_exchanges_copy(gate); }
+    int64_t commit_flip() { return commit_exchanges_finish(); }
+    /// The compact copy's blob of `(layer, expert)` or null; does not count as a read (any thread).
+    const uint8_t* resident_blob(int64_t layer, int64_t expert) const;
     int64_t exchanges() const { return exchanges_; }
     /// With the compact copy ready: blobs read from the mapped file since (what the plain mmap mode may read from
     /// the SSD).  0 in a steady resident mode; lend-region experts that did not fit the RAM count here.
