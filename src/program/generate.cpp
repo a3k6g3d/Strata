@@ -8641,12 +8641,16 @@ int main(int argc, char** argv) {
                 return true;
             };
             // --pipeline-windows, testing: STRATA_PIPELINE_SWITCH=<file> is read at every request, "pw=<0|1|2>
-            // theta=<f> force_miss=<k> short_read=<n>" - an A/B of the pipelined and the serial loops (and forced
-            // rollbacks) on one server, with the same expert placement
+            // theta=<f> force_miss=<k> short_read=<n> yield=<0|1> lknext=<0|1> lkany=<0|1>" - an A/B of the pipelined
+            // and the serial loops (and forced rollbacks) on one server, with the same expert placement
             int pl_pw = pipe ? o.pipeline_windows : 0;
-            float pl_theta = [] {   // a speculative window is launched only when its estimated chance is at least this
+            // the gate (STRATA_PIPELINE_THETA): a window is run ahead of its predecessor's verdict when the chain's
+            // estimate that it lands is at least this.  0.10 since the verified path is served first (a wrong guess costs
+            // little then): measured on 0.1.39 on one server, --adapt-every 0, RTX 3060 + RTX 5070 Ti, IQ3_S, against
+            // 0.20: 150K questions +2.4%, short chats -0.1%, the copy test +0.1% (0.35: -1.2% at 150K).  Was 0.20.
+            float pl_theta = [] {
                 const char* v = pipe_dbg_env("STRATA_PIPELINE_THETA");
-                return v ? (float) std::atof(v) : 0.2f;
+                return v ? (float) std::atof(v) : 0.10f;
             }();
             int pl_force_miss = [] {   // exactness test: every k-th speculative window gets a wrong first token
                 const char* v = pipe_dbg_env("STRATA_PIPELINE_FORCE_MISS");
@@ -8656,6 +8660,9 @@ int main(int argc, char** argv) {
             // through the switch file too ("yield=<0|1> lknext=<0|1>"): their A/B on one server, one expert placement
             bool pl_yield_req = [] { const char* v = std::getenv("STRATA_PIPELINE_YIELD"); return v == nullptr || std::atoi(v) != 0; }();
             bool pl_lknext_req = [] { const char* v = std::getenv("STRATA_PIPELINE_LOOKUP_NEXT"); return v == nullptr || std::atoi(v) != 0; }();
+            // STRATA_PIPELINE_LOOKUP_ANY=1 / "lkany=1" (an experiment, off by default): lookup_next for a window the
+            // drafter's chain made too (a copy that starts in the middle of a run of right guesses)
+            bool pl_lkany_req = [] { const char* v = std::getenv("STRATA_PIPELINE_LOOKUP_ANY"); return v != nullptr && std::atoi(v) != 0; }();
             if (static const char* sw = pipe_dbg_env("STRATA_PIPELINE_SWITCH"); sw != nullptr && pipe) {
                 if (std::FILE* f = std::fopen(sw, "r")) {
                     char buf[256] = {};
@@ -8668,9 +8675,10 @@ int main(int argc, char** argv) {
                     if (const char* q = std::strstr(buf, "short_read=")) req_short_read = std::max(0LL, std::atoll(q + 11));
                     if (const char* q = std::strstr(buf, "yield=")) pl_yield_req = std::atoi(q + 6) != 0;
                     if (const char* q = std::strstr(buf, "lknext=")) pl_lknext_req = std::atoi(q + 7) != 0;
+                    if (const char* q = std::strstr(buf, "lkany=")) pl_lkany_req = std::atoi(q + 6) != 0;
                     std::fprintf(stderr, "strata pipeline switch: pw=%d theta=%.3f force_miss=%d short_read=%lld yield=%d "
-                                         "lknext=%d\n", pl_pw, pl_theta, pl_force_miss, (long long) req_short_read,
-                                 pl_yield_req ? 1 : 0, pl_lknext_req ? 1 : 0);
+                                         "lknext=%d lkany=%d\n", pl_pw, pl_theta, pl_force_miss, (long long) req_short_read,
+                                 pl_yield_req ? 1 : 0, pl_lknext_req ? 1 : 0, pl_lkany_req ? 1 : 0);
                 }
             }
             // --pipeline-windows: tokens [a, b) through the windows with the stages overlapped.  The tokens are known,
@@ -9485,13 +9493,26 @@ int main(int argc, char** argv) {
                 // starts afresh as before.  STRATA_PIPELINE_LOOKUP_NEXT=0 (or "lknext=0" in the switch file): the
                 // chain's B (the previous behaviour).
                 const bool pl_lookup_next = pl_lknext_req;
-                int64_t pl_lk_next = 0;
+                // lookup_any (STRATA_PIPELINE_LOOKUP_ANY / "lkany="): the same for an A the chain made, when the lookup
+                // runs through A's drafts with a match of at least 12 tokens and the policy's rate for such matches is
+                // at least 0.85 (that rate is B's p_on)
+                const bool pl_lookup_any = pl_lkany_req;
+                int64_t pl_lk_next = 0, pl_lk_any = 0;
                 auto lookup_next = [&]() {
-                    if (!pl_lookup_next || o.suffix_draft <= 0 || pl_lookup_pon <= 0.0f || !A.lookup || b_done) return;
+                    if (!pl_lookup_next || o.suffix_draft <= 0 || pl_lookup_pon <= 0.0f || b_done) return;
+                    if (!A.lookup && !pl_lookup_any) return;
                     const int k = sfx.propose(2 * S - 1, pl_sbuf.data());   // after A's row 0 (its predecessor's bonus)
                     if (k < A.T) return;                                     // A's drafts and B's row 0 at least
                     for (int i = 1; i < A.T; ++i)
                         if (pl_sbuf[(size_t) i - 1] != A.tok[i]) return;     // the lookup no longer runs through A
+                    float p_on = pl_lookup_pon;
+                    if (!A.lookup) {
+                        const int match = sfx.last_match();
+                        const double q = policy.lookup_rate(match);
+                        if (match < 12 || q < 0.85) return;
+                        p_on = (float) q;
+                        ++pl_lk_any;
+                    }
                     const int rest = k - (A.T - 1);
                     B = PW{};
                     B.seq = A.seq + 1;
@@ -9499,7 +9520,7 @@ int main(int argc, char** argv) {
                     B.T = std::min(S, rest);
                     for (int i = 0; i < B.T; ++i) B.tok[i] = pl_sbuf[(size_t) (A.T - 1 + i)];
                     for (int i = 1; i < B.T; ++i) B.prob[i - 1] = 1.0f;
-                    B.p_on = pl_lookup_pon;
+                    B.p_on = p_on;
                     B.ready = true;
                     B.made = true;
                     B.lookup = true;
@@ -9845,10 +9866,10 @@ int main(int argc, char** argv) {
                     auto avg = [](double s_, double n_) { return n_ > 0 ? s_ / n_ : 0.0; };
                     std::fprintf(stderr, "strata pipeline: %lld windows in %.0f ms (%.2f ms/window): %lld speculative, %lld on "
                                          "the path, %lld rolled back, %lld below the gate (theta %.2f); %lld B from a running "
-                                         "lookup; yield %s\n",
+                                         "lookup (%lld after a chain window); yield %s\n",
                                  (long long) dec_windows, pl_ms, avg(pl_ms, (double) dec_windows), (long long) pl_spec,
                                  (long long) pl_on, (long long) pl_undo, (long long) pl_gate, theta,
-                                 (long long) pl_lk_next, pl_yield ? "on" : "off");
+                                 (long long) pl_lk_next, (long long) pl_lk_any, pl_yield ? "on" : "off");
                     std::fprintf(stderr, "strata pipeline classes: fresh %.0f windows %.2f ms %.2f tok | speculative %.0f "
                                          "windows %.2f ms %.2f tok | forced-chain disagreements %lld, chain late %lld\n",
                                  cls_n[0], avg(cls_ms[0], cls_n[0]), avg(cls_tok[0], cls_n[0]), cls_n[1],
