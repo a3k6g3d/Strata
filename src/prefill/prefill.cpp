@@ -243,10 +243,12 @@ double ms_since(Clock::time_point t) { return std::chrono::duration<double, std:
 struct Alloc {
     uint8_t* base = nullptr;
     uint64_t cap = 0, used = 0;
+    uint64_t asked = 0;   // every take's bytes, also those that did not fit (the "do not fit" message says it)
     bool count_only = false;
     std::vector<void*>* owned = nullptr;
     template <typename T> T* take(size_t n, bool& ok) {
         const uint64_t bytes = ((uint64_t) n * sizeof(T) + 256 + 255) & ~255ull;
+        asked += bytes;
         if (count_only) { used += bytes; return nullptr; }
         if (base != nullptr) {
             if (used + bytes > cap) { ok = false; return nullptr; }
@@ -741,6 +743,9 @@ strata::kernels::QsaAttnPools pools_of(const strata::kernels::KvHostPools& h, co
 Prefill::Prefill() : impl_(new Impl) {}
 
 void Prefill::set_cpu_pool(strata::kernels::cpu::ExpertPool* pool) { pool_ = pool; }
+void Prefill::arm_cpu_assist(bool applies) {
+    if (applies && cpu_assist().on) g_stream_min_cpu = 3072;
+}
 Prefill::~Prefill() { release(); }
 
 void Prefill::reset() {
@@ -988,7 +993,10 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
         if (!m.gemm.init_external(stream, gs, GEMM_SCRATCH, ws, GEMM_WS, err)) return false;
     }
     if (!carve(T, &o)) {
-        err = "prefill: device buffers for a chunk of " + std::to_string(chunk) + " tokens do not fit";
+        err = "prefill: device buffers for a chunk of " + std::to_string(chunk) + " tokens do not fit (" +
+              std::to_string(o.asked >> 20) + " MiB asked of " +
+              (o.base != nullptr ? "a " + std::to_string(o.cap >> 20) + " MiB loan" : std::string("the free VRAM")) +
+              ", " + std::to_string(bytes_needed(*m.g, *m.ss, chunk) >> 20) + " MiB counted)";
         return false;
     }
     return true;
@@ -1100,7 +1108,10 @@ bool Prefill::relayout(int64_t chunk, void* borrow, uint64_t borrow_bytes, std::
     void* ws = o.take<uint8_t>(GEMM_WS, ok);
     if (ok) m.gemm.rebind(gs, GEMM_SCRATCH, ws, GEMM_WS);
     if (!ok || !carve((size_t) chunk, &o)) {
-        err = "prefill: device buffers for a chunk of " + std::to_string(chunk) + " tokens do not fit";
+        err = "prefill: device buffers for a chunk of " + std::to_string(chunk) + " tokens do not fit (" +
+              std::to_string(o.asked >> 20) + " MiB asked of " +
+              (o.base != nullptr ? "a " + std::to_string(o.cap >> 20) + " MiB loan" : std::string("the free VRAM")) +
+              ", " + std::to_string(bytes_needed(*m.g, *m.ss, chunk) >> 20) + " MiB counted)";
         return false;
     }
     return true;
