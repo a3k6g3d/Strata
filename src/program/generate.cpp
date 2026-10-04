@@ -7598,9 +7598,11 @@ int main(int argc, char** argv) {
             // through the switch file too ("yield=<0|1> lknext=<0|1>"): their A/B on one server, one expert placement
             bool pl_yield_req = [] { const char* v = std::getenv("STRATA_PIPELINE_YIELD"); return v == nullptr || std::atoi(v) != 0; }();
             bool pl_lknext_req = [] { const char* v = std::getenv("STRATA_PIPELINE_LOOKUP_NEXT"); return v == nullptr || std::atoi(v) != 0; }();
-            // STRATA_PIPELINE_LOOKUP_ANY=1 / "lkany=1" (an experiment, off by default): lookup_next for a window the
-            // drafter's chain made too (a copy that starts in the middle of a run of right guesses)
-            bool pl_lkany_req = [] { const char* v = std::getenv("STRATA_PIPELINE_LOOKUP_ANY"); return v != nullptr && std::atoi(v) != 0; }();
+            // STRATA_PIPELINE_LOOKUP_ANY (on unless =0; "lkany=" in the switch file): lookup_next for a window the
+            // drafter's chain made too (a copy that starts in the middle of a run of right guesses).  On one server,
+            // --adapt-every 0, a copy test that explains first: 48.3 -> 49.1 tok/s (+1.7%; +8.9% against both switches
+            // off), 25 such windows; the answers as with it off.
+            bool pl_lkany_req = [] { const char* v = std::getenv("STRATA_PIPELINE_LOOKUP_ANY"); return v == nullptr || std::atoi(v) != 0; }();
             if (static const char* sw = std::getenv("STRATA_PIPELINE_SWITCH"); sw != nullptr) {
                 if (FILE* f = std::fopen(sw, "r")) {
                     char buf[256] = {};
