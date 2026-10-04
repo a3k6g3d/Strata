@@ -236,7 +236,7 @@ class StartOnSeveralGpus(unittest.TestCase):
         code, out, asked, cfg = self.offer(["--resident-experts"], None)       # --yes: the recommendation
         self.assertIsNone(code, out)
         self.assertEqual(cfg["gpu"], [0, 1])
-        self.assertEqual(cfg["args"], ["--resident-experts"])
+        self.assertEqual(cfg["args"], ["--resident-experts", "--remote-expert-opt"])   # resident on a split; #578
         code, out, asked, cfg = self.offer(["--resident-experts"], "")
         self.assertIn("[y]", asked[0])
         self.assertEqual(cfg["gpu"], [0, 1])
