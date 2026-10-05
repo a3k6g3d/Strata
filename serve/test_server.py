@@ -482,6 +482,38 @@ class ToolCallTerminators(unittest.TestCase):
                         self.assertEqual(json.loads(streamed), {"path": "doc.md", "content": self.CONTENT})
 
 
+class LinearToolCallScan(unittest.TestCase):
+    """call_end with its resume points (the streaming parser's) finds the same end as a scan from the start on every
+    prefix, values that contain the terminators included; and a long file write streams in linear time (the scan
+    over the call's body was quadratic: 7.4 s of server time for a 53K-token, 212 KB write, now ~0.5 s)."""
+
+    def test_resumed_scan_matches_a_full_scan(self):
+        from serve.frontend import call_end
+        text = ("\n<function=write>\n<parameter=path>\ndoc.md\n</parameter>\n<parameter=content>\n"
+                f"{ToolCallTerminators.CONTENT}\n</parameter>\n</function>\n</tool_call> tail")
+        resume = [0, 0]
+        for k in range(len(text) + 1):
+            with self.subTest(prefix=k):
+                self.assertEqual(call_end(text[:k], resume), call_end(text[:k]))
+
+    def test_long_write_streams_in_linear_time(self):
+        from serve.frontend import OutputParser
+
+        def stream(n_lines):
+            body = "".join(f"line {i} = value({i})\n" for i in range(n_lines))
+            text = ("</think>\n<tool_call>\n<function=write>\n<parameter=path>\na.py\n</parameter>\n"
+                    f"<parameter=content>\n{body}</parameter>\n</function>\n</tool_call>")
+            p = OutputParser(thinking=True, tools=ToolCallTerminators.SCHEMA, stream_tools=True)
+            t0 = time.perf_counter()
+            for i in range(0, len(text), 4):
+                p.feed(text[i:i + 4])
+            p.finish()
+            return time.perf_counter() - t0
+        small, big = min(stream(2_000) for _ in range(3)), min(stream(16_000) for _ in range(3))
+        # 8x the text: a linear scan takes ~8x the time, the quadratic one took ~30-60x
+        self.assertLess(big / small, 20.0, f"{small:.3f} s -> {big:.3f} s for 8x the text")
+
+
 class UnfinishedToolCall(unittest.TestCase):
     """#211: a call the output ends inside is not reported as a whole one - its streamed JSON is not closed and the
     finish reason is not "tool_calls" / "tool_use" - so a client can tell it from a call to run."""

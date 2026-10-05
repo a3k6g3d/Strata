@@ -5,9 +5,12 @@
 // 2. Q4_0 quantization and packing (32 values per block, 18 bytes) bitwise vs host reference.
 // 3. kv_append_q4_step and kv_gather_q4_step through paged pool against host reference.
 // 4. Invariance of dot products under Walsh-Hadamard rotation: (H*q) . (H*k) == q . k.
+// 5. kv_append_q4_steps (a verify window in one launch) writes the same bytes as one kv_append_q4_step per cell,
+//    in VRAM (a non-resident page skipped) and in the host copy (KV streaming).
 
 #include "strata/kernels/f16_bits.hpp"
 #include "strata/kernels/kv_q4.hpp"
+#include "strata/kernels/kv_stream.hpp"
 #include "strata/kernels/qsa.hpp"
 
 #include <cuda_runtime.h>
@@ -97,7 +100,7 @@ int main() {
     // -------------------------------------------------------------
     // Test 1: Orthonormal Fast Walsh-Hadamard Transform (D=256)
     // -------------------------------------------------------------
-    std::printf("[1/4] Verifying FWHT-256 CUDA kernel vs exact mathematical reference...\n");
+    std::printf("[1/5] Verifying FWHT-256 CUDA kernel vs exact mathematical reference...\n");
     constexpr int n_vectors = 64;
     std::vector<float> h_in(n_vectors * 256);
     std::vector<float> h_ref(n_vectors * 256);
@@ -154,7 +157,7 @@ int main() {
     // -------------------------------------------------------------
     // Test 2: Invariance of Attention Scores under Hadamard Rotation
     // -------------------------------------------------------------
-    std::printf("[2/4] Verifying Attention Score Invariance: <H*q, H*k> == <q, k>...\n");
+    std::printf("[2/5] Verifying Attention Score Invariance: <H*q, H*k> == <q, k>...\n");
     double max_dot_diff = 0.0;
     for (int r = 0; r < n_vectors; r += 2) {
         const float* q = h_in.data() + r * 256;
@@ -181,7 +184,7 @@ int main() {
     // -------------------------------------------------------------
     // Test 3: Q4_0 Paged KV Append & Gather against Host Reference
     // -------------------------------------------------------------
-    std::printf("[3/4] Verifying Q4_0 KV append and gather against host reference...\n");
+    std::printf("[3/5] Verifying Q4_0 KV append and gather against host reference...\n");
     k::QsaShapes s = k::qsa_real_shapes();
     s.page_size = 64;
     const int H = (int) s.n_head_kv; // 2
@@ -282,7 +285,7 @@ int main() {
     // -------------------------------------------------------------
     // Test 4: Gather Q4_0 into FP16 Scratch and verify accuracy
     // -------------------------------------------------------------
-    std::printf("[4/4] Verifying Q4_0 gather unpacking and dequantization...\n");
+    std::printf("[4/5] Verifying Q4_0 gather unpacking and dequantization...\n");
     const int max_ids = 128;
     int32_t* d_ids = dalloc<int32_t>(max_ids);
     uint16_t* d_k_scratch = dalloc<uint16_t>((size_t) max_ids * H * D);
@@ -323,6 +326,58 @@ int main() {
         }
     }
     std::printf("  -> Max reconstruction error after 4-bit quant + dequant: %.4f (OK)\n", worst_quant_err);
+
+    // -------------------------------------------------------------
+    // Test 5: the batched window append against one append per cell, byte for byte
+    // -------------------------------------------------------------
+    std::printf("[5/5] Verifying kv_append_q4_steps (one launch per window) against kv_append_q4_step...\n");
+    {
+        std::vector<int32_t> tbl = table;
+        tbl[3] = -1;   // a block the KV streaming left non-resident: VRAM skipped, the host copy still written
+        int32_t* d_tbl = dalloc<int32_t>(pages);
+        ck(cudaMemcpy(d_tbl, tbl.data(), pages * sizeof(int32_t), cudaMemcpyHostToDevice), "memcpy tbl");
+        const size_t host_bytes = (size_t) pages * H * P * k::kv_q4_bytes_per_head(D);
+        uint8_t *a_k = dalloc<uint8_t>(pool_bytes), *a_v = dalloc<uint8_t>(pool_bytes);
+        uint8_t *b_k = dalloc<uint8_t>(pool_bytes), *b_v = dalloc<uint8_t>(pool_bytes);
+        k::KvHostPools ha{}, hb{};
+        ha.k_q4 = dalloc<uint8_t>(host_bytes); ha.v_q4 = dalloc<uint8_t>(host_bytes);
+        hb.k_q4 = dalloc<uint8_t>(host_bytes); hb.v_q4 = dalloc<uint8_t>(host_bytes);
+        constexpr int W = 5;   // a verify window: spec 4 + 1
+        float *d_kw = dalloc<float>((size_t) W * H * D), *d_vw = dalloc<float>((size_t) W * H * D);
+        int32_t* d_steps = dalloc<int32_t>((size_t) W * k::kStepCount);
+        for (int w0 = 0; w0 + W <= cells; w0 += W + 2) {
+            std::vector<float> kw((size_t) W * H * D), vw((size_t) W * H * D);
+            for (auto& x : kw) x = nd(rng) * 2.0f;
+            for (auto& x : vw) x = nd(rng) * 2.0f;
+            std::vector<int32_t> st((size_t) W * k::kStepCount, 0);
+            for (int t = 0; t < W; ++t) { st[t * k::kStepCount + 0] = w0 + t; st[t * k::kStepCount + 1] = w0 + t + 1; }
+            ck(cudaMemcpy(d_kw, kw.data(), kw.size() * sizeof(float), cudaMemcpyHostToDevice), "memcpy kw");
+            ck(cudaMemcpy(d_vw, vw.data(), vw.size() * sizeof(float), cudaMemcpyHostToDevice), "memcpy vw");
+            ck(cudaMemcpy(d_steps, st.data(), st.size() * sizeof(int32_t), cudaMemcpyHostToDevice), "memcpy steps");
+            for (int t = 0; t < W; ++t)
+                k::kv_append_q4_step(a_k, a_v, d_tbl, d_steps + t * k::kStepCount, d_kw + (size_t) t * H * D,
+                                     d_vw + (size_t) t * H * D, s, nullptr, &ha);
+            k::kv_append_q4_steps(b_k, b_v, d_tbl, d_steps, d_kw, d_vw, W, s, nullptr, &hb);
+        }
+        ck(cudaDeviceSynchronize(), "kv_append_q4_steps");
+        auto same = [&](const uint8_t* x, const uint8_t* y, size_t n) {
+            std::vector<uint8_t> hx(n), hy(n);
+            ck(cudaMemcpy(hx.data(), x, n, cudaMemcpyDeviceToHost), "d2h");
+            ck(cudaMemcpy(hy.data(), y, n, cudaMemcpyDeviceToHost), "d2h");
+            return hx == hy;
+        };
+        const bool ok = same(a_k, b_k, pool_bytes) && same(a_v, b_v, pool_bytes) && same(ha.k_q4, hb.k_q4, host_bytes) &&
+                        same(ha.v_q4, hb.v_q4, host_bytes);
+        if (!ok) {
+            std::fprintf(stderr, "FAIL: kv_append_q4_steps differs from per-cell kv_append_q4_step\n");
+            ++g_fail;
+        } else {
+            std::printf("  -> VRAM pools and host copy identical to the per-cell appends (OK)\n");
+        }
+        cudaFree(d_tbl); cudaFree(a_k); cudaFree(a_v); cudaFree(b_k); cudaFree(b_v);
+        cudaFree(ha.k_q4); cudaFree(ha.v_q4); cudaFree(hb.k_q4); cudaFree(hb.v_q4);
+        cudaFree(d_kw); cudaFree(d_vw); cudaFree(d_steps);
+    }
 
     cudaFree(d_src);
     cudaFree(d_dst);

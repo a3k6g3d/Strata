@@ -47,6 +47,12 @@ void kv_append_q4_step(uint8_t* k_q4, uint8_t* v_q4, const int32_t* page_table, 
                        const float* kcur, const float* vcur, const QsaShapes& s, void* stream,
                        const KvHostPools* host = nullptr);
 
+/// A verify window's n cells in one launch: token t's step is steps[t * kStepCount ..] and its rows are
+/// kcur/vcur + t * n_head_kv * 256. The same cells, bytes and host copies as n kv_append_q4_step calls.
+void kv_append_q4_steps(uint8_t* k_q4, uint8_t* v_q4, const int32_t* page_table, const int32_t* steps,
+                        const float* kcur, const float* vcur, int64_t n, const QsaShapes& s, void* stream,
+                        const KvHostPools* host = nullptr);
+
 /// The prompt path: T consecutive (rotated) cells from pos0, K/V [T, n_head_kv, 256]; also into `stage` (identity
 /// layout, the one-layer staging pool of a streamed session) when given.
 void kv_append_q4(uint8_t* k_q4, uint8_t* v_q4, const int32_t* page_table, int64_t pos0, int64_t T, const float* K,

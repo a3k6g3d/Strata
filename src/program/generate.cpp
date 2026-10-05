@@ -104,6 +104,21 @@
 #include <vector>
 
 namespace {
+
+/// How many drafts the MTP chain produced (its probabilities; the slots past the chain are 0), at most max_t - 1.
+int chain_len(const float* dprob, int max_t) {
+    int n = 0;
+    while (n < max_t - 1 && dprob[n] > 0.0f) ++n;
+    return n;
+}
+
+/// The policy's acceptance by draft probability, for MtpDrafter::draft (one table per thread: the call reads it
+/// before it returns).
+const float* accept_tab(const strata::spec::DraftPolicy& pol) {
+    thread_local float tab[strata::spec::DraftPolicy::kPBins];
+    pol.accept_table(tab);
+    return tab;
+}
 // Windows' WDDM driver model: native Windows, or WSL2 (its GPU goes through /dev/dxg to the Windows driver).  There,
 // pinning a large arena into two CUDA contexts leaves WDDM refusing every later allocation (the 5080 + 3090 rig);
 // a Linux driver has no such limit (#253: the 8 GiB cap cost a 4090 + 3060 split 3x of its prompt speed).
@@ -476,6 +491,10 @@ struct Options {
     /// Plan v0.3 P6: a draft enters the verify window only while every draft before it (and itself) has at least
     /// this probability under the draft layer; 0 = always --spec-1 drafts.
     double spec_min_p = 0.0;
+    /// --spec-adaptive: the MTP window's length by expected committed tokens per ms (DraftPolicy::choose_mtp) from
+    /// the measured round costs and how often drafts of each probability were accepted, instead of --spec-min-p's
+    /// fixed threshold. Only which drafts are verified changes: the output is the same.
+    bool spec_adaptive = false;
     /// Stop when the model emits an end-of-turn token (<|endoftext|> 248044, <|im_end|> 248046, or --eos-ids).
     bool stop_eos = false;
     std::vector<int64_t> eos_ids = {248044, 248046};
@@ -633,6 +652,8 @@ void usage() {
                  "  --suffix-draft N     prompt lookup: draft from an earlier repeat of the last N+ tokens of context\n"
                  "                       when it pays (default 3; 0 = MTP only)\n"
                  "  --mtp-max-t M        cap the MTP's windows at M tokens (0 = --spec; longer ones come from suffixes)\n"
+                 "  --spec-adaptive      the MTP window's length by expected tokens per ms (measured round costs and\n"
+                 "                       acceptance by draft probability) instead of --spec-min-p's threshold\n"
                  "  --control-vector-scaled FILE:SCALE[,...]  a control vector GGUF on the residual stream (llama.cpp's\n"
                  "                       format; --control-vector FILE = scale 1).  --serve: requests switch it (cvec=0|1)\n"
                  "  --control-vector-layer-range A B  the layers it follows (inclusive; default 1 .. the last)\n"
@@ -1405,6 +1426,7 @@ int main(int argc, char** argv) {
         else if (a == "--adapt-every") o.adapt_every = std::atoi(next("--adapt-every"));
         else if (a == "--adapt-decay") o.adapt_decay = (float) std::atof(next("--adapt-decay"));
         else if (a == "--spec-min-p") o.spec_min_p = std::atof(next("--spec-min-p"));
+        else if (a == "--spec-adaptive") o.spec_adaptive = true;
         else if (a == "--stop-eos") o.stop_eos = true;
         else if (a == "--spec-split") o.spec_split = true;
         else if (a == "--layer-split") o.layer_split = next("--layer-split");
@@ -7087,7 +7109,9 @@ int main(int argc, char** argv) {
             if (cancelled) finish = "cancel";
             while (!cancelled && produced_n < max_new) {
                 int T = S_mtp;
-                if (req_spec_min_p > 0.0) {
+                if (o.spec_adaptive) {
+                    T = policy.choose_mtp(dprob.data(), chain_len(dprob.data(), S_mtp), S_mtp);
+                } else if (req_spec_min_p > 0.0) {
                     T = 1;
                     while (T < S_mtp && dprob[(size_t) T - 1] >= (float) req_spec_min_p) ++T;
                 }
@@ -7136,6 +7160,8 @@ int main(int argc, char** argv) {
                 int a = 0;
                 while (a < T - 1 && window[(size_t) a + 1] == outv[(size_t) a]) ++a;
                 if (from_sfx) { ++sfx_windows; sfx_drafts += T - 1; sfx_ok += a; }
+                // (before the next draft overwrites dprob) how the window's drafts fared, by their probability
+                if (o.spec_adaptive && !from_sfx && !first_window) policy.observe_drafts(dprob.data(), T, a);
                 const Clock::time_point tw1 = Clock::now();
                 // (as in generate) STRATA_DUMP_FIRST_LOGITS: the first window runs the prompt's last token over the state
                 // the prompt path left, so its logits are where two prompt paths can be compared by output
@@ -7177,7 +7203,11 @@ int main(int argc, char** argv) {
                 if (hist_n > 0 && mtp.coupled() && !eos && produced_n < max_new)
                     mtp.set_draft_history(consumed.data(), (int64_t) consumed.size(), outv[(size_t) a]);
                 const bool drafted = eos || produced_n >= max_new ||
-                                     mtp.draft(T, outv.data(), p, a, drafts.data(), err, dprob.data(), (float) req_spec_min_p);
+                                     mtp.draft(T, outv.data(), p, a, drafts.data(), err, dprob.data(),
+                                               o.spec_adaptive ? strata::spec::DraftPolicy::kChainFloor
+                                                               : (float) req_spec_min_p,
+                                               nullptr, o.spec_adaptive ? accept_tab(policy) : nullptr,
+                                               strata::spec::DraftPolicy::kChainReach);
                 {
                     const Clock::time_point tw3 = Clock::now();
                     auto msd = [](Clock::time_point a0, Clock::time_point b0) { return std::chrono::duration<double, std::milli>(b0 - a0).count(); };
@@ -7990,7 +8020,8 @@ int main(int argc, char** argv) {
         // generated token and the MTP's first cell); otherwise the token loop already did that.
         bool first_window = native_pack;
         if (use_mtp && !first_window &&
-            !mtp.draft_first(o.spec, ss.R, x, p - 1, drafts.data(), err, dprob.data(), (float) o.spec_min_p)) {
+            !mtp.draft_first(o.spec, ss.R, x, p - 1, drafts.data(), err, dprob.data(),
+                             o.spec_adaptive ? strata::spec::DraftPolicy::kChainFloor : (float) o.spec_min_p)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
         }
@@ -8012,7 +8043,9 @@ int main(int argc, char** argv) {
         while ((int64_t) produced.size() < o.max_new) {
             const Clock::time_point t0 = Clock::now();
             int T = S_mtp;
-            if (use_mtp && o.spec_min_p > 0.0) {
+            if (use_mtp && o.spec_adaptive) {
+                T = policy.choose_mtp(dprob.data(), chain_len(dprob.data(), S_mtp), S_mtp);
+            } else if (use_mtp && o.spec_min_p > 0.0) {
                 T = 1;
                 while (T < S_mtp && dprob[(size_t) T - 1] >= (float) o.spec_min_p) ++T;
             }
@@ -8060,6 +8093,8 @@ int main(int argc, char** argv) {
             }
             int a = 0;
             while (a < T - 1 && window[(size_t) a + 1] == outv[(size_t) a]) ++a;
+            // (before the next draft overwrites dprob) how the window's drafts fared, by their probability
+            if (use_mtp && o.spec_adaptive && !from_sfx && !first_window) policy.observe_drafts(dprob.data(), T, a);
             if (first_window) {
                 first_window = false;
                 ttft_ms = std::chrono::duration<double, std::milli>(Clock::now() - t_start).count();
@@ -8102,7 +8137,11 @@ int main(int argc, char** argv) {
                 break;
             }
             const bool drafted = !use_mtp || (int64_t) produced.size() >= o.max_new ||
-                                 mtp.draft(T, outv.data(), p, a, drafts.data(), err, dprob.data(), (float) o.spec_min_p);
+                                 mtp.draft(T, outv.data(), p, a, drafts.data(), err, dprob.data(),
+                                           o.spec_adaptive ? strata::spec::DraftPolicy::kChainFloor
+                                                           : (float) o.spec_min_p,
+                                           nullptr, o.spec_adaptive ? accept_tab(policy) : nullptr,
+                                           strata::spec::DraftPolicy::kChainReach);
             if (adapt_thr.joinable()) adapt_thr.join();
             if (!adapt_ok) return 1;
             if (!drafted) {

@@ -19,6 +19,7 @@
 #include "strata/kernels/cvec.hpp"
 #include "strata/kernels/gr.hpp"
 #include "strata/kernels/kv_q4.hpp"
+#include "strata/kernels/qsa_prompt_attn.hpp"
 #include "strata/kernels/kv_q8.hpp"
 #include "strata/kernels/native_mmvq.hpp"
 #include "strata/kernels/native_qsa.hpp"
@@ -772,7 +773,10 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 float* idx_raw = idx_raw_L_ + (size_t) qi * MT * ID;
                 // the per-token GEMVs / norms / RoPEs / copies of this layer as one launch over the
                 // window's rows each - row-wise identical arithmetic (STRATA_DEC_BATCH=0: token by token)
-                const bool qb = dec_batch && n > 1 && native_qsa_enabled() && native_rope_enabled() && !st.kv_q4;
+                // (Q4_0 too: the batched queries are rotated like the per-token ones, kv_q4.hpp; but not in a batch of
+                // slots, where each row has its own K/V state)
+                const bool qb = dec_batch && n > 1 && native_qsa_enabled() && native_rope_enabled() &&
+                                !(st.kv_q4 && batch_rec_);
                 native_quantize_q8_1(xm, xq_, (int) N, n, cs);
                 if (qb) bf16_gemv_fp32_mmvf_multi(mixed_ + tb * N, N, (const uint16_t*) wik->data, idx_raw + tb * ID, ID, N, ID, n, cs);
                 else for (int t = tb; t < te; ++t)
@@ -795,7 +799,12 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                                          TS, cs);
                 } else
                 if (grp == 0) copy_from_mapped(tail_snap_ + (size_t) qi * TS, st.idx_tail, TS, cs);
-                for (int t = tb; t < te; ++t) {
+                // Q4_0 KV: the window's cells in one launch, the same bytes (a batch of slots appends per row below)
+                const bool q4_window = !batch_rec_ && st.kv_q4 && !st.kv_hybrid && dec_batch;
+                if (q4_window)
+                    kv_append_q4_steps(st.k_q4, st.v_q4, st.page_table, step_ + tb * kStepCount, kcur_ + tb * NKV * HD,
+                                       vcur_ + tb * NKV * HD, n, s, cs, &st.host);
+                for (int t = tb; !q4_window && t < te; ++t) {
                     const QsaState& st = slot_ss(t).qsa_states[qi];   // the row's own K/V (ss's outside a batch)
                     const int32_t* step_t = step_ + t * kStepCount;
                     if (st.kv_hybrid) {   // K8V4: the unused half's lanes folded onto the used pool (layer.cpp)
@@ -875,6 +884,11 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 qsa_kv_resolve(st, *g_, sel_ + (size_t) tb * cap_, step_ + tb * kStepCount, n, cap_, cs);
                 stamp(l, 12, grp);
                 const QsaAttnPools pools = qsa_attn_pools(st);
+                // sm_80+, int8 / q4_0 KV: the window's queries on tensor cores, split over their selections
+                // (qsa_prompt_attn.hpp; STRATA_DECODE_ATTN_TC=0: the FP32 kernel)
+                if (!qsa_decode_attn_tc(qcur_ + tb * NH * HD, pools, sel_ + (size_t) tb * cap_, step_ + tb * kStepCount,
+                                        cap_, s, attn_scratch_ + (size_t) tb * attn_scratch_floats_, attn_ + tb * NH * HD,
+                                        n, cs))
                 qsa_decode_attn_batch(qcur_ + tb * NH * HD, pools, sel_ + (size_t) tb * cap_, step_ + tb * kStepCount, cap_,
                                       s, attn_scratch_ + (size_t) tb * attn_scratch_floats_, attn_ + tb * NH * HD, n, cs);
                 }

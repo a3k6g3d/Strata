@@ -102,9 +102,14 @@ __global__ void kv_append_q4_kernel(uint8_t* __restrict__ k_q4, uint8_t* __restr
                                     const int32_t* __restrict__ table, const int32_t* __restrict__ step,
                                     const float* __restrict__ kcur, const float* __restrict__ vcur,
                                     int kv_heads, int head_dim, int page_size, KvHostPools host) {
+    // a window of cells (kv_append_q4_steps): blockIdx.z = 2 * token + (K 0 / V 1), each token its own step and rows
+    const int tok = blockIdx.z >> 1;
+    step += (size_t) tok * kStepCount;
+    kcur += (size_t) tok * kv_heads * head_dim;
+    vcur += (size_t) tok * kv_heads * head_dim;
     const long long pos = (long long) __ldg(step + kStepPos);
     const int h = blockIdx.x, b = blockIdx.y, t = threadIdx.x;
-    const bool is_v = blockIdx.z == 1;
+    const bool is_v = (blockIdx.z & 1) == 1;
     const float x = (is_v ? vcur : kcur)[h * head_dim + b * QK4_0 + t];
     uint8_t byte;
     const uint16_t d = q4_group(x, t, byte);
@@ -197,6 +202,18 @@ void kv_append_q4_step(uint8_t* k_q4, uint8_t* v_q4, const int32_t* page_table, 
     const dim3 grid((unsigned) s.n_head_kv, (unsigned) (s.head_dim / QK4_0), 2);
     kv_append_q4_kernel<<<grid, 32, 0, (cudaStream_t) stream>>>(
         k_q4, v_q4, page_table, step, kcur, vcur, (int) s.n_head_kv, (int) s.head_dim, (int) s.page_size,
+        host ? *host : KvHostPools{});
+    check("kv_append_q4 launch");
+}
+
+void kv_append_q4_steps(uint8_t* k_q4, uint8_t* v_q4, const int32_t* page_table, const int32_t* steps,
+                        const float* kcur, const float* vcur, int64_t n, const QsaShapes& s, void* stream,
+                        const KvHostPools* host) {
+    if (n <= 0) return;
+    need_256(s, "kv_append_q4");
+    const dim3 grid((unsigned) s.n_head_kv, (unsigned) (s.head_dim / QK4_0), (unsigned) (2 * n));
+    kv_append_q4_kernel<<<grid, 32, 0, (cudaStream_t) stream>>>(
+        k_q4, v_q4, page_table, steps, kcur, vcur, (int) s.n_head_kv, (int) s.head_dim, (int) s.page_size,
         host ? *host : KvHostPools{});
     check("kv_append_q4 launch");
 }

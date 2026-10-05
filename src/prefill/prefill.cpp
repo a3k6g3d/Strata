@@ -2273,7 +2273,12 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     split_q(m.Qf, m.q, T, m.cs);
                     rms_rows(m.q, (const float*) wqn->data, T * 24, 256, 256, EPS, m.cs);
                     rope(m.q, T, 24, 256, 6144, p0, strata::kernels::rope_scaling(), m.cs);
-                    if (st.kv_rot) strata::kernels::fwht256_inplace_cuda(m.q, T * 24, m.cs);
+                    // Q4_0 KV on sm_80+: the attention kernel rotates the queries and the output back itself
+                    // (qsa_prompt_attn_batch_rot, the same bits); otherwise the two fwht256 passes here and below
+                    static const bool old_attn = std::getenv("STRATA_PROMPT_ATTN_OLD") != nullptr;
+                    const bool rot_fused =
+                        st.kv_q4 && !st.kv_hybrid && !old_attn && strata::kernels::qsa_prompt_attn_rot_fused(s);
+                    if (st.kv_rot && !rot_fused) strata::kernels::fwht256_inplace_cuda(m.q, T * 24, m.cs);
                     rms_rows(m.q_idx, (const float*) wiqn->data, T * 4, 128, 128, EPS, m.cs);
                     rope(m.q_idx, T, 4, 128, 512, p0, strata::kernels::rope_scaling(), m.cs);
                     // the indexer appends, token by token; then scores + selection for many queries at once:
@@ -2402,19 +2407,26 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                                                        : core::qsa_attn_pools(st);
                     pt.mark(kPfQsaAttn, cs);
                     // perf-review D-1: the whole chunk on tensor cores, one block per (query, KV head), FP32-level
-                    // accuracy but not bitwise (qsa_prompt_attn.hpp). Q4_0 KV, or STRATA_PROMPT_ATTN_OLD=1: the
-                    // decode kernel, 32 queries at a time (K8V4 runs the tensor kernel's mode 3: INT8 K,
-                    // V dequantized from its q4_0 blocks to fp16 at gather)
-                    static const bool old_attn = std::getenv("STRATA_PROMPT_ATTN_OLD") != nullptr;
-                    if (old_attn || !strata::kernels::qsa_prompt_attn_batch(m.q, pools, m.sel_ids, m.steps_dev, m.cap, s,
-                                                                            m.attn, T, m.cs))
+                    // accuracy but not bitwise (qsa_prompt_attn.hpp); Q4_0 KV with the rotations inside it (above).
+                    // STRATA_PROMPT_ATTN_OLD=1 or no tensor kernel for the card: the decode kernel, 32 queries at a
+                    // time (K8V4 runs the tensor kernel's mode 3: INT8 K, V dequantized from its q4_0 blocks to fp16
+                    // at gather)
+                    bool rotated_back = false;
+                    if (rot_fused)
+                        rotated_back = strata::kernels::qsa_prompt_attn_batch_rot(m.q, pools, m.sel_ids, m.steps_dev,
+                                                                                  m.cap, s, m.attn, T, m.cs);
+                    if (rot_fused && !rotated_back) strata::kernels::fwht256_inplace_cuda(m.q, T * 24, m.cs);
+                    if (!rotated_back &&
+                        (old_attn || !strata::kernels::qsa_prompt_attn_batch(m.q, pools, m.sel_ids, m.steps_dev, m.cap, s,
+                                                                             m.attn, T, m.cs)))
                         for (int64_t t0 = 0; t0 < T; t0 += m.attn_batch) {
                             const int64_t nb = std::min(m.attn_batch, T - t0);
                             strata::kernels::qsa_decode_attn_batch(m.q + t0 * ZV, pools, m.sel_ids + t0 * m.cap,
                                                                    m.steps_dev + t0 * strata::kernels::kStepCount, m.cap,
                                                                    s, m.attn_scratch, m.attn + t0 * ZV, nb, m.cs);
                         }
-                    if (st.kv_rot || st.kv_hybrid) strata::kernels::fwht256_inplace_cuda(m.attn, T * 24, m.cs);
+                    if ((st.kv_rot || st.kv_hybrid) && !rotated_back)
+                        strata::kernels::fwht256_inplace_cuda(m.attn, T * 24, m.cs);
                     pt.mark(kPfQsa, cs);
                     gate_attn(m.attn, m.Qf, m.attn_h, T, m.cs);
                     if (!native_proj(m.gemm, wo, m.attn_h, m.bo, T, v.name("attn_output.weight"), err)) return false;

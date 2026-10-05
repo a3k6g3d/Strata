@@ -13,6 +13,15 @@
 // and takes the lookup window only when its best E/cost beats the MTP's by `margin`. Costs are the measured round
 // times per window size (EMA; sizes not seen yet are scaled from seen ones by a prior shape), so the policy adapts
 // to the machine and the context length. It only chooses which drafts to verify: the output is unchanged.
+//
+// The MTP's own window (`--spec-adaptive`, choose_mtp): instead of every draft whose probability is at least
+// `--spec-min-p`, the length with the most expected committed tokens per millisecond:
+//
+//   E(T) = 1 + c(p1) + c(p1) c(p2) + ... + c(p1)...c(p_{T-1})     c(p) = how often a draft of probability p was
+//                                                                   accepted when reached (10 bins, decayed counts)
+//
+// at the measured round cost of T (as above). On a PC where a token more costs little (every expert in VRAM) it
+// verifies deeper; where it costs much (missed experts on the CPU) it stops earlier than a fixed threshold would.
 #pragma once
 
 #include <array>
@@ -38,15 +47,34 @@ public:
     double lookup_rate(int match) const;   // current q for a match length
     double cost_ms(int t) const;           // measured or scaled round time of a window of t tokens
 
+    /// --spec-adaptive: the MTP window (1 + drafts used) for the chain's draft probabilities `probs[0..n_drafts)`,
+    /// at most `max_t`. A size whose cost was not measured yet is tried a few times when its guessed rate is close
+    /// to the best, so the cost table fills where it matters.
+    int choose_mtp(const float* probs, int n_drafts, int max_t) const;
+    /// After an MTP window of `t` (its drafts' probabilities `probs[0..t-1)`) that accepted `accepted` drafts.
+    void observe_drafts(const float* probs, int t, int accepted);
+    double accept_rate(float p) const;     // c(p): the acceptance of a reached draft of probability p
+    static constexpr int kPBins = 10;
+    /// c(p) per bin, for MtpDrafter::draft's `accept` (the chain stops where no window would use its next draft).
+    void accept_table(float out[kPBins]) const;
+    /// The draft chain in adaptive mode goes on while the last draft is at least kChainFloor likely and the chance
+    /// that every draft so far is accepted is at least kChainReach (the simulated best of floors 0.2-0.4 x reaches
+    /// 0-0.5 over two cost curves, draft_policy_test).
+    static constexpr float kChainFloor = 0.3f;
+    static constexpr float kChainReach = 0.35f;
+
 private:
     static int bucket(int match);
+    static int pbin(float p);
     double mtp_tokens(int t) const;
+    double expected_tokens(const float* probs, int t) const;
 
     int max_t_;
     double margin_;
     std::array<double, kMaxT + 1> cost_{}, cost_n_{};      // round ms by window size
     std::array<double, kMaxT + 1> mtp_tok_{}, mtp_n_{};    // tokens committed by MTP windows of that size
     std::array<double, kBuckets> ok_{}, bad_{};            // lookup drafts accepted / windows cut short, decayed
+    std::array<double, kPBins> p_ok_{}, p_bad_{};          // MTP drafts reached by probability bin: accepted / not
 };
 
 }  // namespace strata::spec

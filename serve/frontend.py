@@ -392,35 +392,93 @@ def param_end(text: str, final: bool = False) -> int:
     return -1
 
 
-def call_end(text: str) -> int:
+_WS = frozenset(" \t\n\r\f\v")
+
+
+def _skip_ws(text: str, pos: int) -> int:
+    """The index of the first non-whitespace character at or after `pos` (len(text) if none): text[pos:].lstrip()
+    without copying the tail."""
+    n = len(text)
+    while pos < n and text[pos] in _WS:
+        pos += 1
+    return pos
+
+
+def _peek(text: str, pos: int) -> str:
+    """Enough of text[pos:] for the tag tests below (the longest tag is 12 characters): an empty string only when
+    nothing is left, and never a prefix of a tag unless the text itself ends there."""
+    return text[pos:pos + 16]
+
+
+def param_end_at(text: str, start: int, final: bool = False, scan: list[int] | None = None) -> int:
+    """param_end(text[start:]) as an index into `text` (-1 / -2 as there), without copying the value.
+
+    `scan` (streaming, a one-item list kept while this value is open): where an earlier call on a shorter prefix
+    stopped looking.  A `</parameter>` before that point was already found to be part of the value, so the search
+    goes on from there: each new piece of a long value is searched once."""
+    at = text.find(PARAM_END, max(start, scan[0]) if scan else start)
+    while at >= 0:
+        after = _peek(text, _skip_ws(text, at + len(PARAM_END)))
+        if after.startswith(("<parameter=", FUNC_END)):
+            return at
+        if not after or "<parameter=".startswith(after) or FUNC_END.startswith(after):
+            if scan is not None:
+                scan[0] = at                     # undecided: look at this one again when more text arrives
+            return at if final else -2
+        at = text.find(PARAM_END, at + 1)
+    if scan is not None:                         # a tag may still be arriving across the end
+        scan[0] = max(start, len(text) - len(PARAM_END) + 1)
+    return -1
+
+
+def call_end(text: str, resume: list[int] | None = None) -> int:
     """Where a tool call's body ends (#210): the `</tool_call>` after the call's own `</function>`, found by walking
     its parameters with param_end, so a value may contain either tag.  -1: not complete yet.  A body that is not in
-    the call format ends at the first `</tool_call>`, as before."""
-    s = text.lstrip()
-    pos = len(text) - len(s)
-    if not s.startswith("<function="):
-        return text.find(CALL_END) if not "<function=".startswith(s) else -1
-    gt = text.find(">", pos)
-    if gt < 0:
-        return -1
-    pos = gt + 1
+    the call format ends at the first `</tool_call>`, as before.
+
+    `resume` (streaming: a two-item list the caller keeps for one call body, which only grows): where the walk got
+    to on a shorter prefix of the same text, and how far the open parameter's value was searched.  A parameter whose
+    end was found has its follower after it, so more text cannot move that end; the walk restarts after the last such
+    parameter, and the open value's search where it stopped.  That makes the scan over a long call (a file write)
+    linear in its length instead of quadratic."""
+    if resume and resume[0] > 0:
+        pos = resume[0]
+    else:
+        pos = _skip_ws(text, 0)
+        s = _peek(text, pos)
+        if not s.startswith("<function="):
+            return text.find(CALL_END) if not "<function=".startswith(s) else -1
+        gt = text.find(">", pos)
+        if gt < 0:
+            return -1
+        pos = gt + 1
+        if resume is not None:
+            resume[0] = pos
     while True:
-        rest = text[pos:]
-        s = rest.lstrip()
-        pos += len(rest) - len(s)
+        pos = _skip_ws(text, pos)
+        s = _peek(text, pos)
         if s.startswith("<parameter="):
             gt = text.find(">", pos)
             if gt < 0:
                 return -1
-            end = param_end(text[gt + 1:])
+            scan = None
+            if resume is not None:
+                if resume[1] <= gt:              # a parameter not searched before: from its value's start
+                    resume[1] = gt + 1
+                scan = resume[1:2]
+            end = param_end_at(text, gt + 1, scan=scan)
+            if resume is not None:
+                resume[1] = scan[0]
             if end < 0:
                 return -1
-            pos = gt + 1 + end + len(PARAM_END)
+            pos = end + len(PARAM_END)
+            if resume is not None:
+                resume[0] = pos
         elif s.startswith(FUNC_END):
-            rest = text[pos + len(FUNC_END):]
-            s = rest.lstrip()
+            after = _skip_ws(text, pos + len(FUNC_END))
+            s = _peek(text, after)
             if s.startswith(CALL_END):
-                return pos + len(FUNC_END) + len(rest) - len(s)
+                return after
             return -1 if CALL_END.startswith(s) else text.find(CALL_END, pos)
         elif not s or "<parameter=".startswith(s) or FUNC_END.startswith(s):
             return -1
@@ -478,6 +536,7 @@ class OutputParser:
         self._reset_scan()
 
     def _reset_scan(self):
+        self.cend = [0, 0]           # call_end's resume points in self.buf (the call body): linear streaming
         self.sp = 0                  # how much of self.buf (the call body) the scanner has consumed
         self.ss = "name"             # name -> between -> str|raw -> ... -> done
         self.scall = None            # the ToolCall being streamed (its id is reused by the final event)
@@ -636,7 +695,7 @@ class OutputParser:
                 self.buf = self.buf[i + len(CALL_START):]
                 self.state = "call"
             else:
-                i = call_end(self.buf)
+                i = call_end(self.buf, self.cend)
                 if self.stream_tools:
                     if i >= 0:
                         whole, self.buf = self.buf, self.buf[:i]     # scan only the body

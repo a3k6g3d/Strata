@@ -41,18 +41,6 @@ float h2f(uint16_t b) { __half h; *reinterpret_cast<uint16_t*>(&h) = b; return _
 uint16_t f2h(float f) { __half h = __float2half(f); return *reinterpret_cast<uint16_t*>(&h); }
 
 int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2 q4_0
-#if !defined(__HIPCC__) && !defined(STRATA_USE_HIP)
-    if (fmt == 2) {   // mode 4 (Q4_0 KV) runs on sm_80 and newer only: below that the dispatcher keeps the old kernel
-        int dev = 0, major = 0;
-        ck(cudaGetDevice(&dev), "device");
-        ck(cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev), "cc");
-        if (major < 8) {
-            std::printf("SKIP q4_0 ctx %lld: the tensor-core kernel takes Q4_0 KV on sm_80+ only (this device: sm_%d)\n",
-                        (long long) ctx, major);
-            return 0;
-        }
-    }
-#endif
     const k::QsaShapes s = k::qsa_real_shapes();
     const int64_t HD = s.head_dim, NKV = s.n_head_kv, NH = s.n_head, PS = s.page_size;
     const int64_t pages = (ctx + PS - 1) / PS, rows = pages * NKV * PS;
@@ -165,8 +153,40 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
     std::vector<float> o((size_t) (nq * NH * HD)), nw(o.size());
     ck(cudaMemcpy(o.data(), d_old, o.size() * 4, cudaMemcpyDeviceToHost), "down");
     ck(cudaMemcpy(nw.data(), d_new, nw.size() * 4, cudaMemcpyDeviceToHost), "down");
+    // the decode form (a verify window: up to 32 queries, the old kernel's scratch): its output for the same checks
+    const bool dec_tc = nq <= 32 && k::qsa_decode_attn_tc_usable(pl, s);
+    std::vector<float> dt;
+    float* d_dt = nullptr;
+    auto dec_run = [&]() { k::qsa_decode_attn_tc(d_q, pl, d_ids, d_steps, cap, s, scratch, d_dt, nq, nullptr); };
+    bool ok_graph = true;
+    if (dec_tc) {
+        ck(cudaMalloc(&d_dt, nq * NH * HD * 4), "malloc");
+        // as the verify window runs it: captured into a CUDA graph (its first call in this process may be the one
+        // captured), then replayed; an eager run must give the same bits
+        cudaStream_t gs;
+        ck(cudaStreamCreate(&gs), "stream");
+        cudaGraph_t graph = nullptr;
+        cudaGraphExec_t exec = nullptr;
+        ck(cudaStreamBeginCapture(gs, cudaStreamCaptureModeThreadLocal), "capture");
+        const bool launched = k::qsa_decode_attn_tc(d_q, pl, d_ids, d_steps, cap, s, scratch, d_dt, nq, gs);
+        ck(cudaStreamEndCapture(gs, &graph), "end capture");
+        ck(cudaGraphInstantiate(&exec, graph, 0), "instantiate");
+        ck(cudaGraphLaunch(exec, gs), "graph launch");
+        ck(cudaStreamSynchronize(gs), "graph run");
+        std::vector<float> from_graph(o.size());
+        ck(cudaMemcpy(from_graph.data(), d_dt, from_graph.size() * 4, cudaMemcpyDeviceToHost), "down");
+        cudaGraphExecDestroy(exec);
+        cudaGraphDestroy(graph);
+        cudaStreamDestroy(gs);
+        dec_run();
+        ck(cudaDeviceSynchronize(), "decode tc");
+        dt.resize(o.size());
+        ck(cudaMemcpy(dt.data(), d_dt, dt.size() * 4, cudaMemcpyDeviceToHost), "down");
+        ok_graph = launched && std::memcmp(from_graph.data(), dt.data(), dt.size() * 4) == 0;
+        if (!ok_graph) std::printf("FAIL decode form: the captured graph's output differs from an eager run\n");
+    }
     // 1. FP64 reference on a sample of queries
-    double err_old = 0, err_new = 0, ref_scale = 0;
+    double err_old = 0, err_new = 0, err_dec = 0, ref_scale = 0;
     for (int64_t i = 0; i < nq; i += std::max<int64_t>(1, nq / 16)) {
         const int64_t w = steps[i * k::kStepCount + k::kStepWidth];
         const int32_t* sel = ids.data() + i * cap;
@@ -200,6 +220,7 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
                 ref_scale = std::max(ref_scale, std::fabs(r));
                 err_old = std::max(err_old, std::fabs(o[at] - r));
                 err_new = std::max(err_new, std::fabs(nw[at] - r));
+                if (dec_tc) err_dec = std::max(err_dec, std::fabs(dt[at] - r));
             }
         }
     }
@@ -224,18 +245,105 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
     cudaEventRecord(e1);
     ck(cudaEventSynchronize(e1), "time");
     cudaEventElapsedTime(&ms_new, e0, e1);
+    bool ok_dec = true;
+    if (dec_tc) {
+        double ddiff = 0;
+        for (size_t i = 0; i < o.size(); ++i) ddiff = std::max(ddiff, (double) std::fabs(o[i] - dt[i]));
+        float ms_dec = 0;
+        cudaEventRecord(e0);
+        for (int r = 0; r < reps; ++r) dec_run();
+        cudaEventRecord(e1);
+        ck(cudaEventSynchronize(e1), "time");
+        cudaEventElapsedTime(&ms_dec, e0, e1);
+        ok_dec = err_dec <= std::max(4.0 * err_old, 1e-6 * ref_scale) && ddiff <= 1e-4 * scale;
+        std::printf("%s %s decode form (split tensor cores), %lld queries: vs FP64 %.3g (old %.3g); vs old %.3g "
+                    "(%.2g of scale); %.4f -> %.4f ms (%.2fx)\n", ok_dec ? "PASS" : "FAIL",
+                    fmt == 2 ? "q4_0" : "int8", (long long) nq, err_dec, err_old, ddiff, ddiff / scale, ms_old / reps,
+                    ms_dec / reps, ms_old / ms_dec);
+        // KV streaming: blocks it could not make resident (page -1) are masked, as the FP32 kernel masks them
+        std::vector<int32_t> holes(table);
+        for (size_t i = 0; i < holes.size(); i += 7) holes[i] = -1;
+        k::QsaAttnPools ph = pl;
+        int32_t* d_holes = up(holes);
+        ph.page_table = d_holes;
+        float* d_ho = nullptr;
+        ck(cudaMalloc(&d_ho, nq * NH * HD * 4), "malloc");
+        k::qsa_decode_attn_batch(d_q, ph, d_ids, d_steps, cap, s, scratch, d_ho, nq, nullptr);
+        ck(cudaDeviceSynchronize(), "holes old");
+        std::vector<float> ho(o.size()), hn(o.size());
+        ck(cudaMemcpy(ho.data(), d_ho, ho.size() * 4, cudaMemcpyDeviceToHost), "down");
+        k::qsa_decode_attn_tc(d_q, ph, d_ids, d_steps, cap, s, scratch, d_dt, nq, nullptr);
+        ck(cudaDeviceSynchronize(), "holes new");
+        ck(cudaMemcpy(hn.data(), d_dt, hn.size() * 4, cudaMemcpyDeviceToHost), "down");
+        double hdiff = 0, hscale = 0;
+        for (size_t i = 0; i < ho.size(); ++i) {
+            hdiff = std::max(hdiff, (double) std::fabs(ho[i] - hn[i]));
+            hscale = std::max(hscale, (double) std::fabs(ho[i]));
+        }
+        const bool ok_holes = hdiff <= 1e-4 * hscale;
+        std::printf("%s %s decode form, every 7th page non-resident: vs old %.3g (%.2g of scale)\n",
+                    ok_holes ? "PASS" : "FAIL", fmt == 2 ? "q4_0" : "int8", hdiff, hscale > 0 ? hdiff / hscale : 0.0);
+        ok_dec = ok_dec && ok_holes;
+        cudaFree(d_ho);
+        cudaFree(d_holes);
+        cudaFree(d_dt);
+    }
     const bool ok1 = err_new <= std::max(4.0 * err_old, 1e-6 * ref_scale);
     const bool ok2 = diff <= 1e-4 * scale;
     std::printf("%s %s ctx %lld, %lld queries: vs FP64 old %.3g new %.3g (output scale %.3g); new vs old %.3g (%.2g of "
                 "scale); %.3f -> %.3f ms per chunk (%.2fx)\n",
                 ok1 && ok2 ? "PASS" : "FAIL", fmt == 2 ? "q4_0" : fmt == 1 ? "int8" : "fp16", (long long) ctx, (long long) nq, err_old,
                 err_new, ref_scale, diff, diff / scale, ms_old / reps, ms_new / reps, ms_old / ms_new);
+    // 4. Q4_0 with the rotations inside the kernel (qsa_prompt_attn_batch_rot) against fwht256 -> the kernel ->
+    // fwht256: the same bits, and the time of both
+    bool ok3 = true;
+    if (fmt == 2 && k::qsa_prompt_attn_rot_fused(s)) {
+        const size_t n = (size_t) (nq * NH * HD);
+        float *d_qr = nullptr, *d_sep = nullptr, *d_fused = nullptr;
+        ck(cudaMalloc(&d_qr, n * 4), "malloc");
+        ck(cudaMalloc(&d_sep, n * 4), "malloc");
+        ck(cudaMalloc(&d_fused, n * 4), "malloc");
+        auto sep_run = [&]() {
+            ck(cudaMemcpyAsync(d_qr, d_q, n * 4, cudaMemcpyDeviceToDevice), "copy q");
+            k::fwht256_inplace_cuda(d_qr, nq * NH, nullptr);
+            k::qsa_prompt_attn_batch(d_qr, pl, d_ids, d_steps, cap, s, d_sep, nq, nullptr);
+            k::fwht256_inplace_cuda(d_sep, nq * NH, nullptr);
+        };
+        auto fused_run = [&]() {
+            ck(cudaMemcpyAsync(d_qr, d_q, n * 4, cudaMemcpyDeviceToDevice), "copy q");   // the same copy as sep_run
+            if (!k::qsa_prompt_attn_batch_rot(d_qr, pl, d_ids, d_steps, cap, s, d_fused, nq, nullptr)) ok3 = false;
+        };
+        sep_run();
+        fused_run();
+        ck(cudaDeviceSynchronize(), "rot run");
+        std::vector<float> a(n), b(n);
+        ck(cudaMemcpy(a.data(), d_sep, n * 4, cudaMemcpyDeviceToHost), "down");
+        ck(cudaMemcpy(b.data(), d_fused, n * 4, cudaMemcpyDeviceToHost), "down");
+        size_t bad = 0;
+        for (size_t i = 0; i < n; ++i) bad += std::memcmp(&a[i], &b[i], 4) != 0;
+        ok3 = ok3 && bad == 0;
+        float ms_sep = 0, ms_fused = 0;
+        cudaEventRecord(e0);
+        for (int r = 0; r < reps; ++r) sep_run();
+        cudaEventRecord(e1);
+        ck(cudaEventSynchronize(e1), "time");
+        cudaEventElapsedTime(&ms_sep, e0, e1);
+        cudaEventRecord(e0);
+        for (int r = 0; r < reps; ++r) fused_run();
+        cudaEventRecord(e1);
+        ck(cudaEventSynchronize(e1), "time");
+        cudaEventElapsedTime(&ms_fused, e0, e1);
+        std::printf("%s q4_0 rotations in the kernel: %zu of %zu outputs differ from fwht -> kernel -> fwht; "
+                    "%.3f -> %.3f ms per chunk (%.2fx, with the q copy)\n",
+                    ok3 ? "PASS" : "FAIL", bad, n, ms_sep / reps, ms_fused / reps, ms_sep / ms_fused);
+        cudaFree(d_qr); cudaFree(d_sep); cudaFree(d_fused);
+    }
     cudaFree((void*) d_ids); cudaFree((void*) d_steps); cudaFree((void*) d_q); cudaFree(d_old); cudaFree(d_new);
     cudaFree(scratch);
     cudaFree((void*) pl.k_q); cudaFree((void*) pl.v_q); cudaFree((void*) pl.k_scale); cudaFree((void*) pl.v_scale);
     cudaFree((void*) pl.k_pool); cudaFree((void*) pl.v_pool); cudaFree((void*) pl.page_table);
     cudaFree((void*) pl.k_q4); cudaFree((void*) pl.v_q4);
-    return ok1 && ok2 ? 0 : 1;
+    return ok1 && ok2 && ok3 && ok_dec && ok_graph ? 0 : 1;
 }
 }  // namespace
 

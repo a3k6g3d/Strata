@@ -67,8 +67,12 @@ public:
     /// One round: catch-up over T cells from `p` (rows = the window's final residuals, `tokens` = the window's
     /// argmaxes: row t pairs R_{p+t} with the token at p+t+1), then the draft chain from row `a` (the last
     /// accepted row) for T-1 drafts at cells p+a+1 ...  `drafts` gets T-1 tokens.
+    /// The chain continues while the last draft's probability is at least `min_p` and, with `accept` (10 bins of
+    /// a draft's acceptance by its probability, DraftPolicy's), while the chance that every draft so far is accepted
+    /// is at least `min_reach` (--spec-adaptive: no draft step for a draft no window would verify).
     bool draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* drafts, std::string& err,
-               float* probs = nullptr, float min_p = 0.0f, int* n_drafts = nullptr);
+               float* probs = nullptr, float min_p = 0.0f, int* n_drafts = nullptr, const float* accept = nullptr,
+               float min_reach = 0.0f);
 
     /// The first round: one cell (`cell`) from `R_row` (device) and `token` -> T-1 drafts.
     bool draft_first(int T, const float* R_row, int32_t token, int64_t cell, int32_t* drafts, std::string& err,
