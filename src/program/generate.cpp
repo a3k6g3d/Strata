@@ -8652,6 +8652,10 @@ int main(int argc, char** argv) {
                 const char* v = pipe_dbg_env("STRATA_PIPELINE_FORCE_MISS");
                 return v ? std::max(0, std::atoi(v)) : 0;
             }();
+            // STRATA_PIPELINE_YIELD and STRATA_PIPELINE_LOOKUP_NEXT (the decode loop's; on unless =0), per request
+            // through the switch file too ("yield=<0|1> lknext=<0|1>"): their A/B on one server, one expert placement
+            bool pl_yield_req = [] { const char* v = std::getenv("STRATA_PIPELINE_YIELD"); return v == nullptr || std::atoi(v) != 0; }();
+            bool pl_lknext_req = [] { const char* v = std::getenv("STRATA_PIPELINE_LOOKUP_NEXT"); return v == nullptr || std::atoi(v) != 0; }();
             if (static const char* sw = pipe_dbg_env("STRATA_PIPELINE_SWITCH"); sw != nullptr && pipe) {
                 if (std::FILE* f = std::fopen(sw, "r")) {
                     char buf[256] = {};
@@ -8662,8 +8666,11 @@ int main(int argc, char** argv) {
                     if (const char* q = std::strstr(buf, "theta=")) pl_theta = (float) std::atof(q + 6);
                     if (const char* q = std::strstr(buf, "force_miss=")) pl_force_miss = std::max(0, std::atoi(q + 11));
                     if (const char* q = std::strstr(buf, "short_read=")) req_short_read = std::max(0LL, std::atoll(q + 11));
-                    std::fprintf(stderr, "strata pipeline switch: pw=%d theta=%.3f force_miss=%d short_read=%lld\n", pl_pw,
-                                 pl_theta, pl_force_miss, (long long) req_short_read);
+                    if (const char* q = std::strstr(buf, "yield=")) pl_yield_req = std::atoi(q + 6) != 0;
+                    if (const char* q = std::strstr(buf, "lknext=")) pl_lknext_req = std::atoi(q + 7) != 0;
+                    std::fprintf(stderr, "strata pipeline switch: pw=%d theta=%.3f force_miss=%d short_read=%lld yield=%d "
+                                         "lknext=%d\n", pl_pw, pl_theta, pl_force_miss, (long long) req_short_read,
+                                 pl_yield_req ? 1 : 0, pl_lknext_req ? 1 : 0);
                 }
             }
             // --pipeline-windows: tokens [a, b) through the windows with the stages overlapped.  The tokens are known,
@@ -9475,11 +9482,9 @@ int main(int argc, char** argv) {
                 // the next B of a copy: once a B taken from the lookup was on the path (it is A now), the lookup goes on
                 // past it, so the window after it is taken from the lookup too - not from the drafter's chain, which
                 // pick_lookup's B alone used to hand the copy back to.  The chain still runs, and an off-path verdict
-                // starts afresh as before.  STRATA_PIPELINE_LOOKUP_NEXT=0: the chain's B (the previous behaviour).
-                static const bool pl_lookup_next = [] {
-                    const char* v = std::getenv("STRATA_PIPELINE_LOOKUP_NEXT");
-                    return v == nullptr || std::atoi(v) != 0;
-                }();
+                // starts afresh as before.  STRATA_PIPELINE_LOOKUP_NEXT=0 (or "lknext=0" in the switch file): the
+                // chain's B (the previous behaviour).
+                const bool pl_lookup_next = pl_lknext_req;
                 int64_t pl_lk_next = 0;
                 auto lookup_next = [&]() {
                     if (!pl_lookup_next || o.suffix_draft <= 0 || pl_lookup_pon <= 0.0f || !A.lookup || b_done) return;
@@ -9524,11 +9529,9 @@ int main(int argc, char** argv) {
                     const char* v = pipe_dbg_env("STRATA_PIPELINE_AGREE");
                     return v == nullptr || std::atoi(v) != 0;
                 }();
-                // the verified path served first (see the loop's order); STRATA_PIPELINE_YIELD=0: the previous order
-                static const bool pl_yield = [] {
-                    const char* v = std::getenv("STRATA_PIPELINE_YIELD");
-                    return v == nullptr || std::atoi(v) != 0;
-                }();
+                // the verified path served first (see the loop's order); STRATA_PIPELINE_YIELD=0 (or "yield=0" in the
+                // switch file): the previous order
+                const bool pl_yield = pl_yield_req;
                 auto ms_now = [&]() { return std::chrono::duration<double, std::milli>(Clock::now() - pl_t0).count(); };
                 while (true) {
                     g_pl_diag.iters.fetch_add(1, std::memory_order_relaxed);
