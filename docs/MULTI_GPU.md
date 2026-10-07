@@ -42,7 +42,11 @@ now on; the answer is kept.
 ```
 
 **Not supported** (setup says so and names the cards that can be used instead):
-- a card older than the RTX 20 series (compute capability below 7.5: GTX 10 and older);
+- a card older than the RTX 20 series (compute capability below 7.5: GTX 10 and older), unless you name it: Pascal
+  and Volta cards (Tesla P100 / P40, GTX 10, V100) are admitted when you choose them with `--gpus` (or `--gpu`,
+  `--cuda 12`) and then run the experimental CUDA 12 engine, see [OLDER_GPUS.md](OLDER_GPUS.md). Two Tesla P40s
+  (`"gpu": [0, 1]` in the config) ran the layer split in a community benchmark: IQ2_XS decode 19.6 tok/s on one card,
+  34.8 on both (#1028, experimental, one report);
 - a card with less than 8 GB of VRAM, together with others (each card holds a copy of the dense weights and its
   own prompt buffers) - unless you name it with `--gpus`: then setup says the risk and asks (`--yes` with the named
   cards goes ahead);
@@ -236,8 +240,7 @@ Two cards, exactly two stages, `--serve`. In the config:
 
 The `STRATA_PIPELINE_*` tuning and test variables (THETA, FORCE_MISS, SWITCH, LOG, TRACE and the like) are read only with
 `STRATA_PIPELINE_DEBUG=1`. `--adapt-async 1` runs beside `--pipeline-windows 2` (`STRATA_PIPELINE_ADAPT_ASYNC=0` keeps
-the blocking tier there); `--pipeline-windows 1` and `--adapt-async 1` exclude each other (the engine says so and keeps
-the pipeline).
+the blocking tier there).
 
 ## Several conversations at once
 
