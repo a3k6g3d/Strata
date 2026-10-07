@@ -138,7 +138,7 @@ constexpr int RING_MAX = 1024;          // the arrays; the ring itself is ring_s
 // fixed cache: 1,500-token prompts 621 -> 785 / 612 -> 735 tok/s, 2,000 727 -> 934 / 712 -> 892, 4,000 (its last
 // chunk) 779 -> 912 / 766 -> 844, the same output.  Below ~1,000 tokens the output changed on Q2_0 (a smaller chunk
 // takes other kernels), so 1024 is the floor.  STRATA_PREFILL_STREAM_MIN overrides (A/B).
-// With CPU assist (Prefill::set_cpu_pool, STRATA_PREFILL_CPU) the chunks staged after their routing go up to 3,072
+// With CPU assist (Prefill::set_assist_pool, STRATA_PREFILL_CPU) the chunks staged after their routing go up to 3,072
 // tokens instead (set by `init`), since the pool helps only there: measured on a 5070 Ti (PCIe 3.0, DDR4-2133,
 // IQ3_XXS) against the streamed walk, mean of two runs: 1K prompts 1.43x, 2K 1.38x, 4K 0.95x, 8K 0.80x.
 int64_t g_stream_min_cpu = 0;
@@ -605,7 +605,7 @@ struct PeerPrefill {
     }
 };
 
-// CPU assist (Prefill::set_cpu_pool): the thread that drives the expert pool for a layer's CPU half while the prefill
+// CPU assist (Prefill::set_assist_pool): the thread that drives the expert pool for a layer's CPU half while the prefill
 // thread issues the GPU half - `run_split_multi_native` blocks its caller, so the caller is this thread.  One job at a
 // time: `post` hands it one, `wait` returns once it has run.
 class SideThread {
@@ -757,7 +757,7 @@ struct Prefill::Impl {
     size_t cpu_x_n = 0, cpu_rows_n = 0;
     std::vector<uint8_t> cpu_nact;
     std::vector<kernels::cpu::ActQ> cpu_actq;   // a Q2_0 layer's activations (the pool's Q2_0 kernels read ActQ)
-    std::vector<kernels::cpu::ExpertJobMulti> cpu_jobs;
+    std::vector<kernels::cpu::ExpertJobMulti> cpu_jobs;   // (CPU assist's too: the two never run in one chunk)
     // the measured share: running means of the CPU's ms per expert and the GPU's per streamed expert, and the share
     // they balance at (cpu_share_env)
     double cpu_c_ms = 0, cpu_g_ms = 0, cpu_share_now = 0.5;
@@ -810,7 +810,7 @@ struct Prefill::Impl {
     // layer split: the next stage's GPU as a stream-only peer (set_stage_helper); its buffers are that stage's own
     // prompt buffers, bound per prompt, and it takes the place of `pp` for a run it helps
     std::unique_ptr<PeerPrefill> help_pp;
-    // CPU assist (set_cpu_pool): the thread that drives the pool, the side stream that copies a layer's activations
+    // CPU assist (set_assist_pool): the thread that drives the pool, the side stream that copies a layer's activations
     // down (quantized on the device into GU, which is idle until the layer's first product), the pinned host
     // activations and output rows, the pool's jobs, and the balance's running costs (us per CPU unit - an expert plus
     // token_cost per token - and per expert the GPU half streams)
@@ -821,7 +821,6 @@ struct Prefill::Impl {
     size_t cpu_act_bytes = 0;
     float* cpu_out = nullptr;
     int64_t cpu_out_rows = 0;
-    std::vector<strata::kernels::cpu::ExpertJobMulti> cpu_jobs;
     std::vector<uint8_t> on_cpu;
     double cpu_us_unit = 120.0, gpu_us_expert = 150.0;
     // ...and per layer (0: not measured yet, the running averages above stand in): a layer's formats set both its
@@ -878,7 +877,7 @@ strata::kernels::QsaAttnPools pools_of(const strata::kernels::KvHostPools& h, co
 
 Prefill::Prefill() : impl_(new Impl) {}
 
-void Prefill::set_cpu_pool(strata::kernels::cpu::ExpertPool* pool) { pool_ = pool; }
+void Prefill::set_assist_pool(strata::kernels::cpu::ExpertPool* pool) { pool_ = pool; }
 void Prefill::arm_cpu_assist(bool applies) {
     if (applies && cpu_assist().on) g_stream_min_cpu = 3072;
 }
@@ -1967,7 +1966,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
     PfTimer pt;
     PeTimer pe;
     if (m.pp) pe.dev = m.pp->dev; else pe.on = false;
-    // CPU assist (set_cpu_pool): its stream, events and pinned buffers for a chunk of T tokens, made on first use and
+    // CPU assist (set_assist_pool): its stream, events and pinned buffers for a chunk of T tokens, made on first use and
     // grown for a larger chunk; when they cannot be had the prompt path stays GPU only
     const CpuAssist& ca = cpu_assist();
     const int64_t cpu_experts0 = stats_.experts_cpu, cpu_streamed0 = stats_.experts_streamed;

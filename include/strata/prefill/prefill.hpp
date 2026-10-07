@@ -35,10 +35,9 @@ struct PrefillStats {
     int64_t experts_streamed = 0;   ///< expert blobs copied host -> device
     int64_t experts_dma = 0;        ///< ...of which straight from the pinned arena (no CPU copy)
     int64_t experts_resident = 0;   ///< expert-layer groups served from the VRAM tier
-    int64_t experts_cpu = 0;        ///< ...computed on the CPU pool instead of streamed (STRATA_PREFILL_CPU_SHARE)
+    int64_t experts_cpu = 0;        ///< ...computed on the CPU pool instead of streamed (CPU assist, or STRATA_PREFILL_CPU_SHARE)
     double cpu_share = 0;           ///< ...the share of the streamed ones it took last (measured by default)
     double ms_ple = 0;
-    int64_t experts_cpu = 0;        ///< expert-layer groups computed by the CPU expert pool (set_cpu_pool)
     double ms_cpu_wait = 0;         ///< host time waiting for the pool after the GPU half was issued
 };
 
@@ -95,9 +94,9 @@ public:
     /// routed experts (below the streamed walk) hands the expert pool the non-resident experts with the fewest tokens,
     /// so the pool reads those from RAM while the copy engine brings the rest over PCIe.  The pool's arithmetic is the
     /// token path's CPU experts' (ggml-cpu), not MMQ's, so the outputs are close to, not bitwise, the GPU-only path's.
-    /// Null pool: GPU only.
+    /// Null pool: GPU only.  (The fork's name for it: upstream's own set_cpu_pool is STRATA_PREFILL_CPU_SHARE's pool.)
     /// Only a prompt path that runs every layer uses it (no layer split); the pool must be idle during `run`.
-    void set_cpu_pool(strata::kernels::cpu::ExpertPool* pool);
+    void set_assist_pool(strata::kernels::cpu::ExpertPool* pool);
     /// Before any loan is sized (bytes_needed): CPU assist's chunks are staged up to 3,072 tokens, and the buffers
     /// follow that threshold.  `applies`: a pool on a path that runs every layer, or on every stage of a layer split
     /// with STRATA_SPLIT_CPU_ASSIST=1 - what `init` checks again.
@@ -208,7 +207,7 @@ private:
     std::future<bool> next_run_;
     int hand_buf_ = 0;
 
-    strata::kernels::cpu::ExpertPool* pool_ = nullptr;   ///< set_cpu_pool (kept by `reset`)
+    strata::kernels::cpu::ExpertPool* pool_ = nullptr;   ///< set_assist_pool (kept by `reset`)
     bool carve(std::size_t T, void* alloc);   // the device buffers of a chunk (prefill.cpp's Alloc)
     void release();                          // the destructor's cleanup (also `reset`'s)
     struct Impl;
