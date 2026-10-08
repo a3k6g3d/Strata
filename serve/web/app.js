@@ -653,10 +653,13 @@ function toolHtml(t, k) {
   let body = "";
   if (t.open) {
     if (t.state === "waiting") {
-      body += `<div class="tool-call__approve"><span class="tool-call__ask">${esc(KIND_TEXT[t.kind] || "")} ` +
+      const prot = t.protectedPath
+        ? `<strong>This changes something in a protected location (${esc(((mcpInfo.permissions || {}).protected_paths || []).join(", ") || "protected")}).</strong> It always needs your OK. `
+        : "";
+      body += `<div class="tool-call__approve"><span class="tool-call__ask">${prot}${esc(KIND_TEXT[t.kind] || "")} ` +
         `Allow it to run with the arguments below?</span><span class="tool-call__btns">` +
-        `<button type="button" class="st-btn st-btn--primary" data-approve="allow">Allow</button>` +
-        `<button type="button" class="st-btn st-btn--secondary" data-approve="always" title="Allow this tool for the rest of this server run">Always allow</button>` +
+        `<button type="button" class="st-btn st-btn--primary" data-approve="allow">Allow once</button>` +
+        (t.protectedPath ? "" : `<button type="button" class="st-btn st-btn--secondary" data-approve="always" title="Allow this tool for the rest of this server run">Always allow</button>`) +
         `<button type="button" class="st-btn st-btn--danger" data-approve="deny">Deny</button></span></div>`;
     }
     body += `<div class="tool-call__label">Arguments</div><pre class="tool-call__pre">${esc(args || "(being written)")}</pre>`;
@@ -695,7 +698,7 @@ function onTool(m, x) {
                       kind: x.kind});
   } else if (x.event === "approval") {
     // the server holds the call until the user answers (Allow / Always allow / Deny, or it times out)
-    Object.assign(t, {state: "waiting", approval: x.approval, kind: x.kind || t.kind, open: true});
+    Object.assign(t, {state: "waiting", approval: x.approval, kind: x.kind || t.kind, protectedPath: !!x.protected, open: true});
   } else if (x.event === "result") {
     Object.assign(t, {result: x.text, ok: x.ok, chars: x.chars, truncated: x.truncated, ms: x.ms, approval: null,
                       state: x.skipped ? "skipped" : x.denied ? "blocked" : x.ok ? "done" : "error"});

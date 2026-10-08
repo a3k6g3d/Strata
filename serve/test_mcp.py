@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from serve import mcp_fake_server as fake  # noqa: E402
 from serve.frontend import ChatTemplate  # noqa: E402
 from serve.mcp import (MODES, ApprovalGate, McpCancelled, McpHub, classify, decide,  # noqa: E402
-                       hub_from_config, settings_from)
+                       hub_from_config, settings_from, touches_protected)
 from serve.server import ByteTokenizer, MockEngine, Service, serve  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -469,6 +469,24 @@ class PermissionRules(unittest.TestCase):
         g.resolve(t2, False, always=True)
         self.assertNotIn("x", g.always)                                             # a Deny remembers nothing
 
+    def test_protected_path_matching(self):
+        root = os.path.join(tempfile.gettempdir(), "strata_protected_probe")
+        inside = os.path.join(root, "sub", "x.txt")
+        self.assertTrue(touches_protected({"path": inside}, [root]))
+        self.assertTrue(touches_protected({"path": inside.upper().replace("/", "\\")}, [root]))      # case and slashes
+        self.assertTrue(touches_protected({"a": [{"dest": inside}], "n": 1}, [root]))                # nested arguments
+        self.assertTrue(touches_protected({"path": os.path.join(root, "a", "..", "b.txt")}, [root]))  # `..` resolved
+        self.assertTrue(touches_protected({"path": "\\\\?\\" + inside}, [root]) or os.name != "nt")   # \\?\ long form
+        self.assertTrue(touches_protected({"path": "\\\\?\\GLOBALROOT\\Device\\x"}, [root]))          # can't be checked
+        self.assertFalse(touches_protected({"path": root + "_sibling\\x"}, [root]))                  # a sibling is not inside
+        self.assertFalse(touches_protected({"path": inside}, []))                                    # nothing protected
+        self.assertFalse(touches_protected({"text": "hello", "n": 3}, [root]))                       # no path at all
+        self.assertFalse(touches_protected({"content": (inside + " ") * 400}, [root]))               # long text is content
+        self.assertEqual(settings_from({"mcp": {"protected_paths": ["C:\\"]}}), {"protected_paths": ["C:\\"]})
+        for bad in ("C:\\", [""], [3]):
+            with self.assertRaises(SystemExit):
+                settings_from({"mcp": {"protected_paths": bad}})
+
     def test_settings_from(self):
         self.assertEqual(settings_from({"mcp": {"permission": "edit", "approval_timeout_s": 5,
                                                 "tool_classes": {"echo": "read"}}}),
@@ -653,6 +671,50 @@ class Permissions(unittest.TestCase):
         self.assertEqual(st["permissions"]["default"], "edit")
         kinds = {t["tool"]: t["kind"] for t in st["servers"][0]["tools"]}
         self.assertEqual((kinds["echo"], kinds["add"], kinds["big"]), ("read", "write", "danger"))
+
+    def make_protected(self, **settings):
+        self.prot = os.path.join(tempfile.gettempdir(), "strata_protected_probe")
+        self.make(protected_paths=[self.prot], tool_classes={"echo": "write", "add": "write", "big": "danger"}, **settings)
+        return os.path.join(self.prot, "notes", "todo.txt"), os.path.join(tempfile.gettempdir(), "strata_other_probe", "x.txt")
+
+    def test_protected_path_asks_even_in_full_access(self):
+        inside, outside = self.make_protected()
+        self.start(call_script("fake__echo", text=outside), "</think>\n\nelsewhere")
+        ev = self.run_mode("full")                                                  # not protected: no click in full access
+        self.assertEqual([e["event"] for e in ev], ["start", "call", "result"])
+        self.start(call_script("fake__echo", text=inside), "</think>\n\nprotected")
+        ev = self.run_mode("full", answer=True)                                     # protected: asks in full access too
+        self.assertEqual([e["event"] for e in ev], ["start", "call", "approval", "result"])
+        self.assertTrue(ev[2]["protected"])
+        self.assertEqual((ev[3]["ok"], ev[3]["text"]), (True, inside))
+
+    def test_protected_path_deny_never_runs_and_always_does_not_stick(self):
+        inside, _ = self.make_protected()
+        self.start(call_script("fake__echo", text=inside), "</think>\n\nno")
+        ev = self.run_mode("edit", answer=False)
+        self.assertEqual((ev[-1]["ok"], ev[-1].get("denied")), (False, True))
+        self.assertFalse(self.ran("echo"))
+        self.start(call_script("fake__echo", text=inside), "</think>\n\nyes")
+        self.run_mode("ask", answer=True, always=True)                              # "Always allow" is ignored here ...
+        self.assertTrue(self.ran("echo"))
+        self.start(call_script("fake__echo", text=inside), "</think>\n\nagain")
+        ev = self.run_mode("ask", answer=True)                                      # ... so it asks again
+        self.assertEqual([e["event"] for e in ev], ["start", "call", "approval", "result"])
+
+    def test_protected_path_is_refused_in_read_only_and_reads_are_free(self):
+        inside, _ = self.make_protected()
+        self.start(call_script("fake__echo", text=inside), "</think>\n\nrefused")
+        ev = self.run_mode("read")
+        self.assertEqual([e["event"] for e in ev], ["start", "call", "result"])
+        self.assertTrue(ev[2].get("denied"))
+        self.assertFalse(self.ran("echo"))
+        self.hub.close()
+        self.hub = None
+        self.make(protected_paths=[self.prot], tool_classes={"echo": "read"})       # the same tool, a read: no click
+        self.start(call_script("fake__echo", text=inside), "</think>\n\nlooked")
+        ev = self.run_mode("full")
+        self.assertEqual([e["event"] for e in ev], ["start", "call", "result"])
+        self.assertTrue(ev[2]["ok"])
 
     def test_approve_endpoint_guards(self):
         self.make()
