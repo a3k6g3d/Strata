@@ -53,7 +53,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(ROOT))   # run as a script (run-<model>.bat) as well as a module
 from serve.frontend import (ChatTemplate, Event, OutputParser, anthropic_to_messages,  # noqa: E402
                             images_of, mark_think_literals, openai_to_messages, unmark_think_literals)
-from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
+from serve.mcp import MODE_INFO, MODES, McpCancelled, decide, hub_from_config  # noqa: E402
 from serve import runconfig  # noqa: E402
 from serve.winjob import contain  # noqa: E402
 from serve.structured import StructuredOutputError, prepare_format, validated_json  # noqa: E402
@@ -2512,7 +2512,7 @@ def _debug_req(api, req, messages, tools, max_new, thinking, prompt_tokens):
 
 # ------------------------------------------------------------------------------------------------ MCP tool loop
 def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new, max_req, sampling, cancel,
-                 mcp_names):
+                 mcp_names, mode="ask"):
     """Service.run with the MCP tools executed here: the model writes a call to an MCP tool, the server runs it, adds
     the call and its result to the conversation and lets the model continue - up to `max_rounds` times.  Yields what
     Service.run yields (text, thinking, the request's own tool calls) plus ("mcp", {...}) for the tool activity, and
@@ -2520,7 +2520,11 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
 
     `mcp_names`: the MCP tools this request offered; any other call is one of the request's own tools and ends the
     turn as always (the client answers it).  MCP calls written in the same answer are then not run (their results
-    could not reach the model before the client's)."""
+    could not reach the model before the client's).
+
+    `mode`: the permission mode (serve/mcp.py MODES).  Each call is classed read / write / danger and then runs,
+    waits for the user's click in the web app (an "approval" event; POST /mcp/approve answers it, or the call is
+    refused after `approval_timeout_s`), or is refused with a result the model reads and can react to."""
     max_rounds = int(hub.settings["max_rounds"])
     total, rounds, done = 0, 0, None
     messages = list(messages)
@@ -2559,8 +2563,40 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
         results = []
         for c in calls:
             s, tool = hub.routes().get(c.name, (None, c.name))
+            kind_of_tool = hub.kind_of(c.name)
             yield "mcp", {"event": "call", "id": c.id, "name": c.name, "server": s.name if s else None,
-                          "tool": tool, "arguments": c.arguments, "round": rounds}
+                          "tool": tool, "arguments": c.arguments, "round": rounds, "kind": kind_of_tool, "mode": mode}
+            verdict = decide(mode, kind_of_tool, c.name in hub.gate.always)
+            blocked = None
+            if verdict == "deny":
+                blocked = f"{MODE_INFO[mode]['label']} mode: this tool changes things, so it was not run"
+            elif verdict == "ask":
+                token = hub.gate.open(c.name)
+                limit = float(hub.settings["approval_timeout_s"])
+                yield "mcp", {"event": "approval", "id": c.id, "approval": token, "kind": kind_of_tool, "mode": mode,
+                              "timeout_s": limit}
+                print(f"[strata] tool {c.name} ({kind_of_tool}) waits for the user's click", flush=True)
+                answer, end = None, time.monotonic() + limit
+                try:
+                    while answer is None and time.monotonic() < end and not cancel.is_set():
+                        answer = hub.gate.poll(token, 1.0)
+                        if answer is None:
+                            yield "ping", None
+                except GeneratorExit:
+                    cancel.set()
+                    raise
+                finally:
+                    hub.gate.close(token)
+                if answer is not True:
+                    blocked = ("the user did not allow this call" if answer is False
+                               else "the user did not answer in time, so the call was not run")
+            if blocked:
+                text_out = f"error: {blocked}"
+                print(f"[strata] tool {c.name} ({kind_of_tool}) not run: {blocked}", flush=True)
+                results.append(text_out)
+                yield "mcp", {"event": "result", "id": c.id, "ok": False, "denied": True, "text": text_out,
+                              "chars": len(text_out), "truncated": False, "ms": 0}
+                continue
             # The call runs on a thread while this generator keeps yielding heartbeats: they reach the client as
             # keep-alives, which is how a client that went away (the web app's Stop) is noticed during a slow tool.
             box = {}
@@ -3087,6 +3123,9 @@ def make_handler(svc: Service):
             if path == "/config":
                 self._config_post()
                 return
+            if path == "/mcp/approve":                       # the web app's Allow / Deny on a waiting tool call
+                self._mcp_approve()
+                return
             if path in ("/unload", "/load") and not self._control_body():
                 return
             # JSON from Strata's own page only, as /settings: else a plain form POST from any site unloads the model
@@ -3257,6 +3296,25 @@ def make_handler(svc: Service):
                 return False
             return True
 
+        def _mcp_approve(self):
+            """POST /mcp/approve {"approval": <token from the approval event>, "allow": true|false, "always": bool}:
+            answers a tool call that waits for the user.  From Strata's own page only (_own_page), as /settings."""
+            if not self._own_page("tool calls can be allowed or denied"):
+                return
+            try:
+                body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+                token, allow = str(body["approval"]), body["allow"]
+                if not isinstance(allow, bool):
+                    raise ValueError("allow must be true or false")
+            except (ValueError, KeyError, TypeError) as e:
+                self._json(400, {"error": {"message": f"expected {{\"approval\": ..., \"allow\": true|false}}: {e}"}})
+                return
+            if svc.mcp is None:
+                self._json(404, {"error": {"message": "no MCP servers are configured"}})
+                return
+            done = svc.mcp.gate.resolve(token, allow, body.get("always") is True)
+            self._json(200 if done else 404, {"ok": done})
+
         def _config_get(self):
             if not svc.config_path:
                 self._json(404, {"error": {"message": "this server was started without a run config"}})
@@ -3367,6 +3425,14 @@ def make_handler(svc: Service):
             svc.load()
             max_req = max_new = int(req.get("max_completion_tokens") or req.get("max_tokens") or 0)   # 0/-1: the rest
             use_mcp = req.get("strata_mcp") is True and svc.mcp is not None      # the web app's opt-in (serve/mcp.py)
+            mode = req.get("strata_permission")              # the web app's permission mode (serve/mcp.py MODES)
+            if use_mcp:
+                if mode is None:
+                    mode = "full"                            # a client that names none keeps the behaviour it always had
+                if mode not in MODES:                        # (the web app always names one: its drop-down, default
+                    # = config mcp.permission, "ask" unless set; only it can show the approval buttons)
+                    raise ValueError(f"strata_permission must be one of {', '.join(MODES)}")
+                use_mcp = mode != "off"                      # "No tools": the model is not offered any
             own = {t.get("name") for t in tools or [] if isinstance(t, dict)}   # #592: a second line of defence
             if use_mcp:
                 if not self._own_page("MCP tools can be used"):   # tools run with the user's rights on this PC
@@ -3381,7 +3447,7 @@ def make_handler(svc: Service):
             cancel = threading.Event()
             self._watch_client(cancel)                       # #430 #431
             run = run_with_mcp(svc, svc.mcp, messages, tools, kw, ids, thinking, max_new, max_req, req, cancel,
-                               {t["name"] for t in extra}) if use_mcp else None
+                               {t["name"] for t in extra}, mode) if use_mcp else None
             chunks = openai_chunks(svc, req, ids, thinking, tools, max_new, cancel, run=run)
             if validator is not None:
                 chunks = structured_chunks(chunks, validator)

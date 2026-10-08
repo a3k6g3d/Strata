@@ -34,7 +34,95 @@ import urllib.request
 from serve.winjob import contain
 
 PROTOCOL = "2025-06-18"               # the MCP revision Strata asks for; the server's answer is used as given
-DEFAULTS = {"timeout_s": 60.0, "max_result_chars": 20000, "max_rounds": 8, "start_timeout_s": 120.0}
+DEFAULTS = {"timeout_s": 60.0, "max_result_chars": 20000, "max_rounds": 8, "start_timeout_s": 120.0,
+            "permission": "ask", "approval_timeout_s": 300.0, "tool_classes": {}}
+
+# ------------------------------------------------------------------------------------------------ permission modes
+# The web app's mode list (a request says which one it runs in: "strata_permission").  Every tool is classed as
+#   read    - looks at things and changes nothing (list, read, search, fetch ...)
+#   write   - changes things but is not usually destructive (create, write, edit ...)
+#   danger  - deletes, moves, runs commands or sends something out (delete, move, exec, shell, send ...)
+# and the mode decides what runs by itself, what waits for the user's click, and what is refused.
+MODES = ("off", "read", "ask", "edit", "full")
+MODE_INFO = {
+    "off":  {"label": "No tools", "hint": "The model cannot use tools at all."},
+    "read": {"label": "Read-only", "hint": "Tools that only look run by themselves; anything else is refused."},
+    "ask":  {"label": "Ask before changes", "hint": "Looking is automatic; every change waits for your click."},
+    "edit": {"label": "Allow edits", "hint": "Looking and editing are automatic; deleting, moving and commands ask first."},
+    "full": {"label": "Full access", "hint": "Every tool runs without asking. Use with care."},
+}
+KINDS = ("read", "write", "danger")
+_DANGER_NAME = re.compile(r"(delete|remove|(^|[^a-z])rm([^a-z]|$)|rmdir|unlink|kill|drop|truncate|format|wipe|purge|clear|"
+                          r"exec|(^|[^a-z])run(?!ning)|shell|command|bash|powershell|(^|[^a-z])cmd([^a-z]|$)|terminal|"
+                          r"eval|install|move|rename|send|post|publish|deploy|commit|push|merge|reset)", re.I)
+_READ_NAME = re.compile(r"^(read|get|list|ls|cat|head|tail|tree|glob|grep|search|find|fetch|view|show|stat|info|query|"
+                        r"describe|count|check|lookup|resolve|directory_tree)", re.I)
+
+
+def classify(tool: dict, overrides: dict | None = None) -> str:
+    """'read', 'write' or 'danger' for one MCP tool (its listing entry).  The config's `mcp.tool_classes` wins; a
+    dangerous-sounding name beats a server's own "read only" claim; then the server's readOnlyHint; then the name;
+    anything unrecognised is 'write' (asked about in the default mode)."""
+    name = str(tool.get("name") or "")
+    if overrides and overrides.get(name) in KINDS:
+        return overrides[name]
+    if _DANGER_NAME.search(name):
+        return "danger"
+    ann = tool.get("annotations") if isinstance(tool.get("annotations"), dict) else {}
+    if ann.get("readOnlyHint") is True or _READ_NAME.match(name):
+        return "read"
+    return "write"
+
+
+def decide(mode: str, kind: str, always: bool = False) -> str:
+    """'allow' (runs now), 'ask' (waits for the user) or 'deny' for a tool of this kind in this mode."""
+    if mode == "off":                                    # (the server offers no tools at all in this mode)
+        return "deny"
+    if mode == "full" or kind == "read":
+        return "allow"
+    if mode == "read":                                   # "allow always" never overrides a read-only chat
+        return "deny"
+    if always or (mode == "edit" and kind == "write"):
+        return "allow"
+    return "ask"                                        # mode "ask": every change; mode "edit": the dangerous ones
+
+
+class ApprovalGate:
+    """The calls waiting for the user's click.  The tool loop registers one (`open`) and polls it; the web app's
+    POST /mcp/approve resolves it.  `always` remembers tools the user allowed for the rest of this run."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.slots: dict[str, dict] = {}
+        self.always: set[str] = set()
+
+    def open(self, name: str) -> str:
+        token = os.urandom(6).hex()
+        with self.lock:
+            self.slots[token] = {"name": name, "event": threading.Event(), "allow": None}
+        return token
+
+    def resolve(self, token: str, allow: bool, always: bool = False) -> bool:
+        with self.lock:
+            slot = self.slots.get(token)
+            if slot is None or slot["event"].is_set():
+                return False
+            slot["allow"] = bool(allow)
+            if allow and always:
+                self.always.add(slot["name"])
+            slot["event"].set()
+            return True
+
+    def poll(self, token: str, wait: float = 1.0):
+        """True / False once the user answered, None while still waiting."""
+        slot = self.slots.get(token)
+        if slot is not None and slot["event"].wait(wait):
+            return slot["allow"]
+        return None
+
+    def close(self, token: str) -> None:
+        with self.lock:
+            self.slots.pop(token, None)
 
 
 class McpError(RuntimeError):
@@ -499,6 +587,15 @@ class McpHub:
         self.servers = {name: McpServer(name, cfg, self.settings) for name, cfg in servers.items()}
         self.threads: list[threading.Thread] = []
         self._routes: dict[str, tuple[McpServer, str]] = {}
+        self.gate = ApprovalGate()
+
+    def kind_of(self, name: str) -> str:
+        """'read' / 'write' / 'danger' for the tool the model sees as `name` (an unknown name is 'danger')."""
+        server, tool = self._routes.get(name) or self.routes().get(name, (None, name))
+        if server is None:
+            return "danger"
+        entry = next((t for t in server.tools if t["name"] == tool), {"name": tool})
+        return classify(entry, self.settings.get("tool_classes"))
 
     def start(self, wait: bool = False):
         """Start every server on its own thread (npx may download a package first: that must not delay the chat)."""
@@ -585,9 +682,12 @@ class McpHub:
             servers.append({"name": s.name, "transport": s.kind, "status": s.status, "error": s.error,
                             "info": s.info,
                             "tools": [{"name": names.get(t["name"], t["name"]), "tool": t["name"],
+                                       "kind": classify(t, self.settings.get("tool_classes")),
                                        "description": str(t.get("description") or "")[:300]} for t in s.tools]})
         return {"servers": servers, "tools": len(routes),
-                "settings": {k: self.settings[k] for k in ("timeout_s", "max_result_chars", "max_rounds")}}
+                "settings": {k: self.settings[k] for k in ("timeout_s", "max_result_chars", "max_rounds")},
+                "permissions": {"default": self.settings["permission"], "timeout_s": self.settings["approval_timeout_s"],
+                                "modes": [{"id": m, **MODE_INFO[m]} for m in MODES]}}
 
     def close(self):
         for s in self.servers.values():
@@ -632,7 +732,19 @@ def settings_from(cfg: dict) -> dict:
     out = {}
     for key, value in (cfg.get("mcp") or {}).items():
         number = isinstance(value, (int, float)) and not isinstance(value, bool)
-        if key in ("timeout_s", "start_timeout_s"):
+        if key == "permission":                          # the mode the chat starts in: off|read|ask|edit|full
+            if value not in MODES:
+                raise SystemExit(f"[strata] config mcp.permission={value!r}: expected one of {', '.join(MODES)}")
+            out[key] = value
+        elif key == "tool_classes":                      # {"tool name": "read"|"write"|"danger"}: overrides the guess
+            if not isinstance(value, dict) or any(v not in KINDS for v in value.values()):
+                raise SystemExit(f"[strata] config mcp.tool_classes: expected {{\"tool\": \"read|write|danger\"}}")
+            out[key] = {str(k): v for k, v in value.items()}
+        elif key == "approval_timeout_s":
+            if not number or value <= 0:
+                raise SystemExit(f"[strata] config mcp.{key}={value!r}: expected a number of seconds > 0")
+            out[key] = float(value)
+        elif key in ("timeout_s", "start_timeout_s"):
             if not number or value <= 0:
                 raise SystemExit(f"[strata] config mcp.{key}={value!r}: expected a number of seconds > 0")
             out[key] = float(value)
