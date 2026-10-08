@@ -19,6 +19,7 @@ breaking.
 from __future__ import annotations
 
 import collections
+import fnmatch
 import json
 import os
 import re
@@ -35,7 +36,8 @@ from serve.winjob import contain
 
 PROTOCOL = "2025-06-18"               # the MCP revision Strata asks for; the server's answer is used as given
 DEFAULTS = {"timeout_s": 60.0, "max_result_chars": 20000, "max_rounds": 8, "start_timeout_s": 120.0,
-            "permission": "ask", "approval_timeout_s": 300.0, "tool_classes": {}, "protected_paths": []}
+            "permission": "ask", "approval_timeout_s": 300.0, "tool_classes": {}, "protected_paths": [],
+            "blocked_paths": [], "network_servers": []}
 
 # ------------------------------------------------------------------------------------------------ permission modes
 # The web app's mode list (a request says which one it runs in: "strata_permission").  Every tool is classed as
@@ -51,7 +53,7 @@ MODE_INFO = {
     "edit": {"label": "Allow edits", "hint": "Looking and editing are automatic; deleting, moving and commands ask first."},
     "full": {"label": "Full access", "hint": "Every tool runs without asking. Use with care."},
 }
-KINDS = ("read", "write", "danger")
+KINDS = ("read", "write", "danger", "net")
 _DANGER_NAME = re.compile(r"(delete|remove|(^|[^a-z])rm([^a-z]|$)|rmdir|unlink|kill|drop|truncate|format|wipe|purge|clear|"
                           r"exec|(^|[^a-z])run(?!ning)|shell|command|bash|powershell|(^|[^a-z])cmd([^a-z]|$)|terminal|"
                           r"eval|install|move|rename|send|post|publish|deploy|commit|push|merge|reset)", re.I)
@@ -78,7 +80,7 @@ def decide(mode: str, kind: str, always: bool = False) -> str:
     """'allow' (runs now), 'ask' (waits for the user) or 'deny' for a tool of this kind in this mode."""
     if mode == "off":                                    # (the server offers no tools at all in this mode)
         return "deny"
-    if mode == "full" or kind == "read":
+    if mode == "full" or kind in ("read", "net"):         # (the tool loop asks about a network call after local reads)
         return "allow"
     if mode == "read":                                   # "allow always" never overrides a read-only chat
         return "deny"
@@ -102,13 +104,10 @@ def _strings(value, out: list, depth: int = 0) -> None:
             _strings(v, out, depth + 1)
 
 
-def touches_protected(arguments, prefixes) -> bool:
-    """True when a path in the call's arguments is inside one of the protected locations (`mcp.protected_paths`, a
-    drive like "C:\\" or a folder).  Paths are resolved first (case, slashes, `..`, `~`, %VARS%, short names, and
-    symlinks / junctions that lead into the location), and a path that cannot be resolved counts as protected."""
-    if not prefixes:
-        return False
-    roots = [os.path.normcase(os.path.realpath(str(p))).rstrip("\\/") for p in prefixes]
+def arg_paths(arguments):
+    """The resolved, case-folded path of every path-looking string in a call's arguments (nested ones too); None stands
+    for one that cannot be checked (a device or volume-GUID form, or a path that will not resolve).  Resolving first
+    means case, slashes, `..`, `~`, %VARS%, short names and symlinks / junctions are all seen for what they lead to."""
     strings: list = []
     _strings(arguments, strings)
     for s in strings:
@@ -117,17 +116,140 @@ def touches_protected(arguments, prefixes) -> bool:
             continue
         if s.startswith(("\\\\?\\", "\\\\.\\")):         # \\?\C:\x is C:\x; device and volume-GUID forms can't be checked
             if not re.match(r"[A-Za-z]:", s[4:]):
-                return True
+                yield None
+                continue
             s = s[4:]
         if not (re.match(r"^([A-Za-z]:|\\\\|/|~|%|\$)", s) or "/" in s or "\\" in s or ".." in s):
             continue                                     # a plain word, a number: no path
         try:
-            real = os.path.normcase(os.path.realpath(os.path.expandvars(os.path.expanduser(s))))
+            yield os.path.normcase(os.path.realpath(os.path.expandvars(os.path.expanduser(s))))
         except (OSError, ValueError):
+            yield None
+
+
+def touches_protected(arguments, prefixes) -> bool:
+    """True when a path in the call's arguments is inside one of the protected locations (`mcp.protected_paths`, a
+    drive like "C:\\" or a folder); a path that cannot be checked counts as protected."""
+    if not prefixes:
+        return False
+    roots = [os.path.normcase(os.path.realpath(str(p))).rstrip("\\/") for p in prefixes]
+    return any(real is None or any(real == r or real.startswith(r + os.sep) for r in roots) for real in arg_paths(arguments))
+
+
+# What "@defaults" stands for in `mcp.blocked_paths`: places that hold logins, keys and tokens.  A path that does not
+# exist here is harmless; an unset variable skips its entry.  Entries with * ? [ are patterns on the whole path.
+DEFAULT_BLOCKED = [
+    # browser profiles (cookies, saved passwords, sessions)
+    r"%LOCALAPPDATA%\Google\Chrome\User Data", r"%LOCALAPPDATA%\Microsoft\Edge\User Data",
+    r"%LOCALAPPDATA%\BraveSoftware", r"%LOCALAPPDATA%\Vivaldi", r"%APPDATA%\Opera Software", r"%LOCALAPPDATA%\Opera Software",
+    r"%APPDATA%\Mozilla\Firefox", r"%LOCALAPPDATA%\Mozilla\Firefox",
+    # keys and cloud / developer credentials
+    r"%USERPROFILE%\.ssh", r"%USERPROFILE%\.gnupg", r"%USERPROFILE%\.aws", r"%USERPROFILE%\.azure", r"%USERPROFILE%\.kube",
+    r"%USERPROFILE%\.docker", r"%USERPROFILE%\.config\gcloud", r"%USERPROFILE%\.config\gh", r"%APPDATA%\GitHub CLI",
+    r"%USERPROFILE%\.git-credentials", r"%USERPROFILE%\.netrc", r"%USERPROFILE%\.npmrc", r"%USERPROFILE%\.pypirc",
+    r"%USERPROFILE%\.cache\huggingface\token", r"%USERPROFILE%\.claude",
+    # Windows credential stores and the registry hives
+    r"%APPDATA%\Microsoft\Credentials", r"%LOCALAPPDATA%\Microsoft\Credentials", r"%APPDATA%\Microsoft\Protect",
+    r"%APPDATA%\Microsoft\Vault", r"%LOCALAPPDATA%\Microsoft\Vault", r"%SystemRoot%\System32\config",
+    # password managers, chat apps and wallets that keep tokens on disk
+    r"%APPDATA%\Bitwarden", r"%APPDATA%\KeePass", r"%APPDATA%\discord", r"%APPDATA%\Slack", r"%APPDATA%\Signal",
+    r"%APPDATA%\Telegram Desktop\tdata", r"%APPDATA%\Electrum", r"%APPDATA%\Exodus", r"%APPDATA%\Bitcoin",
+    # files anywhere that are secrets by their name
+    r"*\.claude.json*", r"*\.env", r"*\.env.*", r"*\id_rsa*", r"*\id_ed25519*", r"*\id_ecdsa*", r"*.pem", r"*.pfx", r"*.p12", r"*.kdbx", r"*.kdb",
+]
+_LISTINGS = ("list_directory", "list_directory_with_sizes", "directory_tree", "search_files")
+
+
+class BlockList:
+    """The no-read list (`mcp.blocked_paths`): folders and files the model may never touch, in any mode, however a
+    call names them.  A call with a path on the list is refused (the web app shows "Blocked"), and the directory
+    listings and searches that come back are cut so a blocked name does not show either.  `"@defaults"` stands for
+    DEFAULT_BLOCKED; an entry with * ? [ is a pattern on the whole path, any other entry is a folder or a file."""
+
+    def __init__(self, entries):
+        self.prefixes: list[str] = []
+        self.globs: list[str] = []
+        self.skipped: list[str] = []
+        for e in entries or []:
+            for item in (DEFAULT_BLOCKED if e == "@defaults" else [e]):
+                x = os.path.expandvars(os.path.expanduser(item))
+                if re.search(r"%[A-Za-z_]+%", x):        # a variable that is not set on this PC: nothing to block
+                    self.skipped.append(item)
+                elif any(c in x for c in "*?["):
+                    self.globs.append(os.path.normcase(x))
+                else:
+                    self.prefixes.append(os.path.normcase(os.path.realpath(x)).rstrip("\\/"))
+
+    def __bool__(self) -> bool:
+        return bool(self.prefixes or self.globs)
+
+    def hit(self, real) -> bool:
+        """`real`: a resolved, case-folded path (None = could not be checked, which counts as blocked)."""
+        if real is None:
             return True
-        if any(real == r or real.startswith(r + os.sep) for r in roots):
-            return True
-    return False
+        return (any(real == r or real.startswith(r + os.sep) for r in self.prefixes)
+                or any(fnmatch.fnmatchcase(real, g) for g in self.globs))
+
+    def blocks(self, arguments) -> bool:
+        return bool(self) and any(self.hit(p) for p in arg_paths(arguments))
+
+    def filter_listing(self, tool: str, arguments, text: str) -> tuple[str, int]:
+        """A directory listing, tree or search result without the blocked entries -> (text, how many were hidden)."""
+        base = arguments.get("path") if isinstance(arguments, dict) else None
+        if not self or tool not in _LISTINGS or not isinstance(base, str):
+            return text, 0
+
+        def real_of(p: str):
+            try:
+                return os.path.normcase(os.path.realpath(os.path.expandvars(os.path.expanduser(p))))
+            except (OSError, ValueError):
+                return None
+
+        hidden = 0
+        if tool in ("list_directory", "list_directory_with_sizes"):
+            keep = []
+            for line in text.splitlines():
+                m = re.match(r"^\[(DIR|FILE)\]\s+(.*)$", line)
+                if m:
+                    name = m.group(2)
+                    if tool == "list_directory_with_sizes":
+                        sized = re.match(r"^(.*?)\s+[\d.,]+\s*[KMGT]?B\s*$", name)
+                        name = sized.group(1) if sized else name
+                    if self.hit(real_of(os.path.join(base, name.strip()))):
+                        hidden += 1
+                        continue
+                keep.append(line)
+            text = "\n".join(keep)
+        elif tool == "directory_tree":
+            try:
+                tree = json.loads(text)
+            except ValueError:
+                return text, 0                           # not the form we know: left as it is
+
+            def prune(nodes, parent):
+                nonlocal hidden
+                out = []
+                for n in nodes if isinstance(nodes, list) else []:
+                    path = os.path.join(parent, str(n.get("name", ""))) if isinstance(n, dict) else parent
+                    if isinstance(n, dict) and self.hit(real_of(path)):
+                        hidden += 1
+                        continue
+                    if isinstance(n, dict) and isinstance(n.get("children"), list):
+                        n["children"] = prune(n["children"], path)
+                    out.append(n)
+                return out
+            text = json.dumps(prune(tree, base), indent=2)
+        else:                                            # search_files: one path per line
+            keep = []
+            for line in text.splitlines():
+                if line.strip() and self.hit(real_of(line.strip())):
+                    hidden += 1
+                    continue
+                keep.append(line)
+            text = "\n".join(keep)
+        if hidden:
+            text += f"\n[{hidden} entr{'y' if hidden == 1 else 'ies'} hidden: on the user's no-read list]"
+        return text, hidden
 
 
 class ApprovalGate:
@@ -632,6 +754,13 @@ class McpHub:
         self.threads: list[threading.Thread] = []
         self._routes: dict[str, tuple[McpServer, str]] = {}
         self.gate = ApprovalGate()
+        self.blocklist = BlockList(self.settings.get("blocked_paths"))
+        if self.blocklist.skipped:
+            print("[strata] mcp.blocked_paths: not set on this PC, skipped: " + ", ".join(self.blocklist.skipped), flush=True)
+
+    def blocked(self, arguments) -> bool:
+        """True when a call names a path on the config's no-read list (`mcp.blocked_paths`)."""
+        return self.blocklist.blocks(arguments)
 
     def protected(self, arguments) -> bool:
         """True when a call's arguments name a path inside the config's `mcp.protected_paths`."""
@@ -642,6 +771,8 @@ class McpHub:
         server, tool = self._routes.get(name) or self.routes().get(name, (None, name))
         if server is None:
             return "danger"
+        if server.name in self.settings["network_servers"]:
+            return "net"                                 # reaches the internet, whatever its name says
         entry = next((t for t in server.tools if t["name"] == tool), {"name": tool})
         return classify(entry, self.settings.get("tool_classes"))
 
@@ -708,6 +839,8 @@ class McpHub:
                 text, ok = result_text(res), not res.get("isError")
                 if not ok:
                     text = "error: " + (text or "the tool reported an error")
+                else:
+                    text, _ = self.blocklist.filter_listing(tool, arguments, text)
             except McpCancelled:
                 raise
             except McpError as e:
@@ -730,12 +863,14 @@ class McpHub:
             servers.append({"name": s.name, "transport": s.kind, "status": s.status, "error": s.error,
                             "info": s.info,
                             "tools": [{"name": names.get(t["name"], t["name"]), "tool": t["name"],
-                                       "kind": classify(t, self.settings.get("tool_classes")),
+                                       "kind": "net" if s.name in self.settings["network_servers"]
+                                       else classify(t, self.settings.get("tool_classes")),
                                        "description": str(t.get("description") or "")[:300]} for t in s.tools]})
         return {"servers": servers, "tools": len(routes),
                 "settings": {k: self.settings[k] for k in ("timeout_s", "max_result_chars", "max_rounds")},
                 "permissions": {"default": self.settings["permission"], "timeout_s": self.settings["approval_timeout_s"],
                                 "protected_paths": list(self.settings["protected_paths"]),
+                                "blocked_entries": len(self.blocklist.prefixes) + len(self.blocklist.globs),
                                 "modes": [{"id": m, **MODE_INFO[m]} for m in MODES]}}
 
     def close(self):
@@ -792,6 +927,15 @@ def settings_from(cfg: dict) -> dict:
         elif key == "protected_paths":                   # a change under these always asks, in every mode but read-only
             if not isinstance(value, list) or any(not isinstance(v, str) or not v.strip() for v in value):
                 raise SystemExit("[strata] config mcp.protected_paths: expected a list of paths, e.g. [\"C:\\\\\"]")
+            out[key] = [v.strip() for v in value]
+        elif key == "network_servers":                   # servers whose tools reach the internet: kind "net"
+            if not isinstance(value, list) or any(not isinstance(v, str) or not v.strip() for v in value):
+                raise SystemExit("[strata] config mcp.network_servers: expected a list of server names, e.g. [\"web\"]")
+            out[key] = [v.strip() for v in value]
+        elif key == "blocked_paths":                    # never touched, in any mode; "@defaults" = the built-in list
+            if not isinstance(value, list) or any(not isinstance(v, str) or not v.strip() for v in value):
+                raise SystemExit("[strata] config mcp.blocked_paths: expected a list of paths or patterns, "
+                                 "e.g. [\"@defaults\", \"E:\\\\private\"]")
             out[key] = [v.strip() for v in value]
         elif key == "approval_timeout_s":
             if not number or value <= 0:
