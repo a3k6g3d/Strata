@@ -7,6 +7,7 @@ protocol.  No internet is used: pages come from a throwaway local server (allowe
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -175,6 +176,133 @@ class Parsing(unittest.TestCase):
         self.assertEqual((r[0]["title"], r[0]["url"], r[0]["snippet"]), ("Example A", "https://example.org/a", "About a"))
 
 
+class ProxyRules(unittest.TestCase):
+    """The filtering proxy every browser byte goes through: public addresses only, the allowed ports, GET/HEAD/CONNECT."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.site = ThreadingHTTPServer(("127.0.0.1", 0), Site)
+        threading.Thread(target=cls.site.serve_forever, daemon=True).start()
+        cls.site_port = cls.site.server_address[1]
+        cls.echo = socketserver_echo()
+        cls.echo_port = cls.echo.server_address[1]
+
+    @classmethod
+    def tearDownClass(cls):
+        for s in (cls.site, cls.echo):
+            s.shutdown()
+            s.server_close()
+
+    def raw(self, proxy, payload: bytes) -> bytes:
+        import socket
+        c = socket.create_connection(("127.0.0.1", proxy.server_address[1]), timeout=10)
+        c.sendall(payload)
+        out = b""
+        c.settimeout(5)
+        try:
+            while True:
+                d = c.recv(65536)
+                if not d:
+                    break
+                out += d
+        except OSError:
+            pass
+        c.close()
+        return out
+
+    def with_proxy(self, allow_private):
+        p = w._Proxy(allow_private)
+        threading.Thread(target=p.serve_forever, daemon=True).start()
+        self.addCleanup(lambda: (p.shutdown(), p.server_close()))
+        return p
+
+    def test_private_destinations_are_refused(self):
+        p = self.with_proxy(False)
+        for payload in (f"CONNECT 127.0.0.1:{self.site_port} HTTP/1.1\r\nHost: x\r\n\r\n".encode(),
+                        f"GET http://127.0.0.1:{self.site_port}/page HTTP/1.1\r\nHost: x\r\n\r\n".encode(),
+                        b"CONNECT 169.254.169.254:80 HTTP/1.1\r\nHost: x\r\n\r\n",
+                        b"CONNECT localhost:443 HTTP/1.1\r\nHost: x\r\n\r\n",
+                        b"CONNECT 192.168.1.1:443 HTTP/1.1\r\nHost: x\r\n\r\n",
+                        b"CONNECT example.com:22 HTTP/1.1\r\nHost: x\r\n\r\n",
+                        b"POST http://example.com/ HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n"):
+            out = self.raw(p, payload)
+            self.assertTrue(out.startswith(b"HTTP/1.1 403"), (payload[:40], out[:60]))
+            self.assertNotIn(b"Hello", out)
+
+    def test_a_plain_http_request_is_forwarded(self):
+        p = self.with_proxy(True)                                  # the tests' own site is on loopback
+        out = self.raw(p, f"GET http://127.0.0.1:{self.site_port}/page HTTP/1.1\r\nHost: x\r\nProxy-Connection: keep-alive\r\n\r\n".encode())
+        self.assertTrue(out.startswith(b"HTTP/1.0 200") or out.startswith(b"HTTP/1.1 200"), out[:60])
+        self.assertIn(b"Hello", out)
+
+    def test_connect_tunnels_bytes(self):
+        import socket
+        p = self.with_proxy(True)
+        c = socket.create_connection(("127.0.0.1", p.server_address[1]), timeout=10)
+        c.sendall(f"CONNECT 127.0.0.1:{self.echo_port} HTTP/1.1\r\nHost: x\r\n\r\n".encode())
+        self.assertTrue(c.recv(200).startswith(b"HTTP/1.1 200"))
+        c.sendall(b"ping through the tunnel")
+        self.assertEqual(c.recv(200), b"ping through the tunnel")
+        c.close()
+
+
+def socketserver_echo():
+    import socketserver
+
+    class Echo(socketserver.BaseRequestHandler):
+        def handle(self):
+            while True:
+                d = self.request.recv(4096)
+                if not d:
+                    return
+                self.request.sendall(d)
+    srv = socketserver.ThreadingTCPServer(("127.0.0.1", 0), Echo)
+    srv.daemon_threads = True
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
+@unittest.skipUnless(w.find_browser(), "no Edge or Chrome installed")
+class Browser(unittest.TestCase):
+    """browse_url with a real headless browser, on a local page (allow_private is the tests' own switch)."""
+
+    @classmethod
+    def setUpClass(cls):
+        class Js(Site):
+            def do_GET(self):
+                if self.path == "/js":
+                    self.reply(200, "text/html", b"<html><head><title>JS page</title></head><body><p>before</p>"
+                               b"<script>document.body.innerHTML = '<h1>rendered by javascript</h1>';</script></body></html>")
+                else:
+                    super().do_GET()
+        cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Js)
+        threading.Thread(target=cls.httpd.serve_forever, daemon=True).start()
+        cls.base = f"http://127.0.0.1:{cls.httpd.server_address[1]}"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+
+    def test_javascript_is_run(self):
+        out = w.browse_url(self.base + "/js", wait_ms=3000, allow_private=True)
+        self.assertIn("Rendered in a browser - JS page", out)
+        self.assertIn("rendered by javascript", out)
+        self.assertNotIn("before", out)                                             # the script replaced the body
+        self.assertIn("Hello", w.browse_url(self.base + "/page", wait_ms=2000, allow_private=True))
+
+    def test_refusals_come_before_any_browser_starts(self):
+        for url in ("http://127.0.0.1:8080/", "http://10.0.0.1/", "file:///C:/Windows/win.ini", "https://example.com:22/"):
+            with self.assertRaises(w.WebError):
+                w.browse_url(url)
+
+    def test_no_leftover_profiles(self):
+        import glob, tempfile
+        before = set(glob.glob(os.path.join(tempfile.gettempdir(), "strata-browse-*")))
+        w.browse_url(self.base + "/page", wait_ms=1000, allow_private=True)
+        self.assertEqual(set(glob.glob(os.path.join(tempfile.gettempdir(), "strata-browse-*"))), before)
+
+
 class Protocol(unittest.TestCase):
     def test_mcp_session(self):
         p = subprocess.Popen([sys.executable, str(ROOT / "tools" / "strata_web_mcp.py")], stdin=subprocess.PIPE,
@@ -186,7 +314,7 @@ class Protocol(unittest.TestCase):
                 return json.loads(p.stdout.readline())
             self.assertEqual(ask(1, "initialize", {"protocolVersion": "2025-06-18"})["result"]["serverInfo"]["name"], "strata-web")
             tools = ask(2, "tools/list")["result"]["tools"]
-            self.assertEqual([t["name"] for t in tools], ["web_search", "fetch_url"])
+            self.assertEqual([t["name"] for t in tools], ["web_search", "fetch_url", "browse_url"])
             self.assertTrue(all(t["annotations"]["readOnlyHint"] for t in tools))
             r = ask(3, "tools/call", {"name": "fetch_url", "arguments": {"url": "http://127.0.0.1/"}})["result"]
             self.assertTrue(r["isError"])

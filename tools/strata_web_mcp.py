@@ -3,6 +3,7 @@
 
     web_search(query, max_results)       Bing's results (DuckDuckGo's as a fallback): title, address, snippet
     fetch_url(url, start, max_chars)     one page as readable text (HTML is reduced to text and links)
+    browse_url(url, start, max_chars)    the same through a real headless browser, for pages built with JavaScript
 
 Listed in the run config's "mcp_servers" like any MCP server (see docs/DETAILS.md, "Tools from MCP servers"); name it
 in `"mcp": {"network_servers": ["web"]}` and Strata treats its tools as *network* tools: after the model has read
@@ -26,11 +27,18 @@ import html.parser
 import http.client
 import ipaddress
 import json
+import os
 import re
+import select
+import shutil
 import socket
+import socketserver
 import ssl
+import subprocess
 import sys
+import tempfile
 import threading
+import time
 import urllib.parse
 
 MAX_BYTES = 2_000_000
@@ -318,6 +326,144 @@ def web_search(query: str, max_results: int = 8, allow_private: bool = False) ->
     return "\n\n".join(f"{i}. {r['title']}\n   {r['url']}\n   {r['snippet']}" for i, r in enumerate(results, 1))
 
 
+# ---------------------------------------------------------------------------------------------------- the browser
+# browse_url renders a page in a real (headless) browser, for sites that are empty without JavaScript.  A browser does
+# its own DNS, follows its own redirects and loads sub-resources, so it gets no direct network at all: every byte goes
+# through the small filtering proxy below, which applies the same rules as fetch_url (public addresses only, the
+# allowed ports, the connection pinned to the address that was checked).  The profile is a throwaway folder: no
+# cookies, no saved logins, nothing from your real browser.
+BROWSER_PATHS = (r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+                 r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+                 r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                 r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe")
+RELAY_SECONDS = 60.0
+RELAY_BYTES = 30_000_000
+
+
+def find_browser() -> str | None:
+    env = os.environ.get("STRATA_BROWSER")
+    for p in ([env] if env else []) + list(BROWSER_PATHS):
+        if p and os.path.isfile(p):
+            return p
+    return None
+
+
+class _Proxy(socketserver.ThreadingTCPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+    def __init__(self, allow_private: bool = False):
+        self.allow_private = allow_private
+        super().__init__(("127.0.0.1", 0), _ProxyHandler)
+
+
+class _ProxyHandler(socketserver.StreamRequestHandler):
+    def _check(self, host: str, port: int) -> str:
+        if not self.server.allow_private and port not in PORTS:
+            raise WebError(f"port {port} is not allowed")
+        return resolve(host, port, self.server.allow_private)[0]
+
+    def _refuse(self, why: str) -> None:
+        body = f"Blocked by Strata: {why}\n".encode()
+        self.wfile.write(b"HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nConnection: close\r\nContent-Length: "
+                         + str(len(body)).encode() + b"\r\n\r\n" + body)
+
+    def handle(self):
+        self.request.settimeout(30)
+        try:
+            line = self.rfile.readline(8192).decode("latin-1").strip()
+            if not line:
+                return
+            method, target, _ = line.split(" ", 2)
+            headers = []
+            while True:
+                h = self.rfile.readline(8192)
+                if h in (b"\r\n", b"\n", b""):
+                    break
+                headers.append(h)
+            if method == "CONNECT":
+                host, _, port = target.rpartition(":")
+                ip = self._check(host.strip("[]"), int(port))
+                up = socket.create_connection((ip, int(port)), 15)
+                self.wfile.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                self.wfile.flush()
+                self._relay(up)
+            elif method in ("GET", "HEAD") and target.lower().startswith("http://"):
+                p = urllib.parse.urlsplit(target)
+                port = p.port or 80
+                ip = self._check(p.hostname or "", port)
+                up = socket.create_connection((ip, port), 15)
+                keep = [h for h in headers if h.split(b":", 1)[0].strip().lower() not in
+                        (b"proxy-connection", b"connection", b"host", b"proxy-authorization")]
+                origin = (p.path or "/") + (("?" + p.query) if p.query else "")
+                up.sendall(f"{method} {origin} HTTP/1.1\r\nHost: {p.netloc}\r\nConnection: close\r\n".encode("latin-1")
+                           + b"".join(keep) + b"\r\n")
+                self._relay(up)
+            else:
+                self._refuse(f"{method} requests are not allowed")
+        except WebError as e:
+            self._refuse(str(e))
+        except (OSError, ValueError):
+            pass
+
+    def _relay(self, up: socket.socket) -> None:
+        client, sockets, total, end = self.request, None, 0, time.monotonic() + RELAY_SECONDS
+        sockets = [client, up]
+        try:
+            while time.monotonic() < end and total < RELAY_BYTES:
+                readable, _, _ = select.select(sockets, [], [], 2.0)
+                for s in readable:
+                    data = s.recv(65536)
+                    if not data:
+                        return
+                    total += len(data)
+                    (up if s is client else client).sendall(data)
+        except OSError:
+            pass
+        finally:
+            up.close()
+
+
+def browse_url(url: str, start: int = 0, max_chars: int = 12000, wait_ms: int = 8000, allow_private: bool = False) -> str:
+    """The page as a browser shows it after its scripts ran, as readable text (the same shape as fetch_url)."""
+    p, port, ip = validate(url, allow_private)          # the same refusals as fetch_url, before a browser is started
+    exe = find_browser()
+    if exe is None:
+        raise WebError("no browser was found: install Microsoft Edge or Google Chrome (or set STRATA_BROWSER to its path)")
+    wait_ms = max(1000, min(int(wait_ms or 8000), 20000))
+    proxy = _Proxy(allow_private)
+    threading.Thread(target=proxy.serve_forever, daemon=True).start()
+    profile = tempfile.mkdtemp(prefix="strata-browse-")
+    cmd = [exe, "--headless=new", "--disable-gpu", "--incognito", "--no-first-run", "--no-default-browser-check",
+           "--disable-extensions", "--disable-background-networking", "--disable-sync", "--disable-component-update",
+           "--disable-features=Translate,OptimizationHints,MediaRouter", "--mute-audio", "--hide-scrollbars",
+           f"--user-data-dir={profile}", f"--proxy-server=http://127.0.0.1:{proxy.server_address[1]}",
+           "--proxy-bypass-list=<-loopback>", "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+           f"--virtual-time-budget={wait_ms}", "--window-size=1280,2000", "--dump-dom", url]
+    proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    try:
+        out, _ = proc.communicate(timeout=45)
+    except subprocess.TimeoutExpired:
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True)
+        raise WebError("the page took longer than 45 seconds to render") from None
+    finally:
+        proxy.shutdown()
+        proxy.server_close()
+        shutil.rmtree(profile, ignore_errors=True)
+    dom = out.decode("utf-8", "replace")
+    if "<html" not in dom.lower():
+        raise WebError("the browser returned no page (the address may be unreachable or blocked)")
+    title, text = html_to_text(dom)
+    start = max(0, int(start or 0))
+    max_chars = max(500, min(int(max_chars or 12000), 50000))
+    chunk = text[start:start + max_chars]
+    end = start + len(chunk)
+    head = [f"URL: {url}", "Rendered in a browser" + (f" - {title}" if title else ""),
+            f"Characters {start}-{end} of {len(text)}" + (f"; ask again with start={end} for the rest" if end < len(text) else "")]
+    return "\n".join(head) + "\n\n" + chunk
+
+
 TOOLS = [
     {"name": "web_search", "description": "Search the web (DuckDuckGo). Returns titles, addresses and snippets; use fetch_url to read a result.",
      "inputSchema": {"type": "object", "properties": {"query": {"type": "string"}, "max_results": {"type": "integer", "description": "1-15, default 8"}},
@@ -326,6 +472,14 @@ TOOLS = [
     {"name": "fetch_url", "description": "Fetch one web page (http/https, public sites only) and return it as readable text with the links. "
                                           "Long pages come in parts: pass start to continue.",
      "inputSchema": {"type": "object", "properties": {"url": {"type": "string"}, "start": {"type": "integer"}, "max_chars": {"type": "integer", "description": "500-50000, default 12000"}},
+                     "required": ["url"]},
+     "annotations": {"readOnlyHint": True, "openWorldHint": True}},
+    {"name": "browse_url", "description": "Open a web page in a real headless browser and return what it shows after its scripts ran, as "
+                                           "readable text. Use it when fetch_url returns an empty or nearly empty page (sites built "
+                                           "with JavaScript). Slower than fetch_url (several seconds).",
+     "inputSchema": {"type": "object", "properties": {"url": {"type": "string"}, "start": {"type": "integer"},
+                                                       "max_chars": {"type": "integer", "description": "500-50000, default 12000"},
+                                                       "wait_ms": {"type": "integer", "description": "how long scripts may run, 1000-20000, default 8000"}},
                      "required": ["url"]},
      "annotations": {"readOnlyHint": True, "openWorldHint": True}},
 ]
@@ -337,6 +491,8 @@ def call(name: str, args: dict) -> dict:
             text = web_search(args.get("query", ""), args.get("max_results", 8))
         elif name == "fetch_url":
             text = fetch_url(args.get("url", ""), args.get("start", 0), args.get("max_chars", 12000))
+        elif name == "browse_url":
+            text = browse_url(args.get("url", ""), args.get("start", 0), args.get("max_chars", 12000), args.get("wait_ms", 8000))
         else:
             return {"content": [{"type": "text", "text": f"unknown tool {name}"}], "isError": True}
         return {"content": [{"type": "text", "text": text}], "isError": False}

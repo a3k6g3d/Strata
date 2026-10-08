@@ -65,6 +65,13 @@ main { flex: 1; min-height: 0; display: flex; }
 .tool-call__approve { display: flex; flex-wrap: wrap; align-items: center; gap: var(--st-s-2) var(--st-s-3); padding: var(--st-s-2) 0 var(--st-s-1); }
 .tool-call__ask { flex: 1 1 240px; font-size: var(--st-fs-sm); color: var(--st-ink); }
 .tool-call__btns { display: flex; gap: var(--st-s-2); }
+.tool-call[data-state="asking"] { border-color: var(--st-accent); }
+.tool-call[data-state="asking"] .st-badge::before { animation: blink 1s steps(2) infinite; }
+.tool-call__question { display: flex; flex-direction: column; gap: var(--st-s-2); padding: var(--st-s-2) 0 var(--st-s-1); }
+.tool-call__q { font-size: var(--st-fs-md); color: var(--st-ink); white-space: pre-wrap; overflow-wrap: anywhere; }
+.tool-call__opts { display: flex; flex-wrap: wrap; gap: var(--st-s-2); }
+.tool-call__reply { display: flex; gap: var(--st-s-2); }
+.tool-call__reply .tool-call__input { flex: 1; min-width: 0; height: 38px; }
 .tool-call__label { font-size: var(--st-fs-xs); font-weight: var(--st-fw-medium); color: var(--st-ink-muted); margin: var(--st-s-2) 0 var(--st-s-1); }
 .tool-call__pre { margin: 0; padding: 10px 12px; max-height: 320px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere;
                   font: 400 12.5px/1.5 var(--st-font-mono); color: var(--st-ink-soft); background: var(--st-surface);
