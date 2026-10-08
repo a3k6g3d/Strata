@@ -1205,7 +1205,9 @@ never in a read-only chat) and **Deny**. Deny, a refusal and a timeout (`approva
 reach the model as an `error: ...` result it can react to; the tool never runs. Config keys, in the `"mcp"` block:
 `"permission"` (the mode the chat starts in: `off`, `read`, `ask`, `edit` or `full`), `"approval_timeout_s"` and
 `"tool_classes"` (`{"tool_name": "read"|"write"|"danger"}`, to correct a guess; names are the server's own, without
-the `server__` prefix). An API request that opts in with `"strata_mcp": true` and names no `"strata_permission"` keeps
+the `server__` prefix). `"protected_paths"` (a list such as `["C:\\"]`): a change under one of them asks every time, in every mode
+(read-only refuses it); "Full access" and "Always allow" never cover it. Paths are resolved first (case, slashes, `..`,
+`~`, `%VARS%`, `\?\` forms, symlinks), and one that cannot be checked counts as protected. Reads are not affected. An API request that opts in with `"strata_mcp": true` and names no `"strata_permission"` keeps
 the behaviour it always had (everything runs): only the page can show the buttons.
 
 **Security.** MCP tools run on your PC with your user's rights, and **the model decides when to call them** - also
