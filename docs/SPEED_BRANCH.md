@@ -31,6 +31,31 @@ numbers come from the repo's parity tests (`qsa_prompt_attn_parity`, `kv_q4_pari
   whose head ships only in the GGUF), in the form `tools/mtp_fetch.py` writes, so `mtp_pack.py` and `mtp_rt.py` build
   the runtime files from it.
 
+## Where a decode window's time goes, and what moved it (RTX 5070 12 GB, i5-10600K, 64 GB DDR4-2666, NVMe, IQ4_XS)
+
+`STRATA_DECODE_TIMING=1` splits a ~115 ms window (about 2.2 tokens) into: CPU running the RAM-tier experts 52 ms, waiting for
+the NVMe-tier experts 26 ms ("jobs"), waiting for the GPU 11 ms, the rest ~25 ms. Held-out prompts, three passes per
+variant on a fresh server, the first pass dropped; the control repeated at the end drifted +1%:
+
+| Change | tok/s | Verdict |
+| --- | ---: | --- |
+| baseline (`--vram-reserve-mib 1022`, 4 GiB RAM headroom) | 14.9 | |
+| `--vram-reserve-mib 640` (the desktop idles at 567 MiB; +150 expert slots) | 15.6 | +5% |
+| `STRATA_RESIDENT_HEADROOM_GIB=2` with `--resident-budget-gib 48` (pins 45.8 GiB, not 43.5) | **17.1** | **+10% on top** |
+| pinned RAM 36 / 40 / 44 / 45.5 GiB (NVMe wait 69 / 42 / 23 / 16 ms per window) | 10.7 / 13.2 / 15.5 / 17.1 | about 0.7 tok/s per GiB |
+| link-time optimisation + `CMAKE_CUDA_ARCHITECTURES=120-real` + tests off | 14.8 vs 14.8 | tie |
+| `--pool-workers` 4 / 6 (default 5) | 14.7 / 14.6 vs 14.8 | tie |
+| `--kv q4_0` with the freed VRAM | 15.5 vs 15.6 | tie (about 80 more slots) |
+| `--resident-budget-gib` above what the free RAM allows (50, 54) | no change | the engine caps the pin at *available RAM minus the headroom* |
+
+The router lookahead (`STRATA_LOOKAHEAD`) is off with unbuffered reads (`FileExpertSource::warms()`); filling the stage
+buffers from it instead of warming pages was tried and reverted: the NVMe wait did not shrink (25.6-27.7 ms vs 25.7) and
+the CPU work grew (55-56 ms vs 52), so K=6/10/14 gave 15.4 / 14.6 / 13.4 tok/s against 15.0 with it off.
+
+The remaining lever is more of the model in RAM: every GiB of pinned experts removes 3-5 ms of NVMe wait per window.
+With about 14 GiB held by other programs, closing them is worth more than any setting here. On this PC the PCIe link
+also negotiates 2.0 (`nvidia-smi --query-gpu=pcie.link.gen.hostmax` reports 2; the engine's probe measures 7.2 GB/s).
+
 ## Not measured
 
 No end-to-end tokens/s for the kernel changes: the model on this PC is SSD-bound (about 30 GB of reads per 256-token
