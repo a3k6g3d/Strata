@@ -5,7 +5,7 @@
 <p align="center"><b>Run a 125-billion-parameter AI model on your own gaming PC</b><br>
 NVIDIA or AMD graphics card (12 GB or more) · Windows or Linux · free and open source</p>
 
-<p align="center"><b>On two GPUs this fork gets through a coding agent's conversation in 13% less time than Strata 0.1.40.1</b> (and 7% less than its own 0.1.39 build) · <a href="#about-this-fork">about this fork</a></p>
+<p align="center"><b>On two GPUs this fork gets through a coding agent's conversation in 6% less time than Strata 0.1.40.2</b> (7% on one GPU) and reads short prompts up to 1.9x as fast · <a href="#about-this-fork">about this fork</a></p>
 
 <p align="center"><a href="https://github.com/Niko1221/Strata/releases/download/v0.1.10/Pagoda.mp4"><img src="docs/media/pagoda-preview.webp" width="720" alt="A voxel pagoda garden that Strata's model wrote, running in the browser"></a><br>
 <sub>A voxel pagoda garden, 1 shot prompt running on an RTX 5070 with Strata (IQ3_S, 128K context) ·
@@ -18,54 +18,69 @@ and coding agents. Nothing leaves your PC.
 ## About this fork
 
 This fork of [Niko1221/Strata](https://github.com/Niko1221/Strata) is tuned for speed. Its default branch, `best`, is
-the latest Strata release (v0.1.40.1) plus the changes below. Several of its earlier changes are in Strata itself: Q4_0
-KV prompt attention on tensor cores ([#452](https://github.com/Niko1221/Strata/pull/452)), the draft layer's K/V in a
-ring with KV streaming ([#453](https://github.com/Niko1221/Strata/pull/453)) and batched expert gathers
-([#439](https://github.com/Niko1221/Strata/pull/439), taken up as #372) since v0.1.38, and prompt chunks of equal size
-([#693](https://github.com/Niko1221/Strata/pull/693), opt-in: `STRATA_PREFILL_EQUAL=1`) since v0.1.40. The two-GPU work
-this fork carried on 0.1.39, from [Hardin22/Strata-DualGPU](https://github.com/Hardin22/Strata-DualGPU), is in Strata
-0.1.40 too - pipelined verify windows, each card keeping only its own layers' weights, a VRAM reserve per card - as
-flags that are off by default (see **Using it** below). What the fork adds on top:
+Strata v0.1.40.2 plus the changes below. Several of its changes are in Strata itself: Q4_0 KV prompt attention on
+tensor cores ([#452](https://github.com/Niko1221/Strata/pull/452)), the draft layer's K/V in a ring with KV streaming
+([#453](https://github.com/Niko1221/Strata/pull/453)) and batched expert gathers
+([#439](https://github.com/Niko1221/Strata/pull/439), taken up as #372) since v0.1.38, prompt chunks of equal size
+([#693](https://github.com/Niko1221/Strata/pull/693), opt-in: `STRATA_PREFILL_EQUAL=1`) since v0.1.40, and the CPU
+share's reach - chunks up to 3,072 tokens, experts mapped from the file, a layer split
+([#1414](https://github.com/Niko1221/Strata/pull/1414), opt-in: `STRATA_PREFILL_CPU_SHARE=auto`) - since v0.1.41,
+which also turns its own CPU share on by default on one GPU for chunks below 1,024 tokens (this branch is not on 0.1.41
+yet). The two-GPU work this fork carried on 0.1.39, from
+[Hardin22/Strata-DualGPU](https://github.com/Hardin22/Strata-DualGPU), is in Strata too: pipelined verify windows,
+each card keeping only its own layers' weights and a VRAM reserve per card since 0.1.40, as flags that are off by
+default (see **Using it** below), and the asynchronous adaptive tier beside the pipelined windows and an AVX2 Q8_K
+activation quantizer since 0.1.40.2. What the fork adds on top:
 
-- **CPU assist:** on prompts under 3,072 tokens the CPU computes part of the experts while the GPUs compute the rest
-  (NVIDIA builds; `STRATA_SPLIT_CPU_ASSIST=1` on a layer split, `STRATA_PREFILL_CPU=0` turns it off). It is most of
-  the fork's lead over stock 0.1.40.1 in the table below.
+- **CPU share:** on prompts under 3,072 tokens the CPU computes part of the experts while the GPUs compute the rest,
+  the experts mapped from the file too (NVIDIA builds; on by default on one card, `STRATA_SPLIT_CPU_ASSIST=1` on a
+  layer split, `STRATA_PREFILL_CPU=0` turns it off). The fork has run it since 2026-10-01. Strata 0.1.40.2's own CPU
+  share (`STRATA_PREFILL_CPU_SHARE`) takes only experts in page-locked RAM, so with the experts mapped, as here, it
+  changes nothing (one card: 126.2 s with it, 126.1 s without). #1414 gave it this fork's limits; the fork's way of
+  moving the activations, quantized on the GPU, is [#1416](https://github.com/Niko1221/Strata/pull/1416). The fork's
+  lead over stock in the tables below is all in the reading, where the CPU share works.
 - **The pipelined decode's lookahead** (two GPUs, `--pipeline-windows 2`): the window already known to be right is
   served first, a copy's prompt lookup carries on from one window to the next (also after a window the drafter's
   chain made), and a window runs ahead of its predecessor's verdict from a 10% estimate (upstream: 20%).
   `STRATA_PIPELINE_YIELD=0`, `STRATA_PIPELINE_LOOKUP_NEXT=0` and `STRATA_PIPELINE_LOOKUP_ANY=0` turn the parts off.
-- **Hardin22's two newest changes, ahead of upstream:** the asynchronous adaptive tier beside the pipelined windows
-  (with `--resident-experts --adapt-async 1`), and an AVX2 Q8_K activation quantizer for the CPU's i-quant experts
-  (the same bytes as ggml's scalar one; `STRATA_NO_Q8K_AVX2=1` turns it off).
 - **The prompt kernels by the number of cards:** upstream's fused int8 tensor-core experts (`STRATA_PF_FUSED=1`) on
-  one card; on two cards 0.1.40's MMQ path (no `STRATA_PF_FUSED`), which reads 6-7% faster there.
+  one card; on two cards the MMQ path (`STRATA_PF_FUSED=0`), which reads 6-7% faster there. These are settings:
+  stock ran with the same ones in the tables below.
 
 Images on demand (`--vision-on-demand`, in the fork's 0.1.38 build) is not in this build: it is to be rebuilt on the
 segmented expert cache.
 
-### Two GPUs: RTX 3060 12 GB + RTX 5070 Ti 16 GB (measured 2026-10-06, Strata 0.1.40.1)
+### Two GPUs and one: RTX 3060 12 GB + RTX 5070 Ti 16 GB (measured 2026-10-07, Strata 0.1.40.2)
 
 A coding agent's conversation, the same for every engine: a 100K-token start, then 8 turns that each add 1-6K tokens
-of code (28,737 tokens in all) and a question, replies capped at 128 tokens. The turns carry one recorded set of
+of code (28,690 tokens in all) and a question, replies capped at 128 tokens. The turns carry one recorded set of
 answers, so every engine reads exactly the same tokens.
 
-| | Stock 0.1.40.1 | This fork on 0.1.39 | This fork on 0.1.40.1 |
+| | Stock 0.1.40.2 | This fork on 0.1.40.1 | This fork on 0.1.40.2 |
 | --- | ---: | ---: | ---: |
-| The conversation, IQ3_S | 146.7 s | 137.0 s | **127.8 s (-13% against stock)** |
-| - its 100K-token start | 62.6 s | 61.1 s | **57.2 s** |
-| - its 8 turns | 67.5 s | 58.6 s | **54.0 s** |
-| The conversation, huihui-ai's Swift 1.5 IQ3_XXS | | 122.4 s | **115.3 s** |
+| The conversation, two GPUs, IQ3_S | 137.4 s | 129.9 s | **128.7 s (-6% against stock)** |
+| - reading its 100K-token start | 58.2 s | 59.2 s | 57.9 s |
+| - reading its 8 turns | 62.9 s | 53.9 s | 54.2 s |
+| - writing its 1,152 tokens | 16.3 s | 16.9 s | 16.5 s |
+| The conversation, the RTX 5070 Ti alone, huihui-ai's Swift 1.5 IQ3_XXS | 126.1 s | 118.4 s | **116.8 s (-7%)** |
 
-- Writing, the same greedy prompts, this fork on 0.1.40.1 against on 0.1.39: short chats 78.5-80.9 / 76.0-77.5
-  tokens/s, copying code 133.1 / 136.6, at 150K context 69.1 / 69.3.
-- One card (the RTX 5070 Ti alone, huihui, the same conversation): 117.5 s on 0.1.40.1 against 117.7 on 0.1.39.
-- Answers written freely differ between versions. With greedy decoding 0.1.40 quoted less code than 0.1.39 in the
-  same session (27-32% of the answer text in code blocks against 47-48%), and quoted code is the text the drafts get
-  right most often, so a session with free answers wrote 65.5 tokens/s on 0.1.40.1 against 76.7 on 0.1.39: the text,
-  not the engine.
+Short prompts, each one new (after an 8K-token warm-up), median of 5 reads, seconds, stock 0.1.40.2 / this fork on
+0.1.40.2:
+
+| | 512 tokens | 1,000 | 2,000 | 3,000 |
+| --- | ---: | ---: | ---: | ---: |
+| Two GPUs, IQ3_S | 3.45 / **2.04** | 4.51 / **2.66** | 6.38 / **3.81** | 6.73 / **5.11** |
+| The RTX 5070 Ti alone, huihui IQ3_XXS | 3.32 / **1.72** | 3.99 / **2.34** | 5.41 / **3.26** | 5.53 / **4.12** |
+
+- The conversation, one run each: stock and the fork on 0.1.40.1 ran in one window, the fork on 0.1.40.2 two hours
+  later (129.8 s on two GPUs in a third window); against the fork on 0.1.40.1, in stock's own window, the lead is 5%
+  (two GPUs) and 6% (one). Its stock on one GPU is the 0.1.40.2 build with only the fork's pipelined-decode commits,
+  which run only with `--pipeline-windows 2`. The short prompts: stock and the fork in one window.
+- On 0.1.40.1 this section said 146.7 s for stock against 127.8 s for the fork (-13%), but that stock run read with
+  `STRATA_PF_FUSED=1`, 6-7% slower on two cards; every two-GPU column here reads with `STRATA_PF_FUSED=0`.
 - One PC: the RTX 3060 runs layers 0-11 and drives the display, the RTX 5070 Ti layers 12-47 (both PCIe 3.0 x8 on an
   ASRock X370), Ryzen 9 5900XT, 96 GB DDR4-3200; q4_0 KV, 512K context, the experts no card holds mapped from the
-  file; through the server. One run each; the same engine twice gave 135.8 and 137.8 s.
+  file; through the server. On one GPU the RTX 5070 Ti runs every layer.
 
 ### Two GPUs on 0.1.39 (measured 2026-10-04)
 
@@ -148,8 +163,8 @@ branch (it compiles the engine: on Windows that needs the CUDA toolkit and Visua
 setup above is the config keys `"gpu": [1, 0]` (the display card first, so the faster card runs the head and the
 draft layer), `"layer_split": "12"` and the arguments `--vram-reserve-mib 1200 --vram-reserve-later-mib 500
 --pipeline-windows 2 --trim-stage-weights` (0.1.40 has the last two as opt-in flags), with `"env":
-{"STRATA_SPLIT_CPU_ASSIST": "1"}`; on one card add `"STRATA_PF_FUSED": "1"` to the env. `main` stays identical to
-upstream.
+{"STRATA_SPLIT_CPU_ASSIST": "1", "STRATA_PF_FUSED": "0"}`; on one card the env is `{"STRATA_PF_FUSED": "1"}`. `main`
+stays identical to upstream.
 
 ## How fast is it?
 
