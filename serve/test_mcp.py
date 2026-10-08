@@ -858,6 +858,33 @@ class Permissions(unittest.TestCase):
         cm.exception.close()
 
 
+class DevToolsRespectTheNoReadList(unittest.TestCase):
+    """The hub gives the no-read list to the programs it starts (STRATA_BLOCKED_JSON), so tools/strata_dev_mcp.py skips
+    those places while it walks: the model never sees a name or a line from them."""
+
+    def test_grep_through_the_hub(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = os.path.realpath(tmp)
+            for rel, text in (("ok/a.txt", "needle one\n"), ("vault/b.txt", "needle two\n"), ("ok/key.pem", "needle three\n")):
+                os.makedirs(os.path.dirname(os.path.join(root, rel)), exist_ok=True)
+                Path(root, rel).write_text(text, encoding="utf-8")
+            dev = {"command": sys.executable, "args": [str(ROOT / "tools" / "strata_dev_mcp.py")]}
+            hub = McpHub({"dev": dev}, {"timeout_s": 20, "blocked_paths": [os.path.join(root, "vault"), "*.pem"]})
+            hub.start(wait=True)
+            try:
+                r = hub.call("dev__grep", {"pattern": "needle", "path": root})
+                self.assertTrue(r["ok"], r["text"])
+                self.assertIn("1 match in 1 file", r["text"])
+                self.assertIn("a.txt", r["text"])
+                self.assertNotIn("vault", r["text"].split("\n\n", 1)[-1])
+                self.assertNotIn("key.pem", r["text"].split("\n\n", 1)[-1])
+                self.assertEqual(hub.kind_of("dev__grep"), "read")                  # a search is a read: no click needed
+                self.assertEqual((hub.kind_of("dev__glob"), hub.kind_of("dev__read_lines")), ("read", "read"))
+                self.assertTrue(hub.blocked({"path": os.path.join(root, "vault")}))  # and the hub refuses a call that names it
+            finally:
+                hub.close()
+
+
 class NoServers(unittest.TestCase):
     def test_opt_in_without_servers_is_a_plain_chat(self):
         tok = ByteTokenizer()

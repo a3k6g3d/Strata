@@ -832,6 +832,15 @@ or `[` is a pattern on the whole path; any other entry is a folder or a file (`%
 list covers what a call names and what a listing shows; it is not a sandbox: a tool server that reads files without
 being given a path (its own search index, say) is outside it.
 
+**Code search.** `tools/strata_dev_mcp.py` is a read-only MCP server with `grep` (text or a regular expression inside
+files, with a file filter, context lines and a result cap), `glob` (files by pattern, `**` works, newest first) and
+`read_lines` (a numbered range of one file): what a model needs to find a line and read around it, which the official
+filesystem server (names and whole files only) cannot do. Add it like any server (`"dev": {"command": "python", "args":
+["tools/strata_dev_mcp.py"]}`). Strata gives every program it starts the resolved no-read list in `STRATA_BLOCKED_JSON`;
+this one skips those folders and files while it walks, so a blocked name never reaches the model. It follows no links or
+junctions, skips binary files, files over 5 MB and `.git`, `node_modules`, `__pycache__` and virtual environments,
+stops a search after 25 s and cuts an answer at 30,000 characters.
+
 **The internet tool.** `tools/strata_web_mcp.py` is a small MCP server with `web_search` (Bing, DuckDuckGo as a
 fallback) and `fetch_url` (a page as text with its links, in parts for long pages). Add it like any server and name it
 in `"network_servers"`:
