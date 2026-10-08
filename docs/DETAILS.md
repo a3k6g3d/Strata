@@ -1185,6 +1185,29 @@ with an `mcpServers` block; add it to the `serve/server.py` line of your run scr
   before and keep their own tools; a request to `/v1/chat/completions` opts in with `"strata_mcp": true` (it then
   gets `strata_mcp` tool events in the stream).
 
+**Permission modes.** The chat page has a drop-down beside the composer's buttons that says what the model may do with
+the tools (shown when MCP servers are connected). The server enforces it; the page only sends the choice
+(`"strata_permission"`) with each request. Every tool is classed **read** (looks, changes nothing), **write**
+(changes things) or **danger** (deletes, moves, runs commands, sends something out) from the server's own
+`readOnlyHint` and the tool's name; a dangerous-sounding name wins over a server's "read only" claim, and a tool
+Strata can't place counts as a change.
+
+| Mode | Runs by itself | Asks first | Refused |
+| --- | --- | --- | --- |
+| No tools | - | - | the model is offered no tools |
+| Read-only | read | - | write, danger |
+| **Ask before changes** (the default) | read | write, danger | - |
+| Allow edits | read, write | danger | - |
+| Full access (asks you to confirm when you switch) | everything | - | - |
+
+A call that asks waits in the chat as a block with **Allow**, **Always allow** (this tool, until Strata restarts;
+never in a read-only chat) and **Deny**. Deny, a refusal and a timeout (`approval_timeout_s`, 300 by default) all
+reach the model as an `error: ...` result it can react to; the tool never runs. Config keys, in the `"mcp"` block:
+`"permission"` (the mode the chat starts in: `off`, `read`, `ask`, `edit` or `full`), `"approval_timeout_s"` and
+`"tool_classes"` (`{"tool_name": "read"|"write"|"danger"}`, to correct a guess; names are the server's own, without
+the `server__` prefix). An API request that opts in with `"strata_mcp": true` and names no `"strata_permission"` keeps
+the behaviour it always had (everything runs): only the page can show the buttons.
+
 **Security.** MCP tools run on your PC with your user's rights, and **the model decides when to call them** - also
 because of what it reads (a web page or a file can contain instructions). Give a filesystem server only the folders
 it needs, prefer read-only tools, and don't add servers you don't trust. The tools can only be used from the chat

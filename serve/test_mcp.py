@@ -19,7 +19,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from serve import mcp_fake_server as fake  # noqa: E402
 from serve.frontend import ChatTemplate  # noqa: E402
-from serve.mcp import McpCancelled, McpHub, hub_from_config  # noqa: E402
+from serve.mcp import (MODES, ApprovalGate, McpCancelled, McpHub, classify, decide,  # noqa: E402
+                       hub_from_config, settings_from)
 from serve.server import ByteTokenizer, MockEngine, Service, serve  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -422,6 +423,250 @@ class ToolLoop(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError):
             urllib.request.urlopen(self.base + "/mcp", timeout=10)
         self.svc.api_key = ""
+
+
+# ------------------------------------------------------------------------------------------------ permission modes
+class PermissionRules(unittest.TestCase):
+    """classify() and decide(): what a tool is, and what each mode does with it (no server, no engine)."""
+
+    def test_classify_names_and_hints(self):
+        read = ["read_file", "list_directory", "search_files", "get_file_info", "fetch", "directory_tree", "grep"]
+        write = ["write_file", "edit_file", "create_directory", "add_note", "update_row", "echo"]
+        danger = ["delete_file", "remove_dir", "move_file", "rename", "exec", "run_command", "shell", "kill_process",
+                  "send_email", "git_push", "drop_table"]
+        for n in read:
+            self.assertEqual(classify({"name": n}), "read", n)
+        for n in write:
+            self.assertEqual(classify({"name": n}), "write", n)
+        for n in danger:
+            self.assertEqual(classify({"name": n}), "danger", n)
+        self.assertEqual(classify({"name": "directory_tree", "annotations": {"readOnlyHint": True}}), "read")
+        self.assertEqual(classify({"name": "weird", "annotations": {"readOnlyHint": True}}), "read")
+        self.assertEqual(classify({"name": "weird"}), "write")                      # unknown: treated as a change
+        self.assertEqual(classify({"name": "delete_x", "annotations": {"readOnlyHint": True}}), "danger")   # name wins
+        self.assertEqual(classify({"name": "running_jobs"}), "write")              # "run" inside "running" is no command
+        self.assertEqual(classify({"name": "echo"}, {"echo": "read"}), "read")     # the config overrides the guess
+
+    def test_decide_matrix(self):
+        table = {"off": ("deny", "deny", "deny"), "read": ("allow", "deny", "deny"), "ask": ("allow", "ask", "ask"),
+                 "edit": ("allow", "allow", "ask"), "full": ("allow", "allow", "allow")}
+        self.assertEqual(set(table), set(MODES))
+        for mode, row in table.items():
+            self.assertEqual(tuple(decide(mode, k) for k in ("read", "write", "danger")), row, mode)
+        self.assertEqual(decide("ask", "danger", always=True), "allow")             # "Always allow" in a mode that asks
+        self.assertEqual(decide("read", "write", always=True), "deny")              # ... never overrides read-only
+
+    def test_gate(self):
+        g = ApprovalGate()
+        t = g.open("fake__add")
+        self.assertIsNone(g.poll(t, 0.01))
+        self.assertTrue(g.resolve(t, True, always=True))
+        self.assertTrue(g.poll(t, 0.01))
+        self.assertIn("fake__add", g.always)
+        self.assertFalse(g.resolve(t, False))                                       # answered once only
+        self.assertFalse(g.resolve("nope", True))
+        t2 = g.open("x")
+        g.resolve(t2, False, always=True)
+        self.assertNotIn("x", g.always)                                             # a Deny remembers nothing
+
+    def test_settings_from(self):
+        self.assertEqual(settings_from({"mcp": {"permission": "edit", "approval_timeout_s": 5,
+                                                "tool_classes": {"echo": "read"}}}),
+                         {"permission": "edit", "approval_timeout_s": 5.0, "tool_classes": {"echo": "read"}})
+        for bad in ({"permission": "root"}, {"approval_timeout_s": 0}, {"tool_classes": {"a": "evil"}}):
+            with self.assertRaises(SystemExit):
+                settings_from({"mcp": bad})
+
+
+class Permissions(unittest.TestCase):
+    """The permission modes through the real server: what runs by itself, what waits for the click, what is refused.
+    `fake__echo` is a read tool, `fake__add` a write tool and `fake__big` a dangerous one (tool_classes)."""
+
+    start = ToolLoop.start
+
+    def setUp(self):
+        self.log = tempfile.NamedTemporaryFile(delete=False, suffix=".jsonl")
+        self.log.close()
+        os.environ["FAKE_MCP_LOG"] = self.log.name
+        self.httpd = None
+        self.hub = None
+
+    def make(self, **settings):
+        self.hub = McpHub({"fake": stdio()}, {"timeout_s": 10, "tool_classes": {"echo": "read", "add": "write", "big": "danger"},
+                                              **settings})
+        self.hub.start(wait=True)
+
+    def tearDown(self):
+        if self.httpd:
+            self.httpd.shutdown()
+            self.httpd.server_close()
+        if self.hub:
+            self.hub.close()
+        del os.environ["FAKE_MCP_LOG"]
+        os.unlink(self.log.name)
+
+    def open(self, mode, path="/v1/chat/completions", **extra):
+        body = {"model": "m", "messages": [{"role": "user", "content": "do it"}], "stream": True,
+                "strata_mcp": True, "strata_permission": mode, **extra}
+        req = urllib.request.Request(self.base + path, data=json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json"})
+        return urllib.request.urlopen(req, timeout=30)
+
+    def approve(self, token, allow, always=False, headers=None, body=None):
+        data = json.dumps(body if body is not None else {"approval": token, "allow": allow, "always": always}).encode()
+        req = urllib.request.Request(self.base + "/mcp/approve", data=data,
+                                     headers={"Content-Type": "application/json", **(headers or {})})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return r.status
+        except urllib.error.HTTPError as e:
+            with e:
+                return e.code
+
+    def run_mode(self, mode, answer=None, always=False):
+        """Posts one chat in `mode`; clicks `answer` (True/False) on the first approval event.  -> the mcp events."""
+        events, asked = [], False
+        with self.open(mode) as r:
+            for raw in r:
+                line = raw.decode()
+                if not line.startswith("data: {"):
+                    continue
+                x = json.loads(line[6:]).get("strata_mcp")
+                if not x:
+                    continue
+                events.append(x)
+                if x["event"] == "approval" and not asked:
+                    asked = True
+                    self.assertIsNotNone(answer, "an approval was asked for in a mode that must not ask")
+                    self.assertEqual(self.approve(x["approval"], answer, always), 200)
+        return events
+
+    def ran(self, name):
+        return f'"call": "{name}"' in Path(self.log.name).read_text()
+
+    def test_read_only_runs_reads_and_refuses_changes(self):
+        self.make()
+        self.start(call_script("fake__echo", text="hi"), "</think>\n\nread it")
+        ev = self.run_mode("read")
+        self.assertEqual([e["event"] for e in ev], ["start", "call", "result"])
+        self.assertEqual((ev[1]["kind"], ev[2]["ok"], ev[2]["text"]), ("read", True, "hi"))
+        self.start(call_script("fake__add", a=2, b=3), "</think>\n\nrefused")
+        ev = self.run_mode("read")                                                  # a write: refused, never asked
+        self.assertEqual([e["event"] for e in ev], ["start", "call", "result"])
+        self.assertEqual((ev[1]["kind"], ev[2]["ok"], ev[2].get("denied")), ("write", False, True))
+        self.assertIn("Read-only mode", ev[2]["text"])
+        self.assertFalse(self.ran("add"))
+        self.assertIn("error: Read-only mode", self.engine.prompt_text(1))          # the model read the refusal
+
+    def test_ask_waits_then_runs_after_allow(self):
+        self.make()
+        self.start(call_script("fake__add", a=2, b=3), "</think>\n\nfive")
+        ev = self.run_mode("ask", answer=True)
+        self.assertEqual([e["event"] for e in ev], ["start", "call", "approval", "result"])
+        self.assertEqual(ev[2]["kind"], "write")
+        self.assertEqual((ev[3]["ok"], ev[3]["text"]), (True, "5"))
+        self.assertTrue(self.ran("add"))
+
+    def test_ask_deny_never_runs(self):
+        self.make()
+        self.start(call_script("fake__add", a=2, b=3), "</think>\n\nokay, not done")
+        ev = self.run_mode("ask", answer=False)
+        self.assertEqual([e["event"] for e in ev], ["start", "call", "approval", "result"])
+        self.assertEqual((ev[3]["ok"], ev[3].get("denied")), (False, True))
+        self.assertIn("the user did not allow this call", ev[3]["text"])
+        self.assertFalse(self.ran("add"))
+        self.assertIn("the user did not allow this call", self.engine.prompt_text(1))
+
+    def test_ask_runs_reads_without_asking(self):
+        self.make()
+        self.start(call_script("fake__echo", text="looked"), "</think>\n\nseen")
+        ev = self.run_mode("ask")
+        self.assertEqual([e["event"] for e in ev], ["start", "call", "result"])
+        self.assertTrue(ev[2]["ok"])
+
+    def test_ask_times_out_to_a_refusal(self):
+        self.make(approval_timeout_s=1.5)
+        self.start(call_script("fake__add", a=1, b=1), "</think>\n\ntoo slow")
+        events = []
+        with self.open("ask") as r:
+            for raw in r:
+                line = raw.decode()
+                if line.startswith("data: {") and json.loads(line[6:]).get("strata_mcp"):
+                    events.append(json.loads(line[6:])["strata_mcp"])               # nobody answers
+        self.assertEqual([e["event"] for e in events], ["start", "call", "approval", "result"])
+        self.assertIn("did not answer in time", events[3]["text"])
+        self.assertFalse(self.ran("add"))
+
+    def test_always_allow_is_remembered_for_the_tool(self):
+        self.make()
+        self.start(call_script("fake__add", a=2, b=3), "</think>\n\nfive")
+        self.run_mode("ask", answer=True, always=True)
+        self.start(call_script("fake__add", a=4, b=4), "</think>\n\neight")        # same tool, no click needed
+        ev = self.run_mode("ask")
+        self.assertEqual([e["event"] for e in ev], ["start", "call", "result"])
+        self.assertEqual(ev[2]["text"], "8")
+        self.start(call_script("fake__add", a=1, b=1), "</think>\n\nstill refused in read-only")
+        ev = self.run_mode("read")                                                  # ... but not in a read-only chat
+        self.assertTrue(ev[-1].get("denied"))
+
+    def test_edit_mode_edits_but_asks_for_danger(self):
+        self.make()
+        self.start(call_script("fake__add", a=2, b=2), "</think>\n\nfour")
+        ev = self.run_mode("edit")
+        self.assertEqual([e["event"] for e in ev], ["start", "call", "result"])
+        self.start(call_script("fake__big", n=5), "</think>\n\nbig")
+        ev = self.run_mode("edit", answer=False)
+        self.assertEqual([e["event"] for e in ev], ["start", "call", "approval", "result"])
+        self.assertEqual(ev[2]["kind"], "danger")
+
+    def test_full_runs_everything_and_off_offers_nothing(self):
+        self.make()
+        self.start(call_script("fake__big", n=5), "</think>\n\ndone")
+        ev = self.run_mode("full")
+        self.assertEqual([e["event"] for e in ev], ["start", "call", "result"])
+        self.assertEqual(ev[2]["text"], "yyyyy")
+        self.start("</think>\n\nno tools here")
+        ev = self.run_mode("off")
+        self.assertEqual(ev, [])
+        self.assertNotIn("fake__", self.engine.prompt_text(0))
+
+    def test_a_request_naming_no_mode_keeps_the_old_behaviour(self):
+        self.make()
+        self.start(call_script("fake__add", a=2, b=3), "</think>\n\nfive")
+        body = {"model": "m", "messages": [{"role": "user", "content": "x"}], "stream": False, "strata_mcp": True}
+        req = urllib.request.Request(self.base + "/v1/chat/completions", data=json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            msg = json.loads(r.read())["choices"][0]["message"]
+        self.assertEqual(msg["strata_mcp"][-1]["text"], "5")
+
+    def test_bad_mode_is_a_400_and_status_lists_the_modes(self):
+        self.make(permission="edit")
+        self.start("</think>\n\nx")
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            self.open("root")
+        self.assertEqual(cm.exception.code, 400)
+        cm.exception.close()
+        with urllib.request.urlopen(self.base + "/mcp", timeout=10) as r:
+            st = json.loads(r.read())
+        self.assertEqual([m["id"] for m in st["permissions"]["modes"]], list(MODES))
+        self.assertEqual(st["permissions"]["default"], "edit")
+        kinds = {t["tool"]: t["kind"] for t in st["servers"][0]["tools"]}
+        self.assertEqual((kinds["echo"], kinds["add"], kinds["big"]), ("read", "write", "danger"))
+
+    def test_approve_endpoint_guards(self):
+        self.make()
+        self.start("</think>\n\nx")
+        self.assertEqual(self.approve("nope", True), 404)                           # no such waiting call
+        self.assertEqual(self.approve("", True, body={"allow": True}), 400)         # no token
+        self.assertEqual(self.approve("", True, body={"approval": "x", "allow": "yes"}), 400)   # not a boolean
+        self.assertEqual(self.approve("t", True, headers={"Origin": "http://evil.example"}), 403)   # a foreign page
+        req = urllib.request.Request(self.base + "/mcp/approve", data=b"approval=x&allow=true",
+                                     headers={"Content-Type": "application/x-www-form-urlencoded"})
+        with self.assertRaises(urllib.error.HTTPError) as cm:                       # a plain form post
+            urllib.request.urlopen(req, timeout=10)
+        self.assertEqual(cm.exception.code, 415)
+        cm.exception.close()
 
 
 class NoServers(unittest.TestCase):

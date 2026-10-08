@@ -59,6 +59,12 @@ main { flex: 1; min-height: 0; display: flex; }
 .tool-call .st-badge, .tool-call summary .small { flex: none; }
 .tool-call[data-state="error"] { border-color: color-mix(in srgb, var(--st-danger) 35%, var(--st-line)); }
 .tool-call[data-state="running"] .st-badge::before, .tool-call[data-state="writing"] .st-badge::before { animation: blink 1s steps(2) infinite; }
+.tool-call[data-state="blocked"] { border-color: color-mix(in srgb, var(--st-danger) 35%, var(--st-line)); }
+.tool-call[data-state="waiting"] { border-color: var(--st-warn); }
+.tool-call[data-state="waiting"] .st-badge::before { animation: blink 1s steps(2) infinite; }
+.tool-call__approve { display: flex; flex-wrap: wrap; align-items: center; gap: var(--st-s-2) var(--st-s-3); padding: var(--st-s-2) 0 var(--st-s-1); }
+.tool-call__ask { flex: 1 1 240px; font-size: var(--st-fs-sm); color: var(--st-ink); }
+.tool-call__btns { display: flex; gap: var(--st-s-2); }
 .tool-call__label { font-size: var(--st-fs-xs); font-weight: var(--st-fw-medium); color: var(--st-ink-muted); margin: var(--st-s-2) 0 var(--st-s-1); }
 .tool-call__pre { margin: 0; padding: 10px 12px; max-height: 320px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere;
                   font: 400 12.5px/1.5 var(--st-font-mono); color: var(--st-ink-soft); background: var(--st-surface);
@@ -68,6 +74,18 @@ main { flex: 1; min-height: 0; display: flex; }
 .st-composer { max-width: 860px; margin: 0 auto; }
 .st-composer textarea { max-height: 40vh; }
 .st-btn--send { width: 42px; padding: 0; }
+/* the permission drop-down beside the composer's buttons; its colour says how much the model may do */
+.perm { display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 4px 0 10px; border-radius: var(--st-r-pill);
+        background: var(--st-surface-2); border: 1px solid var(--st-line); color: var(--st-ink-soft); font-size: var(--st-fs-xs); }
+.perm[hidden] { display: none; }
+.perm select { appearance: none; -webkit-appearance: none; background: transparent; border: 0; color: inherit; font: inherit;
+               padding: 0 18px 0 2px; height: 100%; cursor: pointer; outline: none; max-width: 170px;
+               background-image: linear-gradient(45deg, transparent 50%, currentColor 50%), linear-gradient(135deg, currentColor 50%, transparent 50%);
+               background-position: calc(100% - 9px) 55%, calc(100% - 5px) 55%; background-size: 4px 4px, 4px 4px; background-repeat: no-repeat; }
+.perm:focus-within { outline: 2px solid var(--st-accent); outline-offset: 1px; }
+.perm[data-mode="full"] { background: var(--st-danger-tint); border-color: color-mix(in srgb, var(--st-danger) 40%, var(--st-line)); color: var(--st-danger-text); }
+.perm[data-mode="edit"] { background: var(--st-warn-tint); border-color: color-mix(in srgb, var(--st-warn) 40%, var(--st-line)); color: var(--st-warn-text); }
+.perm[data-mode="off"] { opacity: .75; }
 .composer-hint { font-size: var(--st-fs-xs); color: var(--st-ink-muted); margin-right: var(--st-s-2); font-variant-numeric: tabular-nums; }
 .attachments { display: flex; flex-wrap: wrap; gap: var(--st-s-2); padding: 2px 4px 0; }
 .st-composer.dragging { outline: 2px dashed var(--st-accent); outline-offset: 3px; }
