@@ -643,15 +643,24 @@ function msgEl(m, i) {
 // the result as the model read it.  Its body is built only while open: a result can be 20,000 characters.
 const TOOL_STATE = {writing: ["st-badge--reading", "Writing"], running: ["st-badge--generating", "Running"], done: ["", "Done"],
                     error: ["st-badge--error", "Error"], skipped: ["st-badge--queued", "Not run"],
-                    waiting: ["st-badge--queued", "Needs your OK"], blocked: ["st-badge--error", "Blocked"]};
+                    waiting: ["st-badge--queued", "Needs your OK"], blocked: ["st-badge--error", "Blocked"],
+                    asking: ["st-badge--queued", "Asks you"]};
 const KIND_TEXT = {write: "This tool changes things on this PC.", danger: "This tool can delete, move or run things on this PC.",
-                   read: "This tool only looks.", net: "This tool reads from the internet."};
+                   read: "This tool only looks.", net: "This tool reads from the internet.", ask: "The model is asking you something."};
 function toolHtml(t, k) {
   const [cls, label] = TOOL_STATE[t.state] || ["", t.state];
   const args = t.arguments == null ? "" : JSON.stringify(t.arguments, null, 2);
   const preview = t.result != null ? t.result : args.replace(/\s+/g, " ");
   let body = "";
   if (t.open) {
+    if (t.state === "asking") {
+      body += `<div class="tool-call__question"><div class="tool-call__q">${esc(t.question || "")}</div>` +
+        ((t.options || []).length ? `<div class="tool-call__opts">${t.options.map((o, i) =>
+          `<button type="button" class="st-btn st-btn--secondary" data-answer-opt="${i}">${esc(o)}</button>`).join("")}</div>` : "") +
+        `<div class="tool-call__reply"><input type="text" class="st-input tool-call__input" maxlength="4000" ` +
+        `placeholder="Type an answer and press Enter" aria-label="Your answer">` +
+        `<button type="button" class="st-btn st-btn--primary" data-answer-send>Send</button></div></div>`;
+    }
     if (t.state === "waiting") {
       const prot = t.leak
         ? `<strong>This sends a request to the internet, and the model has read things on this PC in this chat.</strong> Check the address below for anything private. It always needs your OK. `
@@ -698,6 +707,9 @@ function onTool(m, x) {
   if (x.event === "call") {
     Object.assign(t, {name: x.name, server: x.server, tool: x.tool, arguments: x.arguments, round: x.round, state: "running",
                       kind: x.kind});
+  } else if (x.event === "question") {
+    // ask_user: the model waits for the user's typed or clicked answer (POST /mcp/answer)
+    Object.assign(t, {state: "asking", approval: x.approval, question: x.question, options: x.options || [], open: true});
   } else if (x.event === "approval") {
     // the server holds the call until the user answers (Allow / Always allow / Deny, or it times out)
     Object.assign(t, {state: "waiting", approval: x.approval, kind: x.kind || t.kind, protectedPath: !!x.protected, leak: !!x.leak, open: true});
@@ -705,6 +717,17 @@ function onTool(m, x) {
     Object.assign(t, {result: x.text, ok: x.ok, chars: x.chars, truncated: x.truncated, ms: x.ms, approval: null,
                       state: x.skipped ? "skipped" : x.denied ? "blocked" : x.ok ? "done" : "error"});
   }
+}
+// the user's answer to an ask_user question (POST /mcp/answer)
+async function answerQuestion(m, t, text, el) {
+  const token = t.approval;
+  if (!token) return;
+  t.approval = null;
+  t.state = "running";
+  updateAssistant(el, m, !!busy && busy.msg === m);
+  try {
+    await fetch("mcp/answer", {method: "POST", headers: headers(true), body: JSON.stringify({approval: token, text})});
+  } catch (e) { /* the result event reports what happened */ }
 }
 // Allow / Always allow / Deny on a waiting tool call: the server is holding it (POST /mcp/approve)
 async function answerApproval(m, t, how, el) {
@@ -760,6 +783,18 @@ $("chat").addEventListener("click", (e) => {
   if (cc) { copyText(cc.closest(".st-code").querySelector("pre").textContent, cc); return; }
   const mc = e.target.closest("[data-msg-copy]");
   if (mc) { const i = +mc.closest(".st-msg").dataset.i; copyText(messages[i].text, mc); return; }
+  const qo = e.target.closest("[data-answer-opt], [data-answer-send]");
+  if (qo) {
+    e.preventDefault();
+    const el = qo.closest(".st-msg"), m = messages[+el.dataset.i], block = qo.closest(".tool-call");
+    const t = m && m.tools && m.tools[+block.dataset.tool];
+    if (t) {
+      const text = qo.dataset.answerOpt !== undefined ? (t.options || [])[+qo.dataset.answerOpt]
+                                                        : block.querySelector(".tool-call__input").value.trim();
+      if (text) answerQuestion(m, t, text, el);
+    }
+    return;
+  }
   const ap = e.target.closest("[data-approve]");
   if (ap) {
     e.preventDefault();
@@ -776,6 +811,12 @@ $("chat").addEventListener("click", (e) => {
     t.open = !t.open;
     updateAssistant(el, m, !!busy && busy.msg === m);
   }
+});
+$("chat").addEventListener("keydown", (e) => {
+  if (e.key !== "Enter" || !e.target.classList || !e.target.classList.contains("tool-call__input")) return;
+  e.preventDefault();
+  const send = e.target.closest(".tool-call__reply").querySelector("[data-answer-send]");
+  if (send) send.click();
 });
 $("chat").addEventListener("toggle", (e) => {
   const d = e.target;

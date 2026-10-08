@@ -3674,6 +3674,34 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
             kind_of_tool = hub.kind_of(c.name)
             yield "mcp", {"event": "call", "id": c.id, "name": c.name, "server": s.name if s else None,
                           "tool": tool, "arguments": c.arguments, "round": rounds, "kind": kind_of_tool, "mode": mode}
+            if kind_of_tool == "ask":
+                # The built-in ask_user: the model asks the user something and waits for the typed or clicked answer
+                # (POST /mcp/answer).  Nothing runs anywhere; the answer is the tool's result.
+                a = c.arguments if isinstance(c.arguments, dict) else {}
+                question = str(a.get("question") or "")[:2000]
+                options = [str(o)[:200] for o in (a.get("options") if isinstance(a.get("options"), list) else [])[:6]]
+                token = hub.gate.open(c.name, True)
+                limit = float(hub.settings["approval_timeout_s"])
+                yield "mcp", {"event": "question", "id": c.id, "approval": token, "question": question,
+                              "options": options, "timeout_s": limit}
+                print("[strata] ask_user waits for the user's answer", flush=True)
+                answered, end, t_ask = None, time.monotonic() + limit, time.monotonic()
+                try:
+                    while answered is None and time.monotonic() < end and not cancel.is_set():
+                        answered = hub.gate.poll(token, 1.0)
+                        if answered is None:
+                            yield "ping", None
+                    reply = hub.gate.text(token) if answered else None
+                except GeneratorExit:
+                    cancel.set()
+                    raise
+                finally:
+                    hub.gate.close(token)
+                text_out = (reply or "(an empty answer)") if reply is not None else "error: the user did not answer in time"
+                results.append(text_out)
+                yield "mcp", {"event": "result", "id": c.id, "ok": reply is not None, "text": text_out,
+                              "chars": len(text_out), "truncated": False, "ms": int((time.monotonic() - t_ask) * 1000)}
+                continue
             # A change under a protected path (config mcp.protected_paths, e.g. C:\) asks every time, in every mode
             # but read-only (which refuses it); "Always allow" and "Full access" never cover it.
             # The no-read list (config mcp.blocked_paths) comes first: refused in every mode, never asked about.
@@ -4423,6 +4451,9 @@ def make_handler(svc: Service):
             if path == "/mcp/approve":                       # the web app's Allow / Deny on a waiting tool call
                 self._mcp_approve()
                 return
+            if path == "/mcp/answer":                        # the web app's reply to an ask_user question
+                self._mcp_answer()
+                return
             if path in ("/unload", "/load") and not self._control_body():
                 return
             # JSON from Strata's own page only, as /settings: else a plain form POST from any site unloads the model
@@ -4634,6 +4665,25 @@ def make_handler(svc: Service):
                 self._json(404, {"error": {"message": "no MCP servers are configured"}})
                 return
             done = svc.mcp.gate.resolve(token, allow, body.get("always") is True)
+            self._json(200 if done else 404, {"ok": done})
+
+        def _mcp_answer(self):
+            """POST /mcp/answer {"approval": <token from the question event>, "text": "..."}: the user's reply to an
+            ask_user question.  From Strata's own page only (_own_page), as /mcp/approve."""
+            if not self._own_page("questions can be answered"):
+                return
+            try:
+                body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+                token, text = str(body["approval"]), body["text"]
+                if not isinstance(text, str):
+                    raise ValueError("text must be a string")
+            except (ValueError, KeyError, TypeError) as e:
+                self._json(400, {"error": {"message": f"expected {{\"approval\": ..., \"text\": \"...\"}}: {e}"}})
+                return
+            if svc.mcp is None:
+                self._json(404, {"error": {"message": "no MCP servers are configured"}})
+                return
+            done = svc.mcp.gate.answer(token, text)
             self._json(200 if done else 404, {"ok": done})
 
         def _config_get(self):

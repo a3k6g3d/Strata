@@ -37,7 +37,7 @@ from serve.winjob import contain
 PROTOCOL = "2025-06-18"               # the MCP revision Strata asks for; the server's answer is used as given
 DEFAULTS = {"timeout_s": 60.0, "max_result_chars": 20000, "max_rounds": 8, "start_timeout_s": 120.0,
             "permission": "ask", "approval_timeout_s": 300.0, "tool_classes": {}, "protected_paths": [],
-            "blocked_paths": [], "network_servers": []}
+            "blocked_paths": [], "network_servers": [], "ask_user": True}
 
 # ------------------------------------------------------------------------------------------------ permission modes
 # The web app's mode list (a request says which one it runs in: "strata_permission").  Every tool is classed as
@@ -80,6 +80,8 @@ def decide(mode: str, kind: str, always: bool = False) -> str:
     """'allow' (runs now), 'ask' (waits for the user) or 'deny' for a tool of this kind in this mode."""
     if mode == "off":                                    # (the server offers no tools at all in this mode)
         return "deny"
+    if kind == "ask":                                    # the built-in ask_user: asking the user changes nothing
+        return "allow"
     if mode == "full" or kind in ("read", "net"):         # (the tool loop asks about a network call after local reads)
         return "allow"
     if mode == "read":                                   # "allow always" never overrides a read-only chat
@@ -265,7 +267,7 @@ class ApprovalGate:
     def open(self, name: str, protected: bool = False) -> str:
         token = os.urandom(6).hex()
         with self.lock:
-            self.slots[token] = {"name": name, "event": threading.Event(), "allow": None, "protected": protected}
+            self.slots[token] = {"name": name, "event": threading.Event(), "allow": None, "protected": protected, "text": ""}
         return token
 
     def resolve(self, token: str, allow: bool, always: bool = False) -> bool:
@@ -278,6 +280,20 @@ class ApprovalGate:
                 self.always.add(slot["name"])
             slot["event"].set()
             return True
+
+    def answer(self, token: str, text: str) -> bool:
+        """The user's reply to an ask_user question."""
+        with self.lock:
+            slot = self.slots.get(token)
+            if slot is None or slot["event"].is_set():
+                return False
+            slot["allow"], slot["text"] = True, str(text)[:4000]
+            slot["event"].set()
+            return True
+
+    def text(self, token: str) -> str:
+        slot = self.slots.get(token)
+        return slot["text"] if slot else ""
 
     def poll(self, token: str, wait: float = 1.0):
         """True / False once the user answered, None while still waiting."""
@@ -747,6 +763,33 @@ def _clean(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9_-]", "_", str(name)) or "x"
 
 
+ASK_TOOL = {
+    "name": "ask_user",
+    "description": "Ask the user a question and wait for the answer. Use it when you need a decision or a fact only the user "
+                   "has, instead of guessing. `options` (optional, up to 6) become buttons; the user can always type a reply.",
+    "inputSchema": {"type": "object", "properties": {"question": {"type": "string"},
+                                                       "options": {"type": "array", "items": {"type": "string"}}},
+                    "required": ["question"]},
+    "annotations": {"readOnlyHint": True},
+}
+
+
+class _AskServer:
+    """The built-in `strata` server: one tool, ask_user, which the tool loop answers from the chat page."""
+    name, kind, status, error = "strata", "builtin", "ready", None
+    info = {"name": "strata", "title": "Strata (built in)"}
+    tools = [ASK_TOOL]
+
+    def start(self) -> bool:
+        return True
+
+    def call(self, tool, arguments, timeout, cancel=None):
+        raise McpError("ask_user is answered in the chat by the user")
+
+    def close(self) -> None:
+        pass
+
+
 class McpHub:
     """Every configured server, and the merged, namespaced tool list the model sees."""
 
@@ -757,6 +800,8 @@ class McpHub:
         # folders itself (strata_dev_mcp.py) can then skip them while it walks, not only have its answer cut afterwards
         self.settings["_blocked_json"] = json.dumps({"prefixes": self.blocklist.prefixes, "globs": self.blocklist.globs})
         self.servers = {name: McpServer(name, cfg, self.settings) for name, cfg in servers.items()}
+        if self.settings["ask_user"] and "strata" not in self.servers:
+            self.servers["strata"] = _AskServer()
         self.threads: list[threading.Thread] = []
         self._routes: dict[str, tuple[McpServer, str]] = {}
         self.gate = ApprovalGate()
@@ -776,6 +821,8 @@ class McpHub:
         server, tool = self._routes.get(name) or self.routes().get(name, (None, name))
         if server is None:
             return "danger"
+        if isinstance(server, _AskServer):
+            return "ask"
         if server.name in self.settings["network_servers"]:
             return "net"                                 # reaches the internet, whatever its name says
         entry = next((t for t in server.tools if t["name"] == tool), {"name": tool})
@@ -868,8 +915,9 @@ class McpHub:
             servers.append({"name": s.name, "transport": s.kind, "status": s.status, "error": s.error,
                             "info": s.info,
                             "tools": [{"name": names.get(t["name"], t["name"]), "tool": t["name"],
-                                       "kind": "net" if s.name in self.settings["network_servers"]
-                                       else classify(t, self.settings.get("tool_classes")),
+                                       "kind": ("ask" if isinstance(s, _AskServer)
+                                                else "net" if s.name in self.settings["network_servers"]
+                                                else classify(t, self.settings.get("tool_classes"))),
                                        "description": str(t.get("description") or "")[:300]} for t in s.tools]})
         return {"servers": servers, "tools": len(routes),
                 "settings": {k: self.settings[k] for k in ("timeout_s", "max_result_chars", "max_rounds")},
@@ -933,6 +981,10 @@ def settings_from(cfg: dict) -> dict:
             if not isinstance(value, list) or any(not isinstance(v, str) or not v.strip() for v in value):
                 raise SystemExit("[strata] config mcp.protected_paths: expected a list of paths, e.g. [\"C:\\\\\"]")
             out[key] = [v.strip() for v in value]
+        elif key == "ask_user":                          # the built-in ask_user tool (default on)
+            if not isinstance(value, bool):
+                raise SystemExit("[strata] config mcp.ask_user: expected true or false")
+            out[key] = value
         elif key == "network_servers":                   # servers whose tools reach the internet: kind "net"
             if not isinstance(value, list) or any(not isinstance(v, str) or not v.strip() for v in value):
                 raise SystemExit("[strata] config mcp.network_servers: expected a list of server names, e.g. [\"web\"]")
