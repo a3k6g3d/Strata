@@ -3705,9 +3705,12 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
             # A change under a protected path (config mcp.protected_paths, e.g. C:\) asks every time, in every mode
             # but read-only (which refuses it); "Always allow" and "Full access" never cover it.
             # The no-read list (config mcp.blocked_paths) comes first: refused in every mode, never asked about.
-            no_read = hub.blocked(c.arguments)
+            # A command or a program (kind "exec") is asked about every time in every mode, never with "Always allow", and
+            # its text is also read for names on the no-read list (best effort: the click is the real guard).
+            exec_call = kind_of_tool == "exec"
+            no_read = hub.blocked(c.arguments) or (exec_call and hub.blocked_text(c.arguments))
             leak = kind_of_tool == "net" and touched_local
-            protected = (kind_of_tool not in ("read", "net") and hub.protected(c.arguments)) or leak
+            protected = (kind_of_tool not in ("read", "net", "exec") and hub.protected(c.arguments)) or leak or exec_call
             verdict = decide(mode, kind_of_tool, c.name in hub.gate.always and not protected)
             if protected and verdict == "allow":
                 verdict = "ask"
@@ -3720,7 +3723,7 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
                 token = hub.gate.open(c.name, protected)
                 limit = float(hub.settings["approval_timeout_s"])
                 yield "mcp", {"event": "approval", "id": c.id, "approval": token, "kind": kind_of_tool, "mode": mode,
-                              "timeout_s": limit, "protected": protected, "leak": leak}
+                              "timeout_s": limit, "protected": protected, "leak": leak, "exec": exec_call}
                 print(f"[strata] tool {c.name} ({kind_of_tool}) waits for the user's click", flush=True)
                 answer, end = None, time.monotonic() + limit
                 try:
