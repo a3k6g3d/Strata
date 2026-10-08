@@ -211,7 +211,7 @@ class Config(unittest.TestCase):
             hub = hub_from_config({"mcp_servers": {"a": {"command": "old"}},
                                    "mcpServers": {"c": stdio(), "off": {"command": "x", "disabled": True}},
                                    "mcp": {"timeout_s": 5, "max_result_chars": 100, "max_rounds": 3}}, path)
-            self.assertEqual(sorted(hub.servers), ["a", "b", "c"])
+            self.assertEqual(sorted(hub.servers), ["a", "b", "c", "strata"])         # "strata": the built-in ask_user
             self.assertEqual(hub.servers["a"].cfg["command"], sys.executable)   # the file wins a name clash
             self.assertEqual(hub.servers["b"].kind, "http")
             self.assertEqual((hub.settings["timeout_s"], hub.settings["max_result_chars"], hub.settings["max_rounds"]),
@@ -417,7 +417,8 @@ class ToolLoop(unittest.TestCase):
         self.assertIn("fake__echo", [t["name"] for t in servers["fake"]["tools"]])
         self.assertEqual(servers["broken"]["status"], "failed")
         self.assertIn("missing configuration", servers["broken"]["error"])
-        self.assertEqual(st["tools"], len(fake.TOOLS))
+        self.assertEqual(st["tools"], len(fake.TOOLS) + 1)                        # + the built-in ask_user
+        self.assertEqual(servers["strata"]["tools"][0]["tool"], "ask_user")
         self.assertEqual(st["settings"]["max_rounds"], 2)
         self.svc.api_key = "k"
         with self.assertRaises(urllib.error.HTTPError):
@@ -842,6 +843,87 @@ class Permissions(unittest.TestCase):
         self.assertEqual(settings_from({"mcp": {"network_servers": ["web"]}}), {"network_servers": ["web"]})
         with self.assertRaises(SystemExit):
             settings_from({"mcp": {"network_servers": "web"}})
+
+    def run_ask(self, mode, text=None):
+        """One chat in `mode`; answers the first ask_user question with `text` (None: nobody answers).  -> mcp events."""
+        events, asked = [], False
+        with self.open(mode) as r:
+            for raw in r:
+                line = raw.decode()
+                if not line.startswith("data: {"):
+                    continue
+                x = json.loads(line[6:]).get("strata_mcp")
+                if not x:
+                    continue
+                events.append(x)
+                if x["event"] == "question" and not asked and text is not None:
+                    asked = True
+                    req = urllib.request.Request(self.base + "/mcp/answer", data=json.dumps({"approval": x["approval"], "text": text}).encode(),
+                                                 headers={"Content-Type": "application/json"})
+                    with urllib.request.urlopen(req, timeout=10) as resp:
+                        self.assertEqual(resp.status, 200)
+        return events
+
+    def test_ask_user_waits_for_the_answer_and_gives_it_to_the_model(self):
+        self.make()
+        self.start(call_script("strata__ask_user", question="Which folder?", options='["notes", "projects"]'),
+                   "</think>\n\nthanks, projects it is")
+        ev = self.run_ask("ask", "projects")
+        self.assertEqual([e["event"] for e in ev], ["start", "call", "question", "result"])
+        self.assertEqual((ev[1]["kind"], ev[1]["server"]), ("ask", "strata"))
+        self.assertEqual((ev[2]["question"], ev[2]["options"]), ("Which folder?", ["notes", "projects"]))
+        self.assertEqual((ev[3]["ok"], ev[3]["text"]), (True, "projects"))
+        self.assertIn("<tool_response>\nprojects\n</tool_response>", self.engine.prompt_text(1))   # the model read the answer
+
+    def test_ask_user_runs_in_every_mode_that_offers_tools_and_times_out(self):
+        self.make(approval_timeout_s=1.5)
+        for mode in ("read", "ask", "edit", "full"):
+            self.start(call_script("strata__ask_user", question="Sure?"), "</think>\n\nok")
+            ev = self.run_ask(mode, "yes")
+            self.assertEqual([e["event"] for e in ev], ["start", "call", "question", "result"], mode)
+            self.assertEqual(ev[3]["text"], "yes", mode)
+        self.start(call_script("strata__ask_user", question="Anyone there?"), "</think>\n\nno one answered")
+        ev = self.run_ask("ask", None)                                                  # nobody answers
+        self.assertEqual((ev[3]["ok"], ev[3]["text"]), (False, "error: the user did not answer in time"))
+        self.start("</think>\n\nx")
+        self.run_ask("off", None)
+        self.assertNotIn("ask_user", self.engine.prompt_text(0))                        # "No tools" offers no question either
+
+    def test_ask_user_can_be_turned_off_and_is_listed(self):
+        self.make(ask_user=False)
+        self.start("</think>\n\nx")
+        with self.open("ask") as r:
+            r.read()
+        self.assertNotIn("ask_user", self.engine.prompt_text(0))
+        self.hub.close()
+        self.make()
+        self.start("</think>\n\nx")
+        with urllib.request.urlopen(self.base + "/mcp", timeout=10) as r:
+            st = json.loads(r.read())
+        kinds = {s["name"]: {t["tool"]: t["kind"] for t in s["tools"]} for s in st["servers"]}
+        self.assertEqual(kinds["strata"], {"ask_user": "ask"})
+        self.assertEqual((decide("read", "ask"), decide("full", "ask"), decide("off", "ask")), ("allow", "allow", "deny"))
+        with self.assertRaises(SystemExit):
+            settings_from({"mcp": {"ask_user": "yes"}})
+
+    def test_answer_endpoint_guards(self):
+        self.make()
+        self.start("</think>\n\nx")
+
+        def post(body, headers=None, ctype="application/json"):
+            data = json.dumps(body).encode() if isinstance(body, dict) else body
+            req = urllib.request.Request(self.base + "/mcp/answer", data=data, headers={"Content-Type": ctype, **(headers or {})})
+            try:
+                with urllib.request.urlopen(req, timeout=10) as r:
+                    return r.status
+            except urllib.error.HTTPError as e:
+                with e:
+                    return e.code
+        self.assertEqual(post({"approval": "nope", "text": "x"}), 404)                  # no such waiting question
+        self.assertEqual(post({"text": "x"}), 400)
+        self.assertEqual(post({"approval": "t", "text": 5}), 400)
+        self.assertEqual(post({"approval": "t", "text": "x"}, {"Origin": "http://evil.example"}), 403)
+        self.assertEqual(post(b"approval=t&text=x", ctype="application/x-www-form-urlencoded"), 415)
 
     def test_approve_endpoint_guards(self):
         self.make()

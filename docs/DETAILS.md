@@ -858,6 +858,19 @@ like a read tool until the model has used any local tool in the chat (read a fil
 request to the internet waits for your click, in every mode, with no "Always allow" - otherwise a web page could talk
 the model into putting a file's content into an address. The click shows the address.
 
+`browse_url` is the same tool through a real headless browser (Microsoft Edge or Google Chrome, found in their usual
+folders or at `STRATA_BROWSER`), for sites that are empty without JavaScript: it returns what the page shows after its
+scripts ran. The browser gets no direct network: everything it loads, including redirects and sub-resources, goes
+through a small filtering proxy inside the tool server with the rules above (public addresses only, the allowed ports,
+the connection pinned to the checked address, GET / HEAD / CONNECT only), and its profile is a throwaway folder - no
+cookies, no saved logins, nothing from your own browser. It takes several seconds and gives up after 45.
+
+**Asking the user.** Unless `"ask_user": false` is in the `"mcp"` block, the model has one built-in tool,
+`ask_user(question, options)`: it pauses the answer, the chat shows the question with a button per option and a box to
+type in, and what you send is the tool's result. Use it for a decision or a fact only you have. It changes nothing, so
+it runs in every mode that offers tools; it waits `approval_timeout_s` (300 s) and then tells the model nobody answered.
+The page answers it with `POST /mcp/answer {"approval": <token from the question event>, "text": "..."}`.
+
 **Security.** MCP tools run on your PC with your user's rights, and **the model decides when to call them** - also
 because of what it reads (a web page or a file can contain instructions). Give a filesystem server only the folders
 it needs, prefer read-only tools, and don't add servers you don't trust. The tools can only be used from the chat
