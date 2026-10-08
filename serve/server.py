@@ -2528,6 +2528,11 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
     max_rounds = int(hub.settings["max_rounds"])
     total, rounds, done = 0, 0, None
     messages = list(messages)
+    # Once the model has used a local tool (read a file, listed a folder ...) in this chat, a request to the internet
+    # asks first: a web page could otherwise talk it into putting what it read into an address.
+    used = [((tc.get("function") or {}).get("name") if isinstance(tc, dict) else None)
+            for m in messages if isinstance(m, dict) for tc in (m.get("tool_calls") or [])]
+    touched_local = any(n in hub.routes() and hub.kind_of(n) != "net" for n in used if n)
     while True:
         text, reasoning, calls, own_calls = [], [], [], 0
         for kind, x in svc.run(ids, thinking, tools, max_new, sampling, cancel):
@@ -2568,18 +2573,23 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
                           "tool": tool, "arguments": c.arguments, "round": rounds, "kind": kind_of_tool, "mode": mode}
             # A change under a protected path (config mcp.protected_paths, e.g. C:\) asks every time, in every mode
             # but read-only (which refuses it); "Always allow" and "Full access" never cover it.
-            protected = kind_of_tool != "read" and hub.protected(c.arguments)
+            # The no-read list (config mcp.blocked_paths) comes first: refused in every mode, never asked about.
+            no_read = hub.blocked(c.arguments)
+            leak = kind_of_tool == "net" and touched_local
+            protected = (kind_of_tool not in ("read", "net") and hub.protected(c.arguments)) or leak
             verdict = decide(mode, kind_of_tool, c.name in hub.gate.always and not protected)
             if protected and verdict == "allow":
                 verdict = "ask"
             blocked = None
-            if verdict == "deny":
+            if no_read:
+                blocked = "that location is on the user's no-read list, so the call was not run"
+            elif verdict == "deny":
                 blocked = f"{MODE_INFO[mode]['label']} mode: this tool changes things, so it was not run"
             elif verdict == "ask":
                 token = hub.gate.open(c.name, protected)
                 limit = float(hub.settings["approval_timeout_s"])
                 yield "mcp", {"event": "approval", "id": c.id, "approval": token, "kind": kind_of_tool, "mode": mode,
-                              "timeout_s": limit, "protected": protected}
+                              "timeout_s": limit, "protected": protected, "leak": leak}
                 print(f"[strata] tool {c.name} ({kind_of_tool}) waits for the user's click", flush=True)
                 answer, end = None, time.monotonic() + limit
                 try:
@@ -2627,6 +2637,8 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
             print(f"[strata] tool {c.name}: {'ok' if r['ok'] else 'error'}, {r['chars']:,} characters in "
                   f"{r['ms'] / 1000:.1f} s{' (truncated for the model)' if r['truncated'] else ''}", flush=True)
             results.append(r["text"])
+            if kind_of_tool != "net":
+                touched_local = True
             yield "mcp", {"event": "result", "id": c.id, **{k: r[k] for k in ("ok", "text", "chars", "truncated", "ms")}}
         if cancel.is_set() or len(results) < len(calls):
             done = {**done, "finish": "cancel"}

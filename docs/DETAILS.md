@@ -813,10 +813,41 @@ never in a read-only chat) and **Deny**. Deny, a refusal and a timeout (`approva
 reach the model as an `error: ...` result it can react to; the tool never runs. Config keys, in the `"mcp"` block:
 `"permission"` (the mode the chat starts in: `off`, `read`, `ask`, `edit` or `full`), `"approval_timeout_s"` and
 `"tool_classes"` (`{"tool_name": "read"|"write"|"danger"}`, to correct a guess; names are the server's own, without
-the `server__` prefix). `"protected_paths"` (a list such as `["C:\\"]`): a change under one of them asks every time, in every mode
-(read-only refuses it); "Full access" and "Always allow" never cover it. Paths are resolved first (case, slashes, `..`,
-`~`, `%VARS%`, `\?\` forms, symlinks), and one that cannot be checked counts as protected. Reads are not affected. An API request that opts in with `"strata_mcp": true` and names no `"strata_permission"` keeps
+the `server__` prefix). An API request that opts in with `"strata_mcp": true` and names no `"strata_permission"` keeps
 the behaviour it always had (everything runs): only the page can show the buttons.
+
+**Protected paths.** `"protected_paths"` (a list such as `["C:\\"]`): a change under one of them asks every time, in
+every mode (read-only refuses it); "Full access" and "Always allow" never cover it. Paths are resolved first (case,
+slashes, `..`, `~`, `%VARS%`, `\\?\` forms, symlinks), and one that cannot be checked counts as protected. Reads are
+not affected.
+
+**No-read list.** `"blocked_paths"` (a list of folders, files and patterns) names places the model may never touch, in
+any mode, read or write: a call with a path on the list is refused (the chat shows "Blocked"; nothing is asked), and
+the directory listings, trees and searches that come back have those names cut out, so they do not show either. The
+entry `"@defaults"` stands for a built-in list: browser profiles (Chrome, Edge, Brave, Firefox ...), `.ssh`, `.gnupg`,
+`.aws`, `.azure`, `.kube`, `.docker`, GitHub and Hugging Face tokens, `.git-credentials`, `.npmrc`, `~/.claude`,
+Windows' credential stores and registry hives, password managers, Discord / Slack / Signal / Telegram data, crypto
+wallets, and files named `.env*`, `id_rsa*`, `id_ed25519*`, `*.pem`, `*.pfx`, `*.p12`, `*.kdbx`. An entry with `*`, `?`
+or `[` is a pattern on the whole path; any other entry is a folder or a file (`%APPDATA%`-style variables work). The
+list covers what a call names and what a listing shows; it is not a sandbox: a tool server that reads files without
+being given a path (its own search index, say) is outside it.
+
+**The internet tool.** `tools/strata_web_mcp.py` is a small MCP server with `web_search` (Bing, DuckDuckGo as a
+fallback) and `fetch_url` (a page as text with its links, in parts for long pages). Add it like any server and name it
+in `"network_servers"`:
+
+```json
+"mcp_servers": {"web": {"command": "python", "args": ["tools/strata_web_mcp.py"]}},
+"mcp": {"network_servers": ["web"]}
+```
+
+It does GET only (no cookies, no login, no bodies), http and https on ports 80, 443, 8080 and 8443, public addresses
+only (this PC, private networks, link-local and cloud-metadata addresses are refused, redirects are checked at every
+hop, and the connection goes to the address that was checked), at most 5 redirects, 20 s, 2 MB, text pages only, and
+refuses an address over 1,500 characters or a search over 300. A server in `network_servers` has kind **net**: it runs
+like a read tool until the model has used any local tool in the chat (read a file, listed a folder); after that every
+request to the internet waits for your click, in every mode, with no "Always allow" - otherwise a web page could talk
+the model into putting a file's content into an address. The click shows the address.
 
 **Security.** MCP tools run on your PC with your user's rights, and **the model decides when to call them** - also
 because of what it reads (a web page or a file can contain instructions). Give a filesystem server only the folders
