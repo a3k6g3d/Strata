@@ -637,6 +637,8 @@ class McpServer:
     def __init__(self, name: str, cfg: dict, settings: dict):
         self.name, self.cfg, self.settings = name, cfg, settings
         self.kind = "http" if cfg.get("url") else "stdio"
+        if self.kind == "stdio":
+            self.cfg = {**cfg, "env": {**(cfg.get("env") or {}), "STRATA_BLOCKED_JSON": settings.get("_blocked_json", "{}")}}
         self.status = "idle"             # idle -> starting -> ready | failed; ready -> stopped when it ends
         self.error = None
         self.tools: list[dict] = []
@@ -750,11 +752,14 @@ class McpHub:
 
     def __init__(self, servers: dict[str, dict], settings: dict | None = None):
         self.settings = {**DEFAULTS, **(settings or {})}
+        self.blocklist = BlockList(self.settings.get("blocked_paths"))
+        # the no-read list, resolved, goes to every program Strata starts as STRATA_BLOCKED_JSON: a tool that walks
+        # folders itself (strata_dev_mcp.py) can then skip them while it walks, not only have its answer cut afterwards
+        self.settings["_blocked_json"] = json.dumps({"prefixes": self.blocklist.prefixes, "globs": self.blocklist.globs})
         self.servers = {name: McpServer(name, cfg, self.settings) for name, cfg in servers.items()}
         self.threads: list[threading.Thread] = []
         self._routes: dict[str, tuple[McpServer, str]] = {}
         self.gate = ApprovalGate()
-        self.blocklist = BlockList(self.settings.get("blocked_paths"))
         if self.blocklist.skipped:
             print("[strata] mcp.blocked_paths: not set on this PC, skipped: " + ", ".join(self.blocklist.skipped), flush=True)
 
