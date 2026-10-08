@@ -429,7 +429,37 @@ function renderMcp() {
       (s.tools.length ? `<div class="mcp-server__tools">${s.tools.map((t) => `<span class="chip" title="${esc(t.description || "")}">${esc(t.tool)}</span>`).join("")}</div>` : "") +
       `</div>`;
   }).join("");
+  renderPerm();
 }
+// The permission mode (the drop-down beside the composer's buttons): what the model may do with the tools.  The server
+// enforces it (serve/mcp.py MODES); this page only sends the choice with each request and shows the approval buttons.
+let perm = store.get("perm", null);
+function permMode() {
+  const info = mcpInfo.permissions;
+  if (!info) return "ask";
+  return info.modes.some((m) => m.id === perm) ? perm : info.default;
+}
+function renderPerm() {
+  const info = mcpInfo.permissions, wrap = $("perm-wrap");
+  wrap.hidden = !(info && mcpInfo.tools > 0) || settings.mcp === false;
+  if (wrap.hidden) return;
+  const sel = $("perm-select");
+  sel.innerHTML = info.modes.map((m) => `<option value="${esc(m.id)}">${esc(m.label)}</option>`).join("");
+  sel.value = permMode();
+  sel.title = (info.modes.find((m) => m.id === sel.value) || {}).hint || "";
+  wrap.dataset.mode = sel.value;
+}
+$("perm-select").onchange = () => {
+  const v = $("perm-select").value;
+  if (v === "full" && !confirm("Full access lets the model use every tool without asking you first, including " +
+                               "deleting and moving files and running commands.\n\nUse it only with tools and folders you trust.")) {
+    renderPerm();
+    return;
+  }
+  perm = v;
+  store.set("perm", perm);
+  renderPerm();
+};
 
 // ------------------------------------------------------------------ Model settings (GET / POST /config, #564)
 // A few documented keys of the run config (strata-<model>.json), for every client, from the next start on.  The
@@ -612,14 +642,24 @@ function msgEl(m, i) {
 // One MCP tool call in the answer: a compact block (name, state, a one-line preview) that opens to the arguments and
 // the result as the model read it.  Its body is built only while open: a result can be 20,000 characters.
 const TOOL_STATE = {writing: ["st-badge--reading", "Writing"], running: ["st-badge--generating", "Running"], done: ["", "Done"],
-                    error: ["st-badge--error", "Error"], skipped: ["st-badge--queued", "Not run"]};
+                    error: ["st-badge--error", "Error"], skipped: ["st-badge--queued", "Not run"],
+                    waiting: ["st-badge--queued", "Needs your OK"], blocked: ["st-badge--error", "Blocked"]};
+const KIND_TEXT = {write: "This tool changes things on this PC.", danger: "This tool can delete, move or run things on this PC.",
+                   read: "This tool only looks."};
 function toolHtml(t, k) {
   const [cls, label] = TOOL_STATE[t.state] || ["", t.state];
   const args = t.arguments == null ? "" : JSON.stringify(t.arguments, null, 2);
   const preview = t.result != null ? t.result : args.replace(/\s+/g, " ");
   let body = "";
   if (t.open) {
-    body = `<div class="tool-call__label">Arguments</div><pre class="tool-call__pre">${esc(args || "(being written)")}</pre>`;
+    if (t.state === "waiting") {
+      body += `<div class="tool-call__approve"><span class="tool-call__ask">${esc(KIND_TEXT[t.kind] || "")} ` +
+        `Allow it to run with the arguments below?</span><span class="tool-call__btns">` +
+        `<button type="button" class="st-btn st-btn--primary" data-approve="allow">Allow</button>` +
+        `<button type="button" class="st-btn st-btn--secondary" data-approve="always" title="Allow this tool for the rest of this server run">Always allow</button>` +
+        `<button type="button" class="st-btn st-btn--danger" data-approve="deny">Deny</button></span></div>`;
+    }
+    body += `<div class="tool-call__label">Arguments</div><pre class="tool-call__pre">${esc(args || "(being written)")}</pre>`;
     if (t.result != null) {
       body += `<div class="tool-call__label">${t.ok ? "Result" : "Error"}${t.chars ? ` · ${fmt(t.chars)} characters` : ""}` +
               `${t.truncated ? ", cut for the model" : ""}</div><pre class="tool-call__pre">${esc(t.result)}</pre>`;
@@ -651,11 +691,27 @@ function onTool(m, x) {
   let t = m.tools.find((y) => y.id === x.id);
   if (!t) { t = {id: x.id, name: x.name, at: m.text.length, rat: m.reasoning.length, state: "writing"}; m.tools.push(t); }
   if (x.event === "call") {
-    Object.assign(t, {name: x.name, server: x.server, tool: x.tool, arguments: x.arguments, round: x.round, state: "running"});
+    Object.assign(t, {name: x.name, server: x.server, tool: x.tool, arguments: x.arguments, round: x.round, state: "running",
+                      kind: x.kind});
+  } else if (x.event === "approval") {
+    // the server holds the call until the user answers (Allow / Always allow / Deny, or it times out)
+    Object.assign(t, {state: "waiting", approval: x.approval, kind: x.kind || t.kind, open: true});
   } else if (x.event === "result") {
-    Object.assign(t, {result: x.text, ok: x.ok, chars: x.chars, truncated: x.truncated, ms: x.ms,
-                      state: x.skipped ? "skipped" : x.ok ? "done" : "error"});
+    Object.assign(t, {result: x.text, ok: x.ok, chars: x.chars, truncated: x.truncated, ms: x.ms, approval: null,
+                      state: x.skipped ? "skipped" : x.denied ? "blocked" : x.ok ? "done" : "error"});
   }
+}
+// Allow / Always allow / Deny on a waiting tool call: the server is holding it (POST /mcp/approve)
+async function answerApproval(m, t, how, el) {
+  const token = t.approval;
+  if (!token) return;
+  t.approval = null;
+  t.state = "running";
+  updateAssistant(el, m, !!busy && busy.msg === m);
+  try {
+    await fetch("mcp/approve", {method: "POST", headers: headers(true),
+                                body: JSON.stringify({approval: token, allow: how !== "deny", always: how === "always"})});
+  } catch (e) { /* the result event reports what happened */ }
 }
 function updateAssistant(el, m, streaming) {
   const det = el.querySelector("details.think");
@@ -699,6 +755,13 @@ $("chat").addEventListener("click", (e) => {
   if (cc) { copyText(cc.closest(".st-code").querySelector("pre").textContent, cc); return; }
   const mc = e.target.closest("[data-msg-copy]");
   if (mc) { const i = +mc.closest(".st-msg").dataset.i; copyText(messages[i].text, mc); return; }
+  const ap = e.target.closest("[data-approve]");
+  if (ap) {
+    e.preventDefault();
+    const el = ap.closest(".st-msg"), m = messages[+el.dataset.i], t = m && m.tools && m.tools[+ap.closest(".tool-call").dataset.tool];
+    if (t) answerApproval(m, t, ap.dataset.approve, el);
+    return;
+  }
   // a tool block: its open state lives in the message (the answer is rebuilt while it streams), so the click sets it
   const sum = e.target.closest(".tool-call > summary");
   if (sum) {
@@ -785,7 +848,10 @@ async function send() {
   if (settings.seed) body.seed = +settings.seed;
   if (settings.max) body.max_tokens = +settings.max;
   if (projectionLoaded()) body.experimental_speed_projection = !!settings.esp;
-  if (settings.mcp !== false && mcpInfo.tools > 0) body.strata_mcp = true;   // this server may run MCP tools for it
+  if (settings.mcp !== false && mcpInfo.tools > 0 && permMode() !== "off") {
+    body.strata_mcp = true;                           // this server may run MCP tools for it ...
+    body.strata_permission = permMode();              // ... as far as this mode allows (the server enforces it)
+  }
 
   let firstAt = null, thinkStart = null, usage = null, frame = 0;
   const paint = () => { frame = 0; updateAssistant(el, m, true); scrollDown(); };
@@ -1044,6 +1110,7 @@ $("s-apply").onclick = async () => {
               esp: $("s-esp").getAttribute("aria-checked") === "true",
               mcp: $("s-mcp").getAttribute("aria-checked") === "true"};
   store.set("sampling", settings);
+  renderPerm();                                       // "Use tools" off hides the permission drop-down
   const share = $("s-share").getAttribute("aria-checked") === "true";
   openDrawer(false);
   if (share || sharedOn) {
