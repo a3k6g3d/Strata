@@ -3669,15 +3669,20 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
             kind_of_tool = hub.kind_of(c.name)
             yield "mcp", {"event": "call", "id": c.id, "name": c.name, "server": s.name if s else None,
                           "tool": tool, "arguments": c.arguments, "round": rounds, "kind": kind_of_tool, "mode": mode}
-            verdict = decide(mode, kind_of_tool, c.name in hub.gate.always)
+            # A change under a protected path (config mcp.protected_paths, e.g. C:\) asks every time, in every mode
+            # but read-only (which refuses it); "Always allow" and "Full access" never cover it.
+            protected = kind_of_tool != "read" and hub.protected(c.arguments)
+            verdict = decide(mode, kind_of_tool, c.name in hub.gate.always and not protected)
+            if protected and verdict == "allow":
+                verdict = "ask"
             blocked = None
             if verdict == "deny":
                 blocked = f"{MODE_INFO[mode]['label']} mode: this tool changes things, so it was not run"
             elif verdict == "ask":
-                token = hub.gate.open(c.name)
+                token = hub.gate.open(c.name, protected)
                 limit = float(hub.settings["approval_timeout_s"])
                 yield "mcp", {"event": "approval", "id": c.id, "approval": token, "kind": kind_of_tool, "mode": mode,
-                              "timeout_s": limit}
+                              "timeout_s": limit, "protected": protected}
                 print(f"[strata] tool {c.name} ({kind_of_tool}) waits for the user's click", flush=True)
                 answer, end = None, time.monotonic() + limit
                 try:

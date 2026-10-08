@@ -35,7 +35,7 @@ from serve.winjob import contain
 
 PROTOCOL = "2025-06-18"               # the MCP revision Strata asks for; the server's answer is used as given
 DEFAULTS = {"timeout_s": 60.0, "max_result_chars": 20000, "max_rounds": 8, "start_timeout_s": 120.0,
-            "permission": "ask", "approval_timeout_s": 300.0, "tool_classes": {}}
+            "permission": "ask", "approval_timeout_s": 300.0, "tool_classes": {}, "protected_paths": []}
 
 # ------------------------------------------------------------------------------------------------ permission modes
 # The web app's mode list (a request says which one it runs in: "strata_permission").  Every tool is classed as
@@ -87,19 +87,63 @@ def decide(mode: str, kind: str, always: bool = False) -> str:
     return "ask"                                        # mode "ask": every change; mode "edit": the dangerous ones
 
 
+def _strings(value, out: list, depth: int = 0) -> None:
+    """Every string inside a tool call's arguments (nested dicts and lists too)."""
+    if depth > 6:
+        return
+    if isinstance(value, str):
+        if len(value) <= 1024:                           # a file's content is not a path
+            out.append(value)
+    elif isinstance(value, dict):
+        for v in value.values():
+            _strings(v, out, depth + 1)
+    elif isinstance(value, (list, tuple)):
+        for v in value:
+            _strings(v, out, depth + 1)
+
+
+def touches_protected(arguments, prefixes) -> bool:
+    """True when a path in the call's arguments is inside one of the protected locations (`mcp.protected_paths`, a
+    drive like "C:\\" or a folder).  Paths are resolved first (case, slashes, `..`, `~`, %VARS%, short names, and
+    symlinks / junctions that lead into the location), and a path that cannot be resolved counts as protected."""
+    if not prefixes:
+        return False
+    roots = [os.path.normcase(os.path.realpath(str(p))).rstrip("\\/") for p in prefixes]
+    strings: list = []
+    _strings(arguments, strings)
+    for s in strings:
+        s = s.strip()
+        if not s or "\n" in s:
+            continue
+        if s.startswith(("\\\\?\\", "\\\\.\\")):         # \\?\C:\x is C:\x; device and volume-GUID forms can't be checked
+            if not re.match(r"[A-Za-z]:", s[4:]):
+                return True
+            s = s[4:]
+        if not (re.match(r"^([A-Za-z]:|\\\\|/|~|%|\$)", s) or "/" in s or "\\" in s or ".." in s):
+            continue                                     # a plain word, a number: no path
+        try:
+            real = os.path.normcase(os.path.realpath(os.path.expandvars(os.path.expanduser(s))))
+        except (OSError, ValueError):
+            return True
+        if any(real == r or real.startswith(r + os.sep) for r in roots):
+            return True
+    return False
+
+
 class ApprovalGate:
     """The calls waiting for the user's click.  The tool loop registers one (`open`) and polls it; the web app's
-    POST /mcp/approve resolves it.  `always` remembers tools the user allowed for the rest of this run."""
+    POST /mcp/approve resolves it.  `always` remembers tools the user allowed for the rest of this run - except for a
+    call on a protected path (`protected`): that one is asked about every single time."""
 
     def __init__(self):
         self.lock = threading.Lock()
         self.slots: dict[str, dict] = {}
         self.always: set[str] = set()
 
-    def open(self, name: str) -> str:
+    def open(self, name: str, protected: bool = False) -> str:
         token = os.urandom(6).hex()
         with self.lock:
-            self.slots[token] = {"name": name, "event": threading.Event(), "allow": None}
+            self.slots[token] = {"name": name, "event": threading.Event(), "allow": None, "protected": protected}
         return token
 
     def resolve(self, token: str, allow: bool, always: bool = False) -> bool:
@@ -108,7 +152,7 @@ class ApprovalGate:
             if slot is None or slot["event"].is_set():
                 return False
             slot["allow"] = bool(allow)
-            if allow and always:
+            if allow and always and not slot["protected"]:
                 self.always.add(slot["name"])
             slot["event"].set()
             return True
@@ -589,6 +633,10 @@ class McpHub:
         self._routes: dict[str, tuple[McpServer, str]] = {}
         self.gate = ApprovalGate()
 
+    def protected(self, arguments) -> bool:
+        """True when a call's arguments name a path inside the config's `mcp.protected_paths`."""
+        return touches_protected(arguments, self.settings.get("protected_paths"))
+
     def kind_of(self, name: str) -> str:
         """'read' / 'write' / 'danger' for the tool the model sees as `name` (an unknown name is 'danger')."""
         server, tool = self._routes.get(name) or self.routes().get(name, (None, name))
@@ -687,6 +735,7 @@ class McpHub:
         return {"servers": servers, "tools": len(routes),
                 "settings": {k: self.settings[k] for k in ("timeout_s", "max_result_chars", "max_rounds")},
                 "permissions": {"default": self.settings["permission"], "timeout_s": self.settings["approval_timeout_s"],
+                                "protected_paths": list(self.settings["protected_paths"]),
                                 "modes": [{"id": m, **MODE_INFO[m]} for m in MODES]}}
 
     def close(self):
@@ -740,6 +789,10 @@ def settings_from(cfg: dict) -> dict:
             if not isinstance(value, dict) or any(v not in KINDS for v in value.values()):
                 raise SystemExit(f"[strata] config mcp.tool_classes: expected {{\"tool\": \"read|write|danger\"}}")
             out[key] = {str(k): v for k, v in value.items()}
+        elif key == "protected_paths":                   # a change under these always asks, in every mode but read-only
+            if not isinstance(value, list) or any(not isinstance(v, str) or not v.strip() for v in value):
+                raise SystemExit("[strata] config mcp.protected_paths: expected a list of paths, e.g. [\"C:\\\\\"]")
+            out[key] = [v.strip() for v in value]
         elif key == "approval_timeout_s":
             if not number or value <= 0:
                 raise SystemExit(f"[strata] config mcp.{key}={value!r}: expected a number of seconds > 0")
