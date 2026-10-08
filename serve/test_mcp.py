@@ -925,6 +925,65 @@ class Permissions(unittest.TestCase):
         self.assertEqual(post({"approval": "t", "text": "x"}, {"Origin": "http://evil.example"}), 403)
         self.assertEqual(post(b"approval=t&text=x", ctype="application/x-www-form-urlencoded"), 415)
 
+    def make_exec(self, **settings):
+        """`exec` is a server listed in exec_servers: every one of its tools is kind "exec" (a command or a program)."""
+        self.hub = McpHub({"exec": stdio()}, {"timeout_s": 10, "exec_servers": ["exec"], **settings})
+        self.hub.start(wait=True)
+
+    def test_a_command_asks_every_time_in_every_mode_that_can_ask(self):
+        self.make_exec()
+        for mode in ("ask", "edit", "full"):                                          # Full access included
+            self.start(call_script("exec__echo", text="hello"), "</think>\n\ndone")
+            ev = self.run_mode(mode, answer=True, always=True)                        # "Always allow" is clicked ...
+            self.assertEqual([e["event"] for e in ev], ["start", "call", "approval", "result"], mode)
+            self.assertEqual(ev[1]["kind"], "exec", mode)
+            self.assertEqual((ev[2]["exec"], ev[2]["protected"]), (True, True), mode)   # protected: the page shows no "Always"
+            self.assertEqual((ev[3]["ok"], ev[3]["text"]), (True, "hello"), mode)
+        self.assertEqual(self.hub.gate.always, set())                                 # ... and is never remembered
+        self.start(call_script("exec__echo", text="again"), "</think>\n\nagain")
+        ev = self.run_mode("full", answer=True)
+        self.assertIn("approval", [e["event"] for e in ev])                           # so it asks again
+
+    def test_a_denied_command_never_runs_and_read_only_refuses_without_asking(self):
+        self.make_exec()
+        self.start(call_script("exec__echo", text="nope"), "</think>\n\nnot run")
+        ev = self.run_mode("edit", answer=False)
+        self.assertEqual((ev[-1]["ok"], ev[-1].get("denied")), (False, True))
+        self.assertFalse(self.ran("echo"))
+        self.start(call_script("exec__echo", text="nope"), "</think>\n\nrefused")
+        ev = self.run_mode("read")                                                    # never asked, never run
+        self.assertEqual([e["event"] for e in ev], ["start", "call", "result"])
+        self.assertTrue(ev[2].get("denied"))
+        self.assertFalse(self.ran("echo"))
+        self.start("</think>\n\nx")
+        self.run_mode("off")
+        self.assertNotIn("exec__", self.engine.prompt_text(0))                        # "No tools" offers none
+
+    def test_the_text_of_a_command_is_read_for_blocked_places(self):
+        tmp = os.path.join(tempfile.gettempdir(), "strata_exec_probe")
+        self.make_exec(blocked_paths=[os.path.join(tmp, "secret")])
+        self.start(call_script("exec__echo", text='type "' + os.path.join(tmp, "secret", "k.txt") + '"'), "</think>\n\nrefused")
+        ev = self.run_mode("full")                                                    # refused before any click is asked for
+        self.assertEqual([e["event"] for e in ev], ["start", "call", "result"])
+        self.assertIn("no-read list", ev[2]["text"])
+        self.assertFalse(self.ran("echo"))
+        self.start(call_script("exec__echo", text='type "' + os.path.join(tmp, "fine.txt") + '"'), "</think>\n\nasked")
+        ev = self.run_mode("full", answer=False)                                      # an unlisted place still asks
+        self.assertIn("approval", [e["event"] for e in ev])
+
+    def test_exec_servers_in_status_and_settings(self):
+        self.make_exec()
+        self.start("</think>\n\nx")
+        with urllib.request.urlopen(self.base + "/mcp", timeout=10) as r:
+            st = json.loads(r.read())
+        kinds = {t["tool"]: t["kind"] for t in st["servers"][0]["tools"]}
+        self.assertEqual(set(kinds.values()), {"exec"})
+        self.assertEqual(settings_from({"mcp": {"exec_servers": ["exec"]}}), {"exec_servers": ["exec"]})
+        for bad in ("exec", [""], [3]):
+            with self.assertRaises(SystemExit):
+                settings_from({"mcp": {"exec_servers": bad}})
+        self.assertEqual([decide(m, "exec") for m in ("off", "read", "ask", "edit", "full")], ["deny", "deny", "ask", "ask", "ask"])
+
     def test_approve_endpoint_guards(self):
         self.make()
         self.start("</think>\n\nx")

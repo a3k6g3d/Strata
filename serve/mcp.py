@@ -37,7 +37,7 @@ from serve.winjob import contain
 PROTOCOL = "2025-06-18"               # the MCP revision Strata asks for; the server's answer is used as given
 DEFAULTS = {"timeout_s": 60.0, "max_result_chars": 20000, "max_rounds": 8, "start_timeout_s": 120.0,
             "permission": "ask", "approval_timeout_s": 300.0, "tool_classes": {}, "protected_paths": [],
-            "blocked_paths": [], "network_servers": [], "ask_user": True}
+            "blocked_paths": [], "network_servers": [], "exec_servers": [], "ask_user": True}
 
 # ------------------------------------------------------------------------------------------------ permission modes
 # The web app's mode list (a request says which one it runs in: "strata_permission").  Every tool is classed as
@@ -53,7 +53,7 @@ MODE_INFO = {
     "edit": {"label": "Allow edits", "hint": "Looking and editing are automatic; deleting, moving and commands ask first."},
     "full": {"label": "Full access", "hint": "Every tool runs without asking. Use with care."},
 }
-KINDS = ("read", "write", "danger", "net")
+KINDS = ("read", "write", "danger", "net", "exec")
 _DANGER_NAME = re.compile(r"(delete|remove|(^|[^a-z])rm([^a-z]|$)|rmdir|unlink|kill|drop|truncate|format|wipe|purge|clear|"
                           r"exec|(^|[^a-z])run(?!ning)|shell|command|bash|powershell|(^|[^a-z])cmd([^a-z]|$)|terminal|"
                           r"eval|install|move|rename|send|post|publish|deploy|commit|push|merge|reset)", re.I)
@@ -80,6 +80,8 @@ def decide(mode: str, kind: str, always: bool = False) -> str:
     """'allow' (runs now), 'ask' (waits for the user) or 'deny' for a tool of this kind in this mode."""
     if mode == "off":                                    # (the server offers no tools at all in this mode)
         return "deny"
+    if kind == "exec":                                   # runs a command or a program: the user clicks every time, in
+        return "deny" if mode == "read" else "ask"       # every mode that can ask - Full access too, never "Always allow"
     if kind == "ask":                                    # the built-in ask_user: asking the user changes nothing
         return "allow"
     if mode == "full" or kind in ("read", "net"):         # (the tool loop asks about a network call after local reads)
@@ -104,6 +106,23 @@ def _strings(value, out: list, depth: int = 0) -> None:
     elif isinstance(value, (list, tuple)):
         for v in value:
             _strings(v, out, depth + 1)
+
+
+def _all_strings(value, out: list, depth: int = 0) -> None:
+    """Like _strings but with no length limit: the text of a command or a program is what is being read."""
+    if depth > 6:
+        return
+    if isinstance(value, str):
+        out.append(value)
+    elif isinstance(value, dict):
+        for v in value.values():
+            _all_strings(v, out, depth + 1)
+    elif isinstance(value, (list, tuple)):
+        for v in value:
+            _all_strings(v, out, depth + 1)
+
+
+_WORD = re.compile(r"\"([^\"\r\n]+)\"|'([^'\r\n]+)'|([^\s\"'<>|&;,()]+)")
 
 
 def arg_paths(arguments):
@@ -194,6 +213,18 @@ class BlockList:
 
     def blocks(self, arguments) -> bool:
         return bool(self) and any(self.hit(p) for p in arg_paths(arguments))
+
+    def blocks_text(self, text: str) -> bool:
+        """A command line or a program's text names a blocked place?  Best effort: every quoted string and every word
+        that looks like a path is checked, so `type C:\\Users\\me\\.ssh\\id_rsa` is caught.  A path a program builds
+        while it runs is not: the real guard for a command is that every one waits for the user's click."""
+        if not self:
+            return False
+        for m in _WORD.finditer(text or ""):
+            word = next(g for g in m.groups() if g)
+            if any(self.hit(p) for p in arg_paths(word)):
+                return True
+        return False
 
     def filter_listing(self, tool: str, arguments, text: str) -> tuple[str, int]:
         """A directory listing, tree or search result without the blocked entries -> (text, how many were hidden)."""
@@ -812,6 +843,12 @@ class McpHub:
         """True when a call names a path on the config's no-read list (`mcp.blocked_paths`)."""
         return self.blocklist.blocks(arguments)
 
+    def blocked_text(self, arguments) -> bool:
+        """A command or program in the call's arguments names a place on the no-read list (best effort)."""
+        out: list = []
+        _all_strings(arguments, out)
+        return any(self.blocklist.blocks_text(t) for t in out)
+
     def protected(self, arguments) -> bool:
         """True when a call's arguments name a path inside the config's `mcp.protected_paths`."""
         return touches_protected(arguments, self.settings.get("protected_paths"))
@@ -823,6 +860,8 @@ class McpHub:
             return "danger"
         if isinstance(server, _AskServer):
             return "ask"
+        if server.name in self.settings["exec_servers"]:
+            return "exec"                                # runs commands or code, whatever its tools are called
         if server.name in self.settings["network_servers"]:
             return "net"                                 # reaches the internet, whatever its name says
         entry = next((t for t in server.tools if t["name"] == tool), {"name": tool})
@@ -916,6 +955,7 @@ class McpHub:
                             "info": s.info,
                             "tools": [{"name": names.get(t["name"], t["name"]), "tool": t["name"],
                                        "kind": ("ask" if isinstance(s, _AskServer)
+                                                else "exec" if s.name in self.settings["exec_servers"]
                                                 else "net" if s.name in self.settings["network_servers"]
                                                 else classify(t, self.settings.get("tool_classes"))),
                                        "description": str(t.get("description") or "")[:300]} for t in s.tools]})
@@ -980,6 +1020,10 @@ def settings_from(cfg: dict) -> dict:
         elif key == "protected_paths":                   # a change under these always asks, in every mode but read-only
             if not isinstance(value, list) or any(not isinstance(v, str) or not v.strip() for v in value):
                 raise SystemExit("[strata] config mcp.protected_paths: expected a list of paths, e.g. [\"C:\\\\\"]")
+            out[key] = [v.strip() for v in value]
+        elif key == "exec_servers":                      # servers whose tools run commands or code: kind "exec"
+            if not isinstance(value, list) or any(not isinstance(v, str) or not v.strip() for v in value):
+                raise SystemExit("[strata] config mcp.exec_servers: expected a list of server names, e.g. [\"exec\"]")
             out[key] = [v.strip() for v in value]
         elif key == "ask_user":                          # the built-in ask_user tool (default on)
             if not isinstance(value, bool):
