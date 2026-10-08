@@ -646,7 +646,8 @@ const TOOL_STATE = {writing: ["st-badge--reading", "Writing"], running: ["st-bad
                     waiting: ["st-badge--queued", "Needs your OK"], blocked: ["st-badge--error", "Blocked"],
                     asking: ["st-badge--queued", "Asks you"]};
 const KIND_TEXT = {write: "This tool changes things on this PC.", danger: "This tool can delete, move or run things on this PC.",
-                   read: "This tool only looks.", net: "This tool reads from the internet.", ask: "The model is asking you something."};
+                   read: "This tool only looks.", net: "This tool reads from the internet.", ask: "The model is asking you something.",
+                   exec: "This runs a command or program on this PC."};
 function toolHtml(t, k) {
   const [cls, label] = TOOL_STATE[t.state] || ["", t.state];
   const args = t.arguments == null ? "" : JSON.stringify(t.arguments, null, 2);
@@ -662,16 +663,23 @@ function toolHtml(t, k) {
         `<button type="button" class="st-btn st-btn--primary" data-answer-send>Send</button></div></div>`;
     }
     if (t.state === "waiting") {
-      const prot = t.leak
+      const prot = t.exec
+        ? `<strong>This runs ${t.tool === "run_python" ? "a Python program" : "a command"} on this PC with your Windows account.</strong> ` +
+          `The no-read list and the C: protection do not cover what it does once it runs. Read it below before you click. `
+        : t.leak
         ? `<strong>This sends a request to the internet, and the model has read things on this PC in this chat.</strong> Check the address below for anything private. It always needs your OK. `
         : t.protectedPath
         ? `<strong>This changes something in a protected location (${esc(((mcpInfo.permissions || {}).protected_paths || []).join(", ") || "protected")}).</strong> It always needs your OK. `
         : "";
       body += `<div class="tool-call__approve"><span class="tool-call__ask">${prot}${esc(KIND_TEXT[t.kind] || "")} ` +
         `Allow it to run with the arguments below?</span><span class="tool-call__btns">` +
-        `<button type="button" class="st-btn st-btn--primary" data-approve="allow">Allow once</button>` +
+        `<button type="button" class="st-btn st-btn--primary" data-approve="allow">${t.exec ? "Run it" : "Allow once"}</button>` +
         (t.protectedPath ? "" : `<button type="button" class="st-btn st-btn--secondary" data-approve="always" title="Allow this tool for the rest of this server run">Always allow</button>`) +
         `<button type="button" class="st-btn st-btn--danger" data-approve="deny">Deny</button></span></div>`;
+    }
+    if (t.exec && t.state === "waiting" && t.arguments && (t.arguments.command || t.arguments.code)) {
+      body += `<div class="tool-call__label">${t.arguments.code ? "The program" : "The command"}${t.arguments.cwd ? ` (in ${esc(t.arguments.cwd)})` : ""}</div>` +
+              `<pre class="tool-call__pre tool-call__cmd">${esc(t.arguments.command || t.arguments.code)}</pre>`;
     }
     body += `<div class="tool-call__label">Arguments</div><pre class="tool-call__pre">${esc(args || "(being written)")}</pre>`;
     if (t.result != null) {
@@ -712,7 +720,7 @@ function onTool(m, x) {
     Object.assign(t, {state: "asking", approval: x.approval, question: x.question, options: x.options || [], open: true});
   } else if (x.event === "approval") {
     // the server holds the call until the user answers (Allow / Always allow / Deny, or it times out)
-    Object.assign(t, {state: "waiting", approval: x.approval, kind: x.kind || t.kind, protectedPath: !!x.protected, leak: !!x.leak, open: true});
+    Object.assign(t, {state: "waiting", approval: x.approval, kind: x.kind || t.kind, protectedPath: !!x.protected, leak: !!x.leak, exec: !!x.exec, open: true});
   } else if (x.event === "result") {
     Object.assign(t, {result: x.text, ok: x.ok, chars: x.chars, truncated: x.truncated, ms: x.ms, approval: null,
                       state: x.skipped ? "skipped" : x.denied ? "blocked" : x.ok ? "done" : "error"});

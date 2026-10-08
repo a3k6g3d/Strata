@@ -72,6 +72,7 @@ main { flex: 1; min-height: 0; display: flex; }
 .tool-call__opts { display: flex; flex-wrap: wrap; gap: var(--st-s-2); }
 .tool-call__reply { display: flex; gap: var(--st-s-2); }
 .tool-call__reply .tool-call__input { flex: 1; min-width: 0; height: 38px; }
+.tool-call__cmd { max-height: 420px; border-color: var(--st-warn); background: var(--st-warn-tint); color: var(--st-ink); }
 .tool-call__label { font-size: var(--st-fs-xs); font-weight: var(--st-fw-medium); color: var(--st-ink-muted); margin: var(--st-s-2) 0 var(--st-s-1); }
 .tool-call__pre { margin: 0; padding: 10px 12px; max-height: 320px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere;
                   font: 400 12.5px/1.5 var(--st-font-mono); color: var(--st-ink-soft); background: var(--st-surface);

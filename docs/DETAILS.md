@@ -871,6 +871,29 @@ type in, and what you send is the tool's result. Use it for a decision or a fact
 it runs in every mode that offers tools; it waits `approval_timeout_s` (300 s) and then tells the model nobody answered.
 The page answers it with `POST /mcp/answer {"approval": <token from the question event>, "text": "..."}`.
 
+**Running commands and programs.** `tools/strata_exec_mcp.py` has `run_command` (one PowerShell or cmd command line) and
+`run_python` (one program in a fresh `python -I`), each returning the exit code, stdout and stderr. **This runs code on
+your PC with your Windows account's rights. It is not a sandbox**: a command can read or change anything you can, use
+the network and start other programs, and the no-read list and the C: protection look at the paths a call names, not at
+what a command then does. What keeps it safe is how Strata treats it. List the server under
+`"mcp": {"exec_servers": ["exec"]}` and every tool of it is kind **exec**:
+
+- every call **waits for your click, every time, in every mode that can ask** - Full access too; there is no "Always
+  allow"; Read-only and No-tools refuse it;
+- the chat shows the exact command or program, whole, before the button ("Run it");
+- the text is also read, best effort, against the no-read list: a command that names a blocked place is refused before
+  any click is asked for (it cannot see a path a program builds while it runs, so it is a seat belt, not the guard);
+- the server gives the program no input, stops it after `timeout_s` (60 by default, 300 at most) with its whole process
+  tree, cuts each of stdout and stderr at 20,000 characters (both ends kept) and refuses a command line over 8,000.
+
+```json
+"mcp_servers": {"exec": {"command": "python", "args": ["tools/strata_exec_mcp.py"], "cwd": "C:/work"}},
+"mcp": {"exec_servers": ["exec"]}
+```
+
+Read what is on the button before you click it: a model that has just read a web page or a file can be talked into
+asking for something that was never your idea.
+
 **Security.** MCP tools run on your PC with your user's rights, and **the model decides when to call them** - also
 because of what it reads (a web page or a file can contain instructions). Give a filesystem server only the folders
 it needs, prefer read-only tools, and don't add servers you don't trust. The tools can only be used from the chat
