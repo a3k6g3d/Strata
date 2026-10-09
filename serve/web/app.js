@@ -709,7 +709,8 @@ function answerHtml(m) {
 // a tool event from the stream (the `strata_mcp` field of a chunk)
 function onTool(m, x) {
   if (x.event === "limit") { m.limit = x.max_rounds; return; }
-  if (x.event === "compact") { m.compacted = (m.compacted || 0) + (x.shrunk || 0); m.summarized = (m.summarized || 0) + (x.summarized || 0); return; }   // older results shortened to fit
+  if (x.event === "compacting") { m.compacting = true; return; }   // the server is summarizing the older chat (up to a minute)
+  if (x.event === "compact") { m.compacting = false; m.compacted = (m.compacted || 0) + (x.shrunk || 0); m.summarized = (m.summarized || 0) + (x.summarized || 0); return; }   // older results shortened to fit
   m.tools = m.tools || [];
   let t = m.tools.find((y) => y.id === x.id);
   if (!t) { t = {id: x.id, name: x.name, at: m.text.length, rat: m.reasoning.length, state: "writing"}; m.tools.push(t); }
@@ -769,7 +770,8 @@ function updateAssistant(el, m, streaming) {
     bubble.innerHTML = `<div class="msg-error"></div>`;
     bubble.firstChild.textContent = m.error;
   } else if (!m.text && streaming && !(m.tools && m.tools.length)) {
-    bubble.innerHTML = m.reasoning ? `<span class="muted cursor">Writing</span>` : `<span class="cursor"></span>`;
+    bubble.innerHTML = m.compacting ? `<span class="muted cursor">Summarizing the earlier conversation to fit the context (up to a minute)</span>`
+      : m.reasoning ? `<span class="muted cursor">Writing</span>` : `<span class="cursor"></span>`;
   } else {
     bubble.innerHTML = answerHtml(m);
     if (streaming) bubble.classList.add("cursor"); else bubble.classList.remove("cursor");

@@ -5,6 +5,14 @@ dated, and the fork's releases follow [SemVer](https://semver.org) once it tags 
 
 ## Unreleased - 2026-10-09
 
+### Fixed (2026-10-09, after first use of the port)
+- Long-chat summarizing no longer leaves the page blank: it runs on a thread with keep-alives, the page shows
+  "Summarizing the earlier conversation...", **Stop cancels it** (it used to run on, blocking the next request), a
+  summary is cached by the digest of the messages it covers so the next turn of the same chat reuses it (it was
+  redone every turn), and it is capped at 800 tokens (was 1,500).
+- Image encoding moved to the CPU in this PC's config (`vision.gpu` false, 768 tokens): the GPU encoder left
+  112 MiB of VRAM free (the engine's "LOW" warning) and shrank the expert cache.
+
 ### Ported to upstream 0.1.40.2 (branch `speed-work-0.1.40.2`)
 - Everything below except the speed commit's engine changes, which were **not** carried over: upstream already has
   `kv_append_q4_steps` and the prompt-attention switch, and it rewrote `qsa_prompt_attn.cu`, `generate.cpp`,
