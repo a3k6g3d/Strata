@@ -786,8 +786,25 @@ function renderChat() {
   messages.forEach((m, i) => chat.appendChild(msgEl(m, i)));
   scrollDown(true);
 }
-function nearBottom() { const s = $("chat-scroll"); return s.scrollHeight - s.scrollTop - s.clientHeight < 120; }
-function scrollDown(force) { const s = $("chat-scroll"); if (force || nearBottom()) s.scrollTop = s.scrollHeight; }
+// The chat follows the newest text: it stays pinned to the bottom, however much a frame adds (a tool block, a long
+// answer), until the user scrolls up to read; scrolling back to the bottom (or sending a message) pins it again.
+let pinned = true, ownScroll = false;
+function nearBottom(px = 120) { const s = $("chat-scroll"); return s.scrollHeight - s.scrollTop - s.clientHeight < px; }
+function toBottom() {
+  const s = $("chat-scroll"), end = s.scrollHeight - s.clientHeight;
+  if (Math.abs(s.scrollTop - end) > 1) { ownScroll = true; s.scrollTop = end; }   // our own scroll is not the user's
+}
+function scrollDown(force) {
+  if (force) pinned = true;
+  if (pinned) toBottom();
+}
+$("chat-scroll").addEventListener("scroll", () => {
+  if (ownScroll) { ownScroll = false; return; }
+  pinned = nearBottom(40);                       // the user scrolled: up unpins, back to the bottom pins again
+}, {passive: true});
+$("chat-scroll").addEventListener("wheel", (e) => { if (e.deltaY < 0) pinned = false; }, {passive: true});
+// growth from anything (images, a block opening, the markdown settling) keeps a pinned chat at the bottom
+if (window.ResizeObserver) new ResizeObserver(() => { if (pinned) toBottom(); }).observe($("chat"));
 
 $("chat").addEventListener("click", (e) => {
   const cc = e.target.closest("[data-code-copy]");
