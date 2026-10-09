@@ -709,6 +709,7 @@ function answerHtml(m) {
 // a tool event from the stream (the `strata_mcp` field of a chunk)
 function onTool(m, x) {
   if (x.event === "limit") { m.limit = x.max_rounds; return; }
+  if (x.event === "compact") { m.compacted = (m.compacted || 0) + (x.shrunk || 0); return; }   // older results shortened to fit
   m.tools = m.tools || [];
   let t = m.tools.find((y) => y.id === x.id);
   if (!t) { t = {id: x.id, name: x.name, at: m.text.length, rat: m.reasoning.length, state: "writing"}; m.tools.push(t); }
