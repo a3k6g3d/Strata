@@ -208,3 +208,8 @@ main { flex: 1; min-height: 0; display: flex; }
   .facts { grid-template-columns: 1fr; gap: 2px; }
   .facts dd { margin-bottom: var(--st-s-2); }
 }
+
+.queued { display: flex; align-items: center; gap: var(--st-s-2); padding: 6px 10px; margin-bottom: 6px;
+          border: 1px dashed var(--st-line, currentColor); border-radius: var(--st-r-2, 8px); font-size: var(--st-fs-xs); }
+.queued__label { font-weight: 600; color: var(--st-ink-muted); text-transform: uppercase; letter-spacing: .04em; }
+.queued__text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

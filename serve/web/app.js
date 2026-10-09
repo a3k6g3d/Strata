@@ -872,19 +872,47 @@ function assistantMessages(m) {
 
 function setBusy(on) {
   $("stop-btn").hidden = !on;
-  $("send-btn").disabled = on;
-  $("composer-hint").textContent = on ? "" : "Shift+Enter: new line";
+  $("composer-hint").textContent = on ? "Enter: queue" : "Shift+Enter: new line";
 }
 
-async function send() {
-  const text = $("input").value.trim();
-  if ((!text && !attachments.length) || busy) return;
-  messages.push({role: "user", text, images: attachments.filter((a) => a.kind !== "file"),
-                 files: attachments.filter((a) => a.kind === "file"), time: Date.now()});
+// A message typed while the model is still answering waits here and goes out when the answer ends (or at once with
+// "Send now", which stops the answer where it is).  One message waits; a second one is added to it.
+let queued = null;
+function renderQueued() {
+  $("queued").hidden = !queued;
+  if (queued) $("queued-text").textContent = queued.text || `${queued.images.length + queued.files.length} attachment(s)`;
+}
+function queueMessage(text) {
+  const add = {text, images: attachments.filter((a) => a.kind !== "file"), files: attachments.filter((a) => a.kind === "file")};
+  queued = queued ? {text: [queued.text, text].filter(Boolean).join(" "), images: [...queued.images, ...add.images],
+                     files: [...queued.files, ...add.files]} : add;
   attachments = [];
   renderAttachments();
   $("input").value = "";
   autosize();
+  renderQueued();
+}
+function sendQueued() {
+  if (!queued || busy) return;
+  const q = queued;
+  queued = null;
+  renderQueued();
+  send(q);
+}
+
+async function send(ready) {
+  const typed = $("input").value.trim();
+  if (!ready && (typed || attachments.length) && busy) { queueMessage(typed); return; }
+  if ((!ready && !typed && !attachments.length) || busy) return;
+  const text = ready ? ready.text : typed;
+  messages.push({role: "user", text, images: ready ? ready.images : attachments.filter((a) => a.kind !== "file"),
+                 files: ready ? ready.files : attachments.filter((a) => a.kind === "file"), time: Date.now()});
+  if (!ready) {
+    attachments = [];
+    renderAttachments();
+    $("input").value = "";
+    autosize();
+  }
   const m = {role: "assistant", text: "", reasoning: "", time: Date.now()};
   messages.push(m);
   renderChat();
@@ -977,10 +1005,13 @@ async function send() {
   updateAssistant(el, m, false);
   saveChat();
   scrollDown();
+  if (queued) setTimeout(sendQueued, 0);              // the message typed meanwhile goes out now
 }
 
 $("composer").onsubmit = (e) => { e.preventDefault(); send(); };
 $("stop-btn").onclick = () => { if (busy) busy.controller.abort(); };
+$("queued-now").onclick = () => { if (busy) busy.controller.abort(); else sendQueued(); };   // the end of send() sends it
+$("queued-cancel").onclick = () => { queued = null; renderQueued(); };
 $("input").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
 });
