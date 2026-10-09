@@ -5,6 +5,15 @@ dated, and the fork's releases follow [SemVer](https://semver.org) once it tags 
 
 ## Unreleased - 2026-10-09
 
+### Ported to upstream 0.1.40.2 (branch `speed-work-0.1.40.2`)
+- Everything below except the speed commit's engine changes, which were **not** carried over: upstream already has
+  `kv_append_q4_steps` and the prompt-attention switch, and it rewrote `qsa_prompt_attn.cu`, `generate.cpp`,
+  `verify.cpp` and the tool-call parser. Left behind, to be re-ported only if measured worth it: decode attention on
+  tensor cores (`qsa_decode_attn_tc`, about 2% of a decode window here), `--spec-adaptive` (off in the config
+  anyway), the Q4_0 prompt-attention kernel (the config uses `--kv int8`) and the linear tool-call scan.
+- Kept from it: `tools/mtp_from_gguf.py` and `docs/SPEED_BRANCH.md`.
+- The engine must be rebuilt from this branch before its server is used: its Python expects the 0.1.40.2 engine.
+
 ### Added
 - Chat: a message typed while the model is answering is queued and sent when the answer ends; **Send now** stops the
   answer and sends it at once.
