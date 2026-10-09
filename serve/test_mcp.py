@@ -930,19 +930,32 @@ class Permissions(unittest.TestCase):
         self.hub = McpHub({"exec": stdio()}, {"timeout_s": 10, "exec_servers": ["exec"], **settings})
         self.hub.start(wait=True)
 
-    def test_a_command_asks_every_time_in_every_mode_that_can_ask(self):
+    def test_a_command_asks_in_ask_and_edit_modes_and_runs_by_itself_in_full_access(self):
         self.make_exec()
-        for mode in ("ask", "edit", "full"):                                          # Full access included
+        for mode in ("ask", "edit"):
             self.start(call_script("exec__echo", text="hello"), "</think>\n\ndone")
-            ev = self.run_mode(mode, answer=True, always=True)                        # "Always allow" is clicked ...
+            ev = self.run_mode(mode, answer=True)
             self.assertEqual([e["event"] for e in ev], ["start", "call", "approval", "result"], mode)
-            self.assertEqual(ev[1]["kind"], "exec", mode)
-            self.assertEqual((ev[2]["exec"], ev[2]["protected"]), (True, True), mode)   # protected: the page shows no "Always"
+            self.assertEqual((ev[1]["kind"], ev[2]["exec"], ev[2]["protected"]), ("exec", True, False), mode)
             self.assertEqual((ev[3]["ok"], ev[3]["text"]), (True, "hello"), mode)
-        self.assertEqual(self.hub.gate.always, set())                                 # ... and is never remembered
-        self.start(call_script("exec__echo", text="again"), "</think>\n\nagain")
-        ev = self.run_mode("full", answer=True)
-        self.assertIn("approval", [e["event"] for e in ev])                           # so it asks again
+        self.start(call_script("exec__echo", text="hello"), "</think>\n\ndone")
+        ev = self.run_mode("full")                                                    # no click at all
+        self.assertEqual([e["event"] for e in ev], ["start", "call", "result"])
+        self.assertEqual((ev[2]["ok"], ev[2]["text"]), (True, "hello"))
+
+    def test_always_allow_covers_a_command_but_not_one_naming_a_protected_place(self):
+        self.make_exec(protected_paths=["C:\\"])
+        self.start(call_script("exec__echo", text="one"), "</think>\n\ndone")
+        self.run_mode("edit", answer=True, always=True)                               # "Always allow" is clicked ...
+        self.assertEqual(self.hub.gate.always, {"exec__echo"})
+        self.start(call_script("exec__echo", text="two"), "</think>\n\ndone")
+        ev = self.run_mode("edit")                                                    # ... so it no longer asks
+        self.assertEqual([e["event"] for e in ev], ["start", "call", "result"])
+        for text in ("dir C:\\Users", "echo %USERPROFILE%", "type C:/Windows/win.ini"):
+            self.start(call_script("exec__echo", text=text), "</think>\n\nasked")
+            ev = self.run_mode("full", answer=False)                                  # a protected place always asks
+            self.assertIn("approval", [e["event"] for e in ev], text)
+            self.assertTrue([e for e in ev if e["event"] == "approval"][0]["protected"], text)
 
     def test_a_denied_command_never_runs_and_read_only_refuses_without_asking(self):
         self.make_exec()
@@ -968,7 +981,7 @@ class Permissions(unittest.TestCase):
         self.assertIn("no-read list", ev[2]["text"])
         self.assertFalse(self.ran("echo"))
         self.start(call_script("exec__echo", text='type "' + os.path.join(tmp, "fine.txt") + '"'), "</think>\n\nasked")
-        ev = self.run_mode("full", answer=False)                                      # an unlisted place still asks
+        ev = self.run_mode("edit", answer=False)                                      # an unlisted place asks in Allow edits
         self.assertIn("approval", [e["event"] for e in ev])
 
     def test_exec_servers_in_status_and_settings(self):
@@ -982,7 +995,7 @@ class Permissions(unittest.TestCase):
         for bad in ("exec", [""], [3]):
             with self.assertRaises(SystemExit):
                 settings_from({"mcp": {"exec_servers": bad}})
-        self.assertEqual([decide(m, "exec") for m in ("off", "read", "ask", "edit", "full")], ["deny", "deny", "ask", "ask", "ask"])
+        self.assertEqual([decide(m, "exec") for m in ("off", "read", "ask", "edit", "full")], ["deny", "deny", "ask", "ask", "allow"])
 
     def test_approve_endpoint_guards(self):
         self.make()

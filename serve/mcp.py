@@ -80,8 +80,10 @@ def decide(mode: str, kind: str, always: bool = False) -> str:
     """'allow' (runs now), 'ask' (waits for the user) or 'deny' for a tool of this kind in this mode."""
     if mode == "off":                                    # (the server offers no tools at all in this mode)
         return "deny"
-    if kind == "exec":                                   # runs a command or a program: the user clicks every time, in
-        return "deny" if mode == "read" else "ask"       # every mode that can ask - Full access too, never "Always allow"
+    if kind == "exec":                                   # runs a command or a program: refused in Read-only, by itself in
+        if mode == "read":                               # Full access or after "Always allow", asked about otherwise (the
+            return "deny"                                # tool loop still asks when the text names a protected path)
+        return "allow" if mode == "full" or always else "ask"
     if kind == "ask":                                    # the built-in ask_user: asking the user changes nothing
         return "allow"
     if mode == "full" or kind in ("read", "net"):         # (the tool loop asks about a network call after local reads)
@@ -852,6 +854,26 @@ class McpHub:
     def protected(self, arguments) -> bool:
         """True when a call's arguments name a path inside the config's `mcp.protected_paths`."""
         return touches_protected(arguments, self.settings.get("protected_paths"))
+
+    def protected_text(self, arguments) -> bool:
+        """A command or program in the call's arguments names a place inside `mcp.protected_paths` (best effort: a
+        path written in the text, or, for the system drive, an environment variable or ~ that points into it)."""
+        out: list = []
+        _all_strings(arguments, out)
+        text = "\n".join(out).lower().replace("/", "\\")
+        sysdrive = os.environ.get("SystemDrive", "C:").lower()
+        for root in self.settings.get("protected_paths") or []:
+            r = str(root).lower().replace("/", "\\").rstrip("\\")
+            if not r:
+                continue
+            if re.search(re.escape(r) + r"(\\|\s|$|[\"'])", text):
+                return True
+            if r == sysdrive and re.search(r"%(userprofile|appdata|localappdata|programfiles|programfiles\(x86\)|"
+                                           r"programdata|windir|systemroot|temp|tmp|homedrive|systemdrive)%|"
+                                           r"\$env:|(^|[\s\"'])~(\\|$|\s)|expanduser|path\.home\(|gethomedir|"
+                                           r"environ\[|getenv\(", text):
+                return True
+        return False
 
     def kind_of(self, name: str) -> str:
         """'read' / 'write' / 'danger' for the tool the model sees as `name` (an unknown name is 'danger')."""
