@@ -1298,6 +1298,14 @@ at most 1,500 tokens). The same history gives the same summary from a cache, so 
 answer's footer says "summarized N earlier messages" when it happened; a summary can lose detail. Only requests that use
 MCP tools are changed this way; any other request that is too long still fails with "requests are never truncated".
 
+**Separate chats.** With a run config, the chat page lists your chats on the left (new chat, open, rename by
+double-click, delete; the ☰ button hides the list). The server keeps each one as a file in a `sessions` folder next to
+the config (`"sessions_dir": "..."` in the config chooses another): `<id>.json` holds the conversation and
+`<id>.meta.json` the list entry, written to a temporary file first, so a crash leaves the old chat whole. They survive
+a browser change, a cleared cache and a restart, and any browser that opens the page sees them. Only Strata's own page
+can read or change them (the same rule as the tool buttons), and an id can only be `a-z0-9-`, never a path. The chat
+the browser kept before this became the first session. Without a config the page keeps one chat in the browser as before.
+
 **Typing while it answers.** Enter or Send while the model is still writing queues the message (shown as "Queued" above
 the box; a second one is added to it). It goes out when the answer ends; **Send now** stops the answer where it is
 (what was written stays) and sends it at once, × removes it. The message is not slipped into a tool loop that is

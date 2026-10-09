@@ -15,6 +15,7 @@ const gb = (b, d = 1) => (b == null ? "–" : fmt(b / 1073741824, d));   // memo
 const store = {
   get(k, d) { try { const v = localStorage.getItem("strata." + k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } },
   set(k, v) { try { localStorage.setItem("strata." + k, JSON.stringify(v)); } catch (e) { /* private mode: in memory only */ } },
+  remove(k) { try { localStorage.removeItem("strata." + k); } catch (e) { /* ignore */ } },
 };
 
 // ------------------------------------------------------------------ toasts
@@ -590,11 +591,215 @@ let messages = store.get("chat", []);
 let attachments = [];                 // {name, url}
 let busy = null;                      // {controller, msg}
 
-function saveChat() {
-  store.set("chat", messages.map((m) => ({...m, images: (m.images || []).map((i) => ({name: i.name})),
-                                           files: (m.files || []).map((f) => ({name: f.name}))})));
-}
 function timeStr(t) { return new Date(t).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}); }
+
+// ------------------------------------------------------------------ Sessions (separate chats, kept by the server)
+// With a run config the server keeps each chat in a file (serve/sessions.py) and the list sits on the left; without
+// one (or when the server has no sessions folder) the page keeps one chat in the browser, as before.
+let sessionsOn = false;
+let sessionList = [];                     // [{id, title, updated, messages, custom_title}]
+let current = {id: null, title: "New chat", custom: false};
+let saveTimer = null, saving = Promise.resolve();
+
+function newSessionId() { return `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`; }
+function autoTitle() {
+  const first = messages.find((m) => m.role === "user" && (m.text || "").trim());
+  const t = first ? first.text.replace(/\s+/g, " ").trim() : "";
+  return t ? (t.length > 60 ? t.slice(0, 57) + "…" : t) : "New chat";
+}
+function chatPayload() {
+  return messages.map((m) => ({...m, images: (m.images || []).map((i) => ({name: i.name})),
+                                files: (m.files || []).map((f) => ({name: f.name}))}));
+}
+async function sessionApi(path, body) {
+  const r = await fetch(path, body === undefined ? {headers: headers(false)}
+                                                 : {method: "POST", headers: headers(true), body: JSON.stringify(body), keepalive: JSON.stringify(body).length < 60000});
+  if (!r.ok) { let msg = `HTTP ${r.status}`; try { msg = (await r.json()).error.message || msg; } catch (e) { /* not json */ } throw new Error(msg); }
+  return r.json();
+}
+function saveNow() {
+  clearTimeout(saveTimer);
+  saveTimer = null;
+  if (!sessionsOn || !current.id || !messages.length) return saving;      // an empty chat is not kept
+  if (!current.custom) current.title = autoTitle();
+  const id = current.id, body = {title: current.title, custom_title: current.custom, messages: chatPayload()};
+  saving = saving.then(() => sessionApi(`sessions/${id}`, body)).then((meta) => {
+    const at = sessionList.findIndex((s) => s.id === id);
+    if (at >= 0) sessionList[at] = meta; else sessionList.unshift(meta);
+    sessionList.sort((a, b) => b.updated - a.updated);
+    renderSessions();
+  }).catch((e) => { toast("error", "The chat was not saved", e.message, 6000); });
+  return saving;
+}
+function saveChat() {
+  if (!sessionsOn) {
+    store.set("chat", chatPayload());
+    return;
+  }
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(saveNow, 400);
+  $("chat-title").textContent = current.custom ? current.title : autoTitle();
+}
+function dayLabel(t) {
+  const d = new Date(t * 1000), now = new Date(), day = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const diff = Math.round((day(now) - day(d)) / 86400000);
+  return diff <= 0 ? "Today" : diff === 1 ? "Yesterday" : diff < 7 ? "Previous 7 days" : "Older";
+}
+function renderSessions() {
+  const box = $("sessions-list");
+  box.textContent = "";
+  let last = "";
+  const shown = sessionList.some((s) => s.id === current.id) || !messages.length
+    ? sessionList : [{id: current.id, title: autoTitle(), updated: Date.now() / 1000}, ...sessionList];
+  for (const s of shown) {
+    const label = dayLabel(s.updated);
+    if (label !== last) {
+      const h = document.createElement("div");
+      h.className = "sessions__day";
+      h.textContent = label;
+      box.appendChild(h);
+      last = label;
+    }
+    const row = document.createElement("div");
+    row.className = "sess" + (s.id === current.id ? " sess--current" : "");
+    row.dataset.id = s.id;
+    row.setAttribute("role", "listitem");
+    const title = document.createElement("button");
+    title.type = "button";
+    title.className = "sess__title";
+    title.textContent = s.id === current.id ? (current.custom ? current.title : autoTitle()) : s.title;
+    title.title = "Open this chat. Double-click to rename.";
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "sess__del";
+    del.title = "Delete this chat";
+    del.setAttribute("aria-label", "Delete this chat");
+    del.textContent = "×";
+    row.append(title, del);
+    box.appendChild(row);
+  }
+  if (!shown.length) {
+    const e = document.createElement("div");
+    e.className = "sessions__empty muted small";
+    e.textContent = "Your chats appear here.";
+    box.appendChild(e);
+  }
+  $("chat-title").textContent = current.custom ? current.title : autoTitle();
+}
+function stillWriting() {
+  if (!busy) return false;
+  toast("warn", "Still writing", "Stop the answer first, or wait for it to finish.");
+  return true;
+}
+async function newSession() {
+  if (stillWriting()) return;
+  await saveNow();
+  current = {id: newSessionId(), title: "New chat", custom: false};
+  messages = [];
+  store.set("session", current.id);
+  renderChat();
+  renderSessions();
+  $("input").focus();
+}
+async function openSession(id) {
+  if (id === current.id || stillWriting()) return;
+  await saveNow();
+  try {
+    const data = await sessionApi(`sessions/${id}`);
+    current = {id, title: data.title || "Chat", custom: !!data.custom_title};
+    messages = Array.isArray(data.messages) ? data.messages : [];
+    store.set("session", id);
+    renderChat();
+    renderSessions();
+  } catch (e) {
+    toast("error", "That chat could not be opened", e.message, 6000);
+  }
+}
+async function deleteSession(id) {
+  if (id === current.id && stillWriting()) return;
+  if (!confirm("Delete this chat? It cannot be brought back.")) return;
+  try {
+    await sessionApi(`sessions/${id}/delete`, {});
+  } catch (e) {
+    toast("error", "That chat was not deleted", e.message, 6000);
+    return;
+  }
+  sessionList = sessionList.filter((s) => s.id !== id);
+  if (id !== current.id) { renderSessions(); return; }
+  if (sessionList.length) { current = {id: null, title: "", custom: false}; await openSession(sessionList[0].id); }
+  else { current = {id: null, title: "", custom: false}; await newSession(); }
+}
+async function renameSession(id) {
+  const row = sessionList.find((s) => s.id === id) || (id === current.id ? {title: current.title} : null);
+  if (!row) return;
+  const name = prompt("Name this chat:", id === current.id ? (current.custom ? current.title : autoTitle()) : row.title);
+  if (name === null || !name.trim()) return;
+  if (id === current.id) {
+    current.title = name.trim();
+    current.custom = true;
+    renderSessions();
+    await saveNow();
+    return;
+  }
+  try {
+    const data = await sessionApi(`sessions/${id}`);
+    const meta = await sessionApi(`sessions/${id}`, {title: name.trim(), custom_title: true, messages: data.messages || []});
+    sessionList = sessionList.map((s) => s.id === id ? meta : s);
+    renderSessions();
+  } catch (e) {
+    toast("error", "That chat was not renamed", e.message, 6000);
+  }
+}
+function showSessions(on) {
+  $("sessions").hidden = !on;
+  $("sessions-toggle").setAttribute("aria-expanded", String(on));
+  store.set("sessions_open", on);
+}
+$("sessions-list").addEventListener("click", (e) => {
+  const row = e.target.closest(".sess");
+  if (!row) return;
+  if (e.target.closest(".sess__del")) deleteSession(row.dataset.id);
+  else openSession(row.dataset.id);
+});
+$("sessions-list").addEventListener("dblclick", (e) => {
+  const row = e.target.closest(".sess");
+  if (row && !e.target.closest(".sess__del")) renameSession(row.dataset.id);
+});
+$("chat-title").addEventListener("dblclick", () => { if (current.id) renameSession(current.id); });
+$("session-new").onclick = newSession;
+$("sessions-toggle").onclick = () => showSessions($("sessions").hidden);
+// leaving the page: what is waiting to be saved goes out now
+addEventListener("pagehide", () => { if (saveTimer) saveNow(); });
+async function initSessions() {
+  let listing;
+  try { listing = await sessionApi("sessions"); } catch (e) { return false; }           // no sessions folder: one chat in the browser
+  sessionsOn = true;
+  sessionList = listing.sessions || [];
+  $("chat-top").hidden = false;
+  showSessions(store.get("sessions_open", innerWidth > 900));
+  const legacy = messages.length ? messages : null;                                      // the one chat the browser kept so far
+  const wanted = store.get("session", null);
+  if (legacy && !sessionList.length) {
+    current = {id: newSessionId(), title: autoTitle(), custom: false};
+    await saveNow();                                                                      // it becomes the first session
+    store.remove("chat");
+  } else if (wanted && sessionList.some((s) => s.id === wanted)) {
+    const data = await sessionApi(`sessions/${wanted}`);
+    current = {id: wanted, title: data.title || "Chat", custom: !!data.custom_title};
+    messages = Array.isArray(data.messages) ? data.messages : [];
+  } else if (sessionList.length && !legacy) {
+    const data = await sessionApi(`sessions/${sessionList[0].id}`);
+    current = {id: sessionList[0].id, title: data.title || "Chat", custom: !!data.custom_title};
+    messages = Array.isArray(data.messages) ? data.messages : [];
+  } else {
+    current = {id: newSessionId(), title: "New chat", custom: false};
+    if (!legacy) messages = [];
+  }
+  store.set("session", current.id);
+  renderChat();
+  renderSessions();
+  return true;
+}
 
 function msgEl(m, i) {
   const el = document.createElement("div");
@@ -1097,6 +1302,7 @@ function autosize() { const t = $("input"); t.style.height = "auto"; t.style.hei
 $("input").addEventListener("input", autosize);
 
 $("new-btn").onclick = () => {
+  if (sessionsOn) { newSession(); return; }                 // the old chat stays in the list on the left
   if (busy) { toast("warn", "Still writing", "Stop the answer first."); return; }
   if (!messages.length) return;
   const backup = messages;
@@ -1299,6 +1505,7 @@ setBusy(false);
 renderChat();
 const startQuestion = new URLSearchParams(location.search).get("q");   // /?q=... starts a chat (a shortcut)
 if (startQuestion) history.replaceState(null, "", location.pathname + location.hash);
-loadHealth().then(loadMcp).then(() => { if (startQuestion) { $("input").value = startQuestion; send(); } });
+const sessionsReady = initSessions();
+loadHealth().then(loadMcp).then(() => sessionsReady).then(() => { if (startQuestion) { $("input").value = startQuestion; send(); } });
 showTab(location.hash.slice(1) || "chat");
 poll();

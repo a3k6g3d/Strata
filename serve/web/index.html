@@ -37,6 +37,17 @@
 <main>
   <!-- ============================ Chat ============================ -->
   <section class="view view--chat" id="view-chat" role="tabpanel" aria-labelledby="tab-btn-chat">
+    <aside class="sessions" id="sessions" aria-label="Chats" hidden>
+      <div class="sessions__top">
+        <button type="button" class="st-btn st-btn--primary sessions__new" id="session-new">+ New chat</button>
+      </div>
+      <div class="sessions__list" id="sessions-list" role="list"></div>
+    </aside>
+    <div class="chat-main">
+    <div class="chat-top" id="chat-top" hidden>
+      <button type="button" class="st-btn st-btn--icon" id="sessions-toggle" title="Show or hide your chats" aria-label="Show or hide your chats" aria-expanded="false">&#9776;</button>
+      <span class="chat-top__title" id="chat-title" title="Double-click to rename">New chat</span>
+    </div>
     <div class="chat-scroll" id="chat-scroll">
       <div class="chat" id="chat">
         <div class="chat-empty" id="chat-empty">
@@ -76,6 +87,7 @@
         </div>
       </form>
     </div>
+      </div>
   </section>
 
   <!-- ============================ Monitor ============================ -->
