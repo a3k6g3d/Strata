@@ -243,6 +243,54 @@ class FitToolResults(unittest.TestCase):
         self.assertEqual(fit_tool_results(self.svc(32768), msgs, None, {}, 0), 4)
 
 
+class CompactHistory(unittest.TestCase):
+    """When shortening is not enough the model summarizes the older conversation, once."""
+
+    def svc(self, ctx):
+        enc = lambda messages, tools, kw: [0] * sum(len(str(m.get("content", ""))) for m in messages)  # noqa: E731
+        calls = []
+
+        def run(ids, thinking, tools, max_new, sampling, cancel):
+            calls.append(len(ids))
+            yield "event", SimpleNamespace(kind="content", text="SUMMARY OF WORK")
+            yield "done", {"finish": "stop", "completion_tokens": 3}
+        return SimpleNamespace(engine=SimpleNamespace(max_context=ctx), encode_prompt=enc, run=run,
+                               embeddings=SimpleNamespace(path=None)), calls
+
+    def msgs(self):
+        out = [{"role": "system", "content": "sys"}, {"role": "user", "content": "goal " + "g" * 5000}]
+        for i in range(6):
+            out += [{"role": "assistant", "content": "", "tool_calls": [{"function": {"name": "read", "arguments": {"i": i}}}]},
+                    {"role": "tool", "content": "r" * 3000}]
+        return out
+
+    def test_older_part_replaced_by_the_summary_and_the_tail_kept(self):
+        from serve.server import compact_history
+        svc, calls = self.svc(12000)
+        msgs = self.msgs()
+        tail = msgs[-4:]
+        n = compact_history(svc, msgs, None, {}, threading.Event())
+        self.assertGreater(n, 0)
+        self.assertEqual(msgs[0]["role"], "system")
+        self.assertIn("SUMMARY OF WORK", msgs[1]["content"])
+        self.assertEqual(msgs[-4:], tail)
+        self.assertEqual(len(calls), 1)
+
+    def test_the_same_history_is_summarized_once(self):
+        from serve.server import compact_history
+        svc, calls = self.svc(12000)
+        compact_history(svc, self.msgs(), None, {}, threading.Event())
+        compact_history(svc, self.msgs(), None, {}, threading.Event())
+        self.assertEqual(len(calls), 1)
+
+    def test_nothing_happens_when_it_fits(self):
+        from serve.server import compact_history
+        svc, calls = self.svc(10 ** 6)
+        msgs = self.msgs()
+        self.assertEqual(compact_history(svc, msgs, None, {}, threading.Event()), 0)
+        self.assertEqual((len(msgs), calls), (14, []))
+
+
 class ImageMarkers(unittest.TestCase):
     """#150: the text "<|image_pad|>" inside a message is text, not an image's place."""
 

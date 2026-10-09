@@ -709,7 +709,7 @@ function answerHtml(m) {
 // a tool event from the stream (the `strata_mcp` field of a chunk)
 function onTool(m, x) {
   if (x.event === "limit") { m.limit = x.max_rounds; return; }
-  if (x.event === "compact") { m.compacted = (m.compacted || 0) + (x.shrunk || 0); return; }   // older results shortened to fit
+  if (x.event === "compact") { m.compacted = (m.compacted || 0) + (x.shrunk || 0); m.summarized = (m.summarized || 0) + (x.summarized || 0); return; }   // older results shortened to fit
   m.tools = m.tools || [];
   let t = m.tools.find((y) => y.id === x.id);
   if (!t) { t = {id: x.id, name: x.name, at: m.text.length, rat: m.reasoning.length, state: "writing"}; m.tools.push(t); }
@@ -998,6 +998,7 @@ async function send(ready) {
   for (const t of m.tools || []) if (t.state === "writing" || t.state === "running") { t.state = "skipped"; t.ms = null; }
   const ran = (m.tools || []).filter((t) => t.state === "done" || t.state === "error").length;
   if (ran) m.meta = `${m.meta ? `${m.meta} · ` : ""}${ran} tool call${ran > 1 ? "s" : ""}`;
+  if (m.summarized) m.meta = `${m.meta || ""} · summarized ${m.summarized} earlier messages to stay inside the context`;
   if (m.limit) m.meta = `${m.meta || ""} · stopped at the limit of ${m.limit} tool rounds (mcp.max_rounds)`;
   busy = null;
   setBusy(false);
