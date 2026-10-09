@@ -10,8 +10,9 @@ dated, and the fork's releases follow [SemVer](https://semver.org) once it tags 
   "Summarizing the earlier conversation...", **Stop cancels it** (it used to run on, blocking the next request), a
   summary is cached by the digest of the messages it covers so the next turn of the same chat reuses it (it was
   redone every turn), and it is capped at 800 tokens (was 1,500).
-- Image encoding moved to the CPU in this PC's config (`vision.gpu` false, 768 tokens): the GPU encoder left
-  112 MiB of VRAM free (the engine's "LOW" warning) and shrank the expert cache.
+- Image encoding moved to the CPU in this PC's config (`vision.gpu` false, 768 tokens), so the encoder takes no
+  VRAM from the expert cache (pictures take 10-30 s). The engine's "LOW: 160 MiB of VRAM free" start-up warning
+  stays: it comes from `--vram-reserve-mib 640`, chosen on purpose (+5% decode over the default 1022).
 
 ### Ported to upstream 0.1.40.2 (branch `speed-work-0.1.40.2`)
 - Everything below except the speed commit's engine changes, which were **not** carried over: upstream already has
