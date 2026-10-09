@@ -3636,6 +3636,14 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
     used = [((tc.get("function") or {}).get("name") if isinstance(tc, dict) else None)
             for m in messages if isinstance(m, dict) for tc in (m.get("tool_calls") or [])]
     touched_local = any(n in hub.routes() and hub.kind_of(n) != "net" for n in used if n)
+    if not ids:                                          # [] from the caller: the prompt did not fit the context as sent
+        shrunk, summarized = yield from fit_context_live(svc, messages, tools, kw, max_req, cancel)
+        if shrunk or summarized:
+            yield "mcp", {"event": "compact", "shrunk": shrunk, "summarized": summarized}
+        if cancel.is_set():
+            yield "done", {"finish": "cancel", "completion_tokens": 0, "prompt_tokens": 0}
+            return
+        ids, thinking, max_new = svc.prepare(messages, tools, kw, max_req)
     while True:
         text, reasoning, calls, own_calls = [], [], [], 0
         for kind, x in svc.run(ids, thinking, tools, max_new, sampling, cancel):
@@ -3782,9 +3790,11 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
                          **({"reasoning_content": "".join(reasoning).strip()} if reasoning else {}),
                          "tool_calls": [{"function": {"name": c.name, "arguments": c.arguments}} for c in calls]})
         messages += [{"role": "tool", "content": r} for r in results]
-        shrunk, summarized = fit_context(svc, messages, tools, kw, max_req, cancel)
+        shrunk, summarized = yield from fit_context_live(svc, messages, tools, kw, max_req, cancel)
         if shrunk or summarized:
             yield "mcp", {"event": "compact", "shrunk": shrunk, "summarized": summarized}
+        if cancel.is_set():
+            break
         ids, thinking, max_new = svc.prepare(messages, tools, kw, max_req)
     yield "done", {**done, "completion_tokens": total, "prompt_tokens": len(ids)}
 
@@ -3818,6 +3828,7 @@ def fit_tool_results(svc: Service, messages: list, tools, kw, max_req) -> int:
     return shrunk
 
 
+SUMMARY_MAX_TOKENS = 800                # the most a summary of the older conversation may take (a minute at ~15 tok/s)
 SUMMARY_KEEP_TAIL = 4                  # the newest messages kept word for word when the older ones are summarized
 SUMMARY_PROMPT = ("Below is the earlier part of a conversation between a user and you, an AI assistant working with "
                   "tools. Write a summary that lets you continue the work without the original text: the user's goal "
@@ -3852,58 +3863,117 @@ def _transcript(messages: list, cap_chars: int) -> str:
     return out
 
 
-def compact_history(svc: Service, messages: list, tools, kw, cancel) -> int:
-    """When shortening tool results is not enough, the model summarizes the older part of the conversation: the
-    system messages and the newest SUMMARY_KEEP_TAIL messages stay as they are, everything between them becomes one
-    message holding the summary (made by the same model, thinking off).  The same older part gives the same summary
-    again (cached), so a long chat is summarized once, not on every turn.  Returns how many messages were replaced."""
+def _summary_message(summary: str) -> dict:
+    return {"role": "user", "content": "[Summary of the earlier part of this conversation, written by you so you can "
+                                       "continue the work:]\n" + summary}
+
+
+def _digest(messages: list) -> str:
+    return hashlib.sha256(json.dumps(messages, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def prompt_fits(svc: Service, messages: list, tools, kw) -> bool:
     ctx = svc.engine.max_context or getattr(svc.engine, "known_ctx", 0)
     if ctx <= 0:
+        return True
+    return len(svc.encode_prompt(messages, tools, kw)) + CTX_SLACK + min(8192, ctx // 4) <= ctx
+
+
+def compact_history(svc: Service, messages: list, tools, kw, cancel, orig: list | None = None) -> int:
+    """When shortening tool results is not enough, the model summarizes the older part of the conversation: the
+    system messages and the newest SUMMARY_KEEP_TAIL messages stay as they are, everything between them becomes one
+    message holding the summary (made by the same model, thinking off, at most SUMMARY_MAX_TOKENS).
+
+    `orig`: the messages as the client sent them (before any shortening).  A summary is remembered by the digest of
+    the first N of them, so the next turn of the same chat - which only adds messages at the end - finds it again
+    and does not summarize the same text twice; it is summarized further only when the prompt is still too long.
+    Returns how many messages were replaced."""
+    ctx = svc.engine.max_context or getattr(svc.engine, "known_ctx", 0)
+    if ctx <= 0 or prompt_fits(svc, messages, tools, kw):
         return 0
-    want = min(8192, ctx // 4)
-    if len(svc.encode_prompt(messages, tools, kw)) + CTX_SLACK + want <= ctx:
-        return 0
+    orig = list(messages) if orig is None else orig
     head = 0
     while head < len(messages) and messages[head].get("role") == "system":
         head += 1
+    cache = svc.__dict__.setdefault("summary_cache", [])      # [(n original messages after the head, digest, summary)]
+    covered, summary = 0, None
+    if len(orig) == len(messages):                               # the list is still the client's own (plus shortened results)
+        for n, digest, text in sorted(cache, key=lambda e: -e[0]):
+            if head + n <= len(orig) and _digest(orig[head:head + n]) == digest:
+                covered, summary = n, text
+                break
+    replaced = 0
+    if summary is not None:
+        messages[head:head + covered] = [_summary_message(summary)]
+        replaced = covered
+        if prompt_fits(svc, messages, tools, kw):
+            print(f"[strata] earlier conversation: the cached summary of {covered} message(s) fits it in the context", flush=True)
+            return replaced
     start = max(head, len(messages) - SUMMARY_KEEP_TAIL)
     while start > head and messages[start].get("role") == "tool":     # a result stays with the call that asked for it
         start -= 1
     middle = messages[head:start]
     if len(middle) < 2:
-        return 0
-    key = hashlib.sha256(json.dumps(middle, sort_keys=True, default=str).encode()).hexdigest()
-    cache = svc.__dict__.setdefault("summary_cache", {})
-    summary = cache.get(key)
-    if summary is None:
-        text = SUMMARY_PROMPT + _transcript(middle, max(4000, (ctx - 4000 - 1500) * 3))
-        sk = {"enable_thinking": False}
-        ids = svc.encode_prompt([{"role": "user", "content": text}], None, sk)
-        svc.embeddings.path = None
-        parts = []
-        try:
-            for kind, x in svc.run(ids, False, None, 1500, {"temperature": 0.3}, cancel):
-                if kind == "event" and x.kind == "content":
-                    parts.append(x.text)
-        except Exception as ex:                          # no summary: the caller's own error for a too-long prompt follows
-            print(f"[strata] summarizing the earlier conversation failed: {ex}", flush=True)
-            return 0
-        summary = "".join(parts).strip()
-        if not summary:
-            return 0
-        cache[key] = summary
-        if len(cache) > 16:
-            cache.pop(next(iter(cache)))
-    messages[head:start] = [{"role": "user", "content": "[Summary of the earlier part of this conversation, written by "
-                             "you so you can continue the work:]\n" + summary}]
-    print(f"[strata] summarized {len(middle)} earlier message(s) to keep the conversation inside the context", flush=True)
-    return len(middle)
+        return replaced
+    text = SUMMARY_PROMPT + _transcript(middle, max(4000, (ctx - 4000 - SUMMARY_MAX_TOKENS) * 3))
+    ids = svc.encode_prompt([{"role": "user", "content": text}], None, {"enable_thinking": False})
+    svc.embeddings.path = None
+    parts = []
+    t0 = time.monotonic()
+    try:
+        for kind, x in svc.run(ids, False, None, SUMMARY_MAX_TOKENS, {"temperature": 0.3}, cancel):
+            if kind == "event" and x.kind == "content":
+                parts.append(x.text)
+    except Exception as ex:                          # no summary: the caller's own error for a too-long prompt follows
+        print(f"[strata] summarizing the earlier conversation failed: {ex}", flush=True)
+        return replaced
+    summary = "".join(parts).strip()
+    if not summary or cancel.is_set():
+        return replaced
+    n_orig = covered + (start - head - (1 if covered else 0))       # client messages this summary stands for
+    if len(orig) == len(messages) + max(0, covered - 1) and head + n_orig <= len(orig):
+        cache.append((n_orig, _digest(orig[head:head + n_orig]), summary))
+        del cache[:-8]
+    messages[head:start] = [_summary_message(summary)]
+    print(f"[strata] summarized {len(middle)} earlier message(s) in {time.monotonic() - t0:.0f} s to keep the "
+          f"conversation inside the context", flush=True)
+    return replaced + len(middle) - (1 if covered else 0)
 
 
 def fit_context(svc: Service, messages: list, tools, kw, max_req, cancel) -> tuple[int, int]:
     """Shorten old tool results, then (if still too long) summarize the older conversation -> (shortened, summarized)."""
+    orig = list(messages)
     shrunk = fit_tool_results(svc, messages, tools, kw, max_req)
-    return shrunk, compact_history(svc, messages, tools, kw, cancel)
+    return shrunk, compact_history(svc, messages, tools, kw, cancel, orig)
+
+
+def fit_context_live(svc: Service, messages: list, tools, kw, max_req, cancel):
+    """fit_context as a generator for run_with_mcp: the work (a summary takes up to a minute) runs on a thread while
+    this yields "ping"s (keep-alives; they also notice a client that went away) and tells the page what is going on.
+    Returns (shortened, summarized) through `yield from`."""
+    box = {}
+
+    def work():
+        try:
+            box["r"] = fit_context(svc, messages, tools, kw, max_req, cancel)
+        except Exception as ex:                      # the next prepare() reports a prompt that still does not fit
+            print(f"[strata] fitting the conversation into the context failed: {ex}", flush=True)
+            box["r"] = (0, 0)
+    worker = threading.Thread(target=work, daemon=True)
+    worker.start()
+    told = False
+    try:
+        while worker.is_alive():
+            worker.join(1.0)
+            if worker.is_alive():
+                if not told:
+                    told = True
+                    yield "mcp", {"event": "compacting"}
+                yield "ping", None
+    except GeneratorExit:
+        cancel.set()
+        raise
+    return box.get("r", (0, 0))
 
 
 # ------------------------------------------------------------------------------------------------ OpenAI
@@ -4969,10 +5039,14 @@ def make_handler(svc: Service):
                 raise ValueError("a forced tool_choice with MCP tools is not supported")
             svc.reasoning_budget(req)                         # a bad value is a 400 before anything is sent
             stop_strings(req)                                 # ... and so is a bad stop / stop_sequences
-            if use_mcp:                                       # earlier turns' tool results: shortened to fit, oldest first
+            if use_mcp:
                 messages = list(messages)
-                fit_context(svc, messages, tools, kw, max_req, threading.Event())
-            ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new, force=force, req=req)
+            if use_mcp and not prompt_fits(svc, messages, tools, kw):
+                # too long as sent: run_with_mcp shortens the old tool results and, if need be, has the model summarize
+                # the older conversation first (on a thread, with keep-alives, stopped by Stop), then prepares
+                ids, thinking = [], True
+            else:
+                ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new, force=force, req=req)
             _debug_req("openai", req, messages, tools, max_new, thinking, len(ids))
             cancel = threading.Event()
             self._watch_client(cancel)                       # #430 #431

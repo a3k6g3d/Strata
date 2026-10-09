@@ -362,6 +362,49 @@ class CompactHistory(unittest.TestCase):
         compact_history(svc, self.msgs(), None, {}, threading.Event())
         self.assertEqual(len(calls), 1)
 
+    def test_a_longer_turn_of_the_same_chat_reuses_the_summary(self):
+        from serve.server import compact_history
+        svc, calls = self.svc(12000)
+        first = self.msgs()
+        compact_history(svc, first, None, {}, threading.Event(), orig=self.msgs())
+        grown = self.msgs() + [{"role": "user", "content": "continue"}, {"role": "assistant", "content": "ok"}]
+        later = list(grown)
+        compact_history(svc, later, None, {}, threading.Event(), orig=grown)
+        self.assertEqual(len(calls), 1)                              # the second turn found the first one's summary
+        self.assertIn("SUMMARY OF WORK", later[1]["content"])
+        self.assertEqual(later[-2:], grown[-2:])
+
+    def test_a_stopped_request_keeps_the_messages_and_remembers_nothing(self):
+        from serve.server import compact_history
+        svc, calls = self.svc(12000)
+        msgs = self.msgs()
+        stopped = threading.Event()
+        stopped.set()
+        compact_history(svc, msgs, None, {}, stopped)
+        self.assertEqual(msgs, self.msgs())
+        compact_history(svc, msgs, None, {}, threading.Event())
+        self.assertEqual(len(calls), 2)                              # nothing was cached by the stopped one
+
+    def test_the_live_version_keeps_the_stream_alive_and_returns_the_counts(self):
+        from serve.server import fit_context_live
+        svc, calls = self.svc(12000)
+        inner = svc.run
+
+        def slow(*a):
+            time.sleep(1.4)
+            yield from inner(*a)
+        svc.run = slow
+        gen = fit_context_live(svc, self.msgs(), None, {}, 0, threading.Event())
+        seen, result = [], None
+        try:
+            while True:
+                seen.append(next(gen))
+        except StopIteration as stop:
+            result = stop.value
+        self.assertEqual(seen[0], ("mcp", {"event": "compacting"}))
+        self.assertIn(("ping", None), seen)
+        self.assertGreater(result[1], 0)
+
     def test_nothing_happens_when_it_fits(self):
         from serve.server import compact_history
         svc, calls = self.svc(10 ** 6)
