@@ -10,6 +10,9 @@ dated, and the fork's releases follow [SemVer](https://semver.org) once it tags 
   "Summarizing the earlier conversation...", **Stop cancels it** (it used to run on, blocking the next request), a
   summary is cached by the digest of the messages it covers so the next turn of the same chat reuses it (it was
   redone every turn), and it is capped at 800 tokens (was 1,500).
+- The chat now follows the newest text however much a frame adds (it only followed when within 120 px of the
+  bottom, so a tool block or long paragraph left it behind): pinned to the bottom until you scroll up to read,
+  pinned again when you scroll back down or send a message.
 - The "Summarizing..." banner showed on every message of a long chat: shortening old tool results tokenized the
   whole chat once per message (seconds), and anything slow was announced as a summary. It now tokenizes a few
   times in total, the banner appears only when the model is really writing a summary, and each fit logs its time.
