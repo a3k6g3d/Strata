@@ -41,7 +41,7 @@ variant on a fresh server, the first pass dropped; the control repeated at the e
 | --- | ---: | --- |
 | baseline (`--vram-reserve-mib 1022`, 4 GiB RAM headroom) | 14.9 | |
 | `--vram-reserve-mib 640` (the desktop idles at 567 MiB; +150 expert slots) | 15.6 | +5% |
-| `STRATA_RESIDENT_HEADROOM_GIB=2` with `--resident-budget-gib 48` (pins 45.8 GiB, not 43.5) | **17.1** | **+10% on top** |
+| `STRATA_RESIDENT_HEADROOM_GIB=2` with `--resident-budget-gib 48` (pins 45.8 GiB, not 43.5) | 17.1 | +10%, **unsafe**: froze the PC once free RAM fell to 0.4 GiB; keep the default 4 GiB |
 | pinned RAM 36 / 40 / 44 / 45.5 GiB (NVMe wait 69 / 42 / 23 / 16 ms per window) | 10.7 / 13.2 / 15.5 / 17.1 | about 0.7 tok/s per GiB |
 | link-time optimisation + `CMAKE_CUDA_ARCHITECTURES=120-real` + tests off | 14.8 vs 14.8 | tie |
 | `--pool-workers` 4 / 6 (default 5) | 14.7 / 14.6 vs 14.8 | tie |
@@ -53,8 +53,12 @@ buffers from it instead of warming pages was tried and reverted: the NVMe wait d
 the CPU work grew (55-56 ms vs 52), so K=6/10/14 gave 15.4 / 14.6 / 13.4 tok/s against 15.0 with it off.
 
 The remaining lever is more of the model in RAM: every GiB of pinned experts removes 3-5 ms of NVMe wait per window.
-With about 14 GiB held by other programs, closing them is worth more than any setting here. On this PC the PCIe link
-also negotiates 2.0 (`nvidia-smi --query-gpu=pcie.link.gen.hostmax` reports 2; the engine's probe measures 7.2 GB/s).
+With about 14 GiB held by other programs, closing them is worth more than any setting here. The page-locked tier
+cannot be paged out, so the headroom is the only margin for programs that grow after the engine starts.
+
+On this PC the link first negotiated PCIe 2.0. Set to 3.0 in the BIOS, it measured 7-10 GB/s but logged about 230
+link replays per second at idle (`nvidia-smi -q`, "Replays Since Reset"), and the PC hard-hung twice under decode
+load, with no bugcheck. Check that counter before trusting a link speed. A link that replays is not stable.
 
 ## Not measured
 
