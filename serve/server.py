@@ -2607,7 +2607,8 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
             exec_call = kind_of_tool == "exec"
             no_read = hub.blocked(c.arguments) or (exec_call and hub.blocked_text(c.arguments))
             leak = kind_of_tool == "net" and touched_local
-            protected = (kind_of_tool not in ("read", "net", "exec") and hub.protected(c.arguments)) or leak or exec_call
+            protected = (kind_of_tool not in ("read", "net", "exec") and hub.protected(c.arguments)) or leak or \
+                (exec_call and hub.protected_text(c.arguments))
             verdict = decide(mode, kind_of_tool, c.name in hub.gate.always and not protected)
             if protected and verdict == "allow":
                 verdict = "ask"
