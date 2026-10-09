@@ -3883,6 +3883,23 @@ def _summary_message(summary: str) -> dict:
                                        "continue the work:]\n" + summary}
 
 
+def _fitlog(msg: str) -> None:
+    """A line about fitting a chat into the context: to the console and, with STRATA_FIT_LOG=<file>, to that file."""
+    print(f"[strata] {msg}", flush=True)
+    path = os.environ.get("STRATA_FIT_LOG")
+    if path:
+        try:
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(f"{time.strftime('%H:%M:%S')} {msg}" + chr(10))
+        except OSError:
+            pass
+
+
+def _previews(messages: list) -> list:
+    return [(m.get("role"), hashlib.md5(json.dumps(m, sort_keys=True, default=str).encode()).hexdigest()[:6],
+             _plain_text(m)[:50].replace(chr(10), " ")) for m in messages]
+
+
 def _digest(messages: list) -> str:
     return hashlib.sha256(json.dumps(messages, sort_keys=True, default=str).encode()).hexdigest()
 
@@ -3910,13 +3927,22 @@ def compact_history(svc: Service, messages: list, tools, kw, cancel, orig: list 
     head = 0
     while head < len(messages) and messages[head].get("role") == "system":
         head += 1
-    cache = svc.__dict__.setdefault("summary_cache", [])      # [(n original messages after the head, digest, summary)]
+    cache = svc.__dict__.setdefault("summary_cache", [])      # [(n original messages after the head, digest, summary, previews)]
     covered, summary = 0, None
+    _fitlog(f"compact: {len(orig)} messages (head {head}), {len(messages)} now, cache entries {[e[0] for e in cache]}")
     if len(orig) == len(messages):                               # the list is still the client's own (plus shortened results)
-        for n, digest, text in sorted(cache, key=lambda e: -e[0]):
+        for n, digest, text, prev in sorted(cache, key=lambda e: -e[0]):
             if head + n <= len(orig) and _digest(orig[head:head + n]) == digest:
                 covered, summary = n, text
+                _fitlog(f"compact: cache hit, a summary of {n} messages")
                 break
+            now = _previews(orig[head:head + n]) if head + n <= len(orig) else []
+            bad = next((i for i, (a, b) in enumerate(zip(prev, now)) if a != b), None)
+            _fitlog(f"compact: cache miss for n={n}: first difference at message {bad}: "
+                    f"{prev[bad] if bad is not None else '-'} -> {now[bad] if bad is not None and bad < len(now) else '-'}"
+                    f" (stored {len(prev)}, now {len(now)})")
+    else:
+        _fitlog("compact: the list was changed before the cache lookup, no lookup")
     replaced = 0
     if summary is not None:
         messages[head:head + covered] = [_summary_message(summary)]
@@ -3949,7 +3975,8 @@ def compact_history(svc: Service, messages: list, tools, kw, cancel, orig: list 
         return replaced
     n_orig = covered + (start - head - (1 if covered else 0))       # client messages this summary stands for
     if len(orig) == len(messages) + max(0, covered - 1) and head + n_orig <= len(orig):
-        cache.append((n_orig, _digest(orig[head:head + n_orig]), summary))
+        cache.append((n_orig, _digest(orig[head:head + n_orig]), summary, _previews(orig[head:head + n_orig])))
+        _fitlog(f"compact: stored a summary of {n_orig} messages")
         del cache[:-8]
     messages[head:start] = [_summary_message(summary)]
     print(f"[strata] summarized {len(middle)} earlier message(s) in {time.monotonic() - t0:.0f} s to keep the "
