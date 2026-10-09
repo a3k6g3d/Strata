@@ -5,6 +5,11 @@ dated, and the fork's releases follow [SemVer](https://semver.org) once it tags 
 
 ## Unreleased - 2026-10-09
 
+### Changed (2026-10-09, chat page)
+- Tool calls that follow each other are one collapsible group, like the tool lines in Claude Code: a closed
+  summary ("Ran 3 commands, searched 5 times (1 failed)"), what is running or waiting now, and the single calls
+  inside. A group opens by itself while a call waits for your click or asks you something.
+
 ### Fixed (2026-10-09, after first use of the port)
 - Long-chat summarizing no longer leaves the page blank: it runs on a thread with keep-alives, the page shows
   "Summarizing the earlier conversation...", **Stop cancels it** (it used to run on, blocking the next request), a

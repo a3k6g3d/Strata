@@ -694,16 +694,64 @@ function toolHtml(t, k) {
     `<span class="st-badge ${cls}">${esc(label)}</span>${t.ms != null && t.state !== "skipped" ? `<span class="muted small">${fmt(t.ms / 1000, 1)} s</span>` : ""}` +
     `${icon("chevron", "st-icon st-icon--sm st-chev")}</summary><div class="st-collapse__body">${body}</div></details>`;
 }
-// the answer's text with the tool blocks where the model called them
+// Tool calls that follow each other (no text between them) sit in ONE collapsible group, like the tool lines in Claude
+// Code: a summary of what was done ("Ran 3 commands, searched 5 times"), what is happening now, and the calls inside.
+const SEARCH_TOOL = /^(grep|glob|search|find|web_search)/i;
+function groupLabel(items) {
+  const n = {cmd: 0, read: 0, search: 0, change: 0, web: 0, ask: 0, other: 0};
+  let failed = 0;
+  for (const [t] of items) {
+    const kind = t.kind, name = t.tool || t.name || "";
+    if (kind === "exec") n.cmd++;
+    else if (kind === "net") n.web++;
+    else if (kind === "ask") n.ask++;
+    else if (kind === "write" || kind === "danger") n.change++;
+    else if (kind === "read") (SEARCH_TOOL.test(name) ? n.search++ : n.read++);
+    else n.other++;
+    if (t.state === "error" || t.state === "blocked") failed++;
+  }
+  const plural = (c, one, many) => `${c} ${c === 1 ? one : many}`;
+  const parts = [];
+  if (n.cmd) parts.push(`ran ${n.cmd === 1 ? "a command" : n.cmd + " commands"}`);
+  if (n.read) parts.push(`read ${plural(n.read, "file or folder", "files and folders")}`);
+  if (n.search) parts.push(`searched ${plural(n.search, "time", "times")}`);
+  if (n.change) parts.push(`changed ${plural(n.change, "thing", "things")}`);
+  if (n.web) parts.push(`${plural(n.web, "web lookup", "web lookups")}`);
+  if (n.ask) parts.push("asked you a question");
+  if (n.other) parts.push(`used ${plural(n.other, "tool", "tools")}`);
+  let text = parts.join(", ") || "used tools";
+  text = text.charAt(0).toUpperCase() + text.slice(1);
+  return failed ? `${text} (${failed} failed)` : text;
+}
+function groupHtml(m, items) {
+  const first = items[0][1];
+  const live = items.find(([t]) => t.state === "writing" || t.state === "running");
+  const needsYou = items.find(([t]) => t.state === "waiting" || t.state === "asking");
+  // open while a call waits for the user (the buttons are inside), otherwise as the user left it (closed at first)
+  const open = (m.gopen && m.gopen[first] != null) ? m.gopen[first] : !!needsYou;
+  const state = needsYou ? needsYou[0].state : live ? live[0].state : "done";
+  const [cls, badge] = needsYou ? TOOL_STATE[needsYou[0].state] : live ? TOOL_STATE[live[0].state] : ["", ""];
+  const doing = needsYou ? needsYou[0].tool || needsYou[0].name : live ? live[0].tool || live[0].name : "";
+  const total = items.reduce((s, [t]) => s + (t.ms || 0), 0);
+  return `<details class="st-collapse tool-group" data-group="${first}" data-state="${esc(state)}"${open ? " open" : ""}>` +
+    `<summary>${icon("tool", "st-icon st-icon--sm")}<span class="tool-group__label">${esc(groupLabel(items))}</span>` +
+    (badge ? `<span class="tool-group__now muted small">${esc(doing)}</span><span class="st-badge ${cls}">${esc(badge)}</span>` : "") +
+    (!badge && total ? `<span class="muted small">${fmt(total / 1000, 1)} s</span>` : "") +
+    `${icon("chevron", "st-icon st-icon--sm st-chev")}</summary><div class="st-collapse__body">` +
+    items.map(([t, k]) => toolHtml(t, k)).join("") + `</div></details>`;
+}
+// the answer's text with the tool groups where the model called them
 function answerHtml(m) {
   if (!m.tools || !m.tools.length) return markdown(m.text || "");
-  let html = "", pos = 0;
+  let html = "", pos = 0, group = [];
+  const flush = () => { if (group.length) { html += groupHtml(m, group); group = []; } };
   m.tools.forEach((t, k) => {
     const at = Math.min(Math.max(t.at || 0, pos), m.text.length);
-    if (at > pos) html += markdown(m.text.slice(pos, at));
+    if (at > pos) { flush(); html += markdown(m.text.slice(pos, at)); }
     pos = at;
-    html += toolHtml(t, k);
+    group.push([t, k]);
   });
+  flush();
   return html + markdown(m.text.slice(pos));
 }
 // a tool event from the stream (the `strata_mcp` field of a chunk)
@@ -831,6 +879,16 @@ $("chat").addEventListener("click", (e) => {
     return;
   }
   // a tool block: its open state lives in the message (the answer is rebuilt while it streams), so the click sets it
+  const gsum = e.target.closest(".tool-group > summary");
+  if (gsum) {                                    // a group of tool calls: its open state lives in the message too
+    e.preventDefault();
+    const el = gsum.closest(".st-msg"), m = messages[+el.dataset.i], g = gsum.parentElement;
+    if (!m) return;
+    m.gopen = m.gopen || {};
+    m.gopen[+g.dataset.group] = !g.open;
+    updateAssistant(el, m, !!busy && busy.msg === m);
+    return;
+  }
   const sum = e.target.closest(".tool-call > summary");
   if (sum) {
     e.preventDefault();

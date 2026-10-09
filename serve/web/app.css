@@ -213,3 +213,17 @@ main { flex: 1; min-height: 0; display: flex; }
           border: 1px dashed var(--st-line, currentColor); border-radius: var(--st-r-2, 8px); font-size: var(--st-fs-xs); }
 .queued__label { font-weight: 600; color: var(--st-ink-muted); text-transform: uppercase; letter-spacing: .04em; }
 .queued__text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* a run of tool calls: one collapsible group (a summary line; the single calls are inside) */
+.st-bubble .tool-group { margin: var(--st-s-3) 0; }
+.tool-group > summary { min-width: 0; padding: 8px 12px; }
+.tool-group__label { font-size: var(--st-fs-sm); color: var(--st-ink); white-space: nowrap; }
+.tool-group__now { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--st-font-mono); }
+.tool-group .st-badge, .tool-group summary .small { flex: none; }
+.tool-group > summary .tool-group__label { flex: 1; }
+.tool-group[data-state="waiting"] { border-color: var(--st-warn); }
+.tool-group[data-state="asking"] { border-color: var(--st-accent); }
+.tool-group[data-state="running"] .st-badge::before, .tool-group[data-state="writing"] .st-badge::before,
+.tool-group[data-state="waiting"] .st-badge::before, .tool-group[data-state="asking"] .st-badge::before { animation: blink 1s steps(2) infinite; }
+.tool-group > .st-collapse__body { padding-top: 0; }
+.tool-group > .st-collapse__body > .tool-call { margin: var(--st-s-2) 0; }
