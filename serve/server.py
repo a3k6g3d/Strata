@@ -60,6 +60,7 @@ from serve.frontend import (ChatTemplate, Event, OutputParser, anthropic_to_mess
 from serve.mcp import MODE_INFO, MODES, McpCancelled, decide, hub_from_config  # noqa: E402
 from serve import runconfig  # noqa: E402
 from serve.winjob import contain  # noqa: E402
+from serve.sessions import MAX_BYTES as SESSION_MAX_BYTES, SessionError, SessionStore  # noqa: E402
 from serve.structured import StructuredOutputError, prepare_format, validated_json  # noqa: E402
 from serve import responses as responses_api  # noqa: E402
 from serve.responses import ResponsesError, error_body as responses_error_body  # noqa: E402
@@ -2402,6 +2403,7 @@ class Service:
         self.effort_end = False
         self.conv_log = ConvCacheLog()                  # #596: the parked conversations, from the engine's log
         self.config_path = None                         # #564: the run config the web page's Settings view edits
+        self.sessions = None                            # the chat page's separate conversations (serve/sessions.py)
         self.config_lock = threading.Lock()
         # #321: browser pages of these origins may call /v1/* (CORS; "*" = any page - only with an api_key that
         # matters); empty = no CORS headers at all, as before
@@ -4535,6 +4537,9 @@ def make_handler(svc: Service):
 
         def do_GET(self):
             path = self.path.split("?")[0].rstrip("/")
+            if path == "/sessions" or path.startswith("/sessions/"):
+                self._sessions_get(path)
+                return
             if path.startswith("/fonts/"):
                 # the web app's font (Outfit, OFL: serve/web/fonts); the page falls back to the system font
                 name = path[len("/fonts/"):]
@@ -4686,6 +4691,9 @@ def make_handler(svc: Service):
                 return
             if path == "/settings":
                 self._settings()
+                return
+            if path.startswith("/sessions/"):
+                self._sessions_post(path)
                 return
             if path == "/config":
                 self._config_post()
@@ -4889,6 +4897,51 @@ def make_handler(svc: Service):
                                                       f"config's trusted_origins)"}})
                 return False
             return True
+
+        def _sessions_get(self, path):
+            """GET /sessions -> the list; GET /sessions/<id> -> one conversation.  Strata's own page only: the chats are
+            private, and a page of another origin must not read them (it could, with the right Host, by DNS rebinding)."""
+            if not self._authorized():
+                return
+            if self._foreign_origin() or svc.sessions is None:
+                self._json(403 if svc.sessions is not None else 404,
+                           {"error": {"message": "sessions are read only by Strata's own page" if svc.sessions is not None
+                                                else "no sessions folder (start the server with a config file)"}})
+                return
+            try:
+                if path == "/sessions":
+                    self._json(200, {"sessions": svc.sessions.list()})
+                    return
+                found = svc.sessions.get(path[len("/sessions/"):])
+            except SessionError as e:
+                self._json(400, {"error": {"message": str(e)}})
+                return
+            if found is None:
+                self._json(404, {"error": {"message": "no such session"}})
+                return
+            self._json(200, found)
+
+        def _sessions_post(self, path):
+            """POST /sessions/<id> {"title", "messages", "custom_title"}: save (create or replace);
+            POST /sessions/<id>/delete: delete.  Strata's own page only (_own_page), as /settings."""
+            if not self._own_page("chats can be saved or deleted") or svc.sessions is None:
+                if svc.sessions is None:
+                    self._json(404, {"error": {"message": "no sessions folder (start the server with a config file)"}})
+                return
+            rest = path[len("/sessions/"):]
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                if length > SESSION_MAX_BYTES:
+                    raise SessionError("the conversation is too large to save")
+                body = json.loads(self._body() or b"{}")
+                if rest.endswith("/delete"):
+                    self._json(200, {"ok": svc.sessions.delete(rest[:-len("/delete")])})
+                    return
+                meta = svc.sessions.save(rest, body.get("title"), body.get("messages"), body.get("custom_title") is True)
+            except (SessionError, ValueError, TypeError) as e:
+                self._json(400, {"error": {"message": str(e)}})
+                return
+            self._json(200, meta)
 
         def _mcp_approve(self):
             """POST /mcp/approve {"approval": <token from the approval event>, "allow": true|false, "always": bool}:
@@ -5922,6 +5975,10 @@ def main() -> int:
     svc.backend = cfg.get("backend")                    # "hip": the AMD cards' readings come from sysfs (#301)
     if a.config:
         svc.config_path = a.config                      # #564: the web page's Settings view
+        try:                                            # the chat page's sessions: files next to the config ("sessions_dir")
+            svc.sessions = SessionStore(cfg.get("sessions_dir") or Path(a.config).resolve().parent / "sessions")
+        except OSError as e:
+            print(f"[strata] the chat sessions folder cannot be used ({e}): the page keeps one chat in the browser", flush=True)
     if a.config:                                        # the Chat settings shared with other apps, from last time
         svc.shared_path = str(Path(a.config).with_suffix("")) + ".shared-settings.json"
         try:

@@ -5,6 +5,12 @@ dated, and the fork's releases follow [SemVer](https://semver.org) once it tags 
 
 ## Unreleased - 2026-10-09
 
+### Added (2026-10-09, chat page)
+- Separate chats, listed on the left like Claude's: new chat, open, rename (double-click), delete, grouped by day.
+  The server keeps them as files next to the run config (`serve/sessions.py`, `GET /sessions`, `POST /sessions/<id>`,
+  `POST /sessions/<id>/delete`; own page only, ids `a-z0-9-` only); the browser's old single chat becomes the first
+  session. Without a config the page keeps one chat in the browser as before.
+
 ### Changed (2026-10-09, chat page)
 - Tool calls that follow each other are one collapsible group, like the tool lines in Claude Code: a closed
   summary ("Ran 3 commands, searched 5 times (1 failed)"), what is running or waiting now, and the single calls
