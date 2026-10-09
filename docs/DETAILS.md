@@ -875,15 +875,18 @@ The page answers it with `POST /mcp/answer {"approval": <token from the question
 `run_python` (one program in a fresh `python -I`), each returning the exit code, stdout and stderr. **This runs code on
 your PC with your Windows account's rights. It is not a sandbox**: a command can read or change anything you can, use
 the network and start other programs, and the no-read list and the C: protection look at the paths a call names, not at
-what a command then does. What keeps it safe is how Strata treats it. List the server under
+what a command then does. What keeps it safe is how Strata treats it (the click, the protected-path check, the
+no-read list; Full access trades the click for speed). List the server under
 `"mcp": {"exec_servers": ["exec"]}` and every tool of it is kind **exec**:
 
-- every call **waits for your click, every time, in every mode that can ask** - Full access too; there is no "Always
-  allow"; Read-only and No-tools refuse it;
+- a call **waits for your click** in Ask before changes and Allow edits; it runs by itself in Full access, or after
+  you click "Always allow" on it (until Strata restarts); Read-only and No-tools refuse it. **A command that names a
+  protected path (`"protected_paths"`, e.g. `C:\`) - written out, or through `%USERPROFILE%`, `$env:`, `~`, `Path.home()`
+  and the like (best effort) - asks every time in every mode, Full access and "Always allow" included**;
 - the chat shows the exact command or program, whole, before the button ("Run it");
 - the text is also read, best effort, against the no-read list: a command that names a blocked place is refused before
   any click is asked for (it cannot see a path a program builds while it runs, so it is a seat belt, not the guard);
-- the server gives the program no input, stops it after `timeout_s` (60 by default, 300 at most) with its whole process
+- the server gives the program no input, stops it after `timeout_s` (600 by default, 3,600 at most) with its whole process
   tree, cuts each of stdout and stderr at 20,000 characters (both ends kept) and refuses a command line over 8,000.
 
 ```json
@@ -893,6 +896,25 @@ what a command then does. What keeps it safe is how Strata treats it. List the s
 
 Read what is on the button before you click it: a model that has just read a web page or a file can be talked into
 asking for something that was never your idea.
+
+**Long chats.** The chat page's window is the model's context (32,768 tokens in the usual config), and a tool loop that
+reads many files outgrows it. Before each round, and when a request starts, the server first cuts the *older* tool
+results down to their first 1,500 characters (with a note that says how much was dropped; the newest results stay
+whole). If that is not enough, the model summarizes the older part of the conversation: the system messages and the
+newest four messages stay word for word, everything between becomes one message with the summary (thinking off,
+at most 1,500 tokens). The same history gives the same summary from a cache, so a long chat is summarized once. The
+answer's footer says "summarized N earlier messages" when it happened; a summary can lose detail. Only requests that use
+MCP tools are changed this way; any other request that is too long still fails with "requests are never truncated".
+
+**Typing while it answers.** Enter or Send while the model is still writing queues the message (shown as "Queued" above
+the box; a second one is added to it). It goes out when the answer ends; **Send now** stops the answer where it is
+(what was written stays) and sends it at once, × removes it. The message is not slipped into a tool loop that is
+running.
+
+**Limits worth raising for long jobs** (the `"mcp"` block): `"max_rounds"` (tool calls in a row per answer, default 8),
+`"timeout_s"` (default 60 s per tool call) and `"approval_timeout_s"` (default 300 s to answer an approval). A local
+model has no token bill; the defaults are cautious, and `max_rounds` 1000 / `timeout_s` 1800 / `approval_timeout_s` 3600
+make a long job run without stopping.
 
 **Security.** MCP tools run on your PC with your user's rights, and **the model decides when to call them** - also
 because of what it reads (a web page or a file can contain instructions). Give a filesystem server only the folders
