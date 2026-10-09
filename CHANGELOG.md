@@ -10,6 +10,9 @@ dated, and the fork's releases follow [SemVer](https://semver.org) once it tags 
   "Summarizing the earlier conversation...", **Stop cancels it** (it used to run on, blocking the next request), a
   summary is cached by the digest of the messages it covers so the next turn of the same chat reuses it (it was
   redone every turn), and it is capped at 800 tokens (was 1,500).
+- The "Summarizing..." banner showed on every message of a long chat: shortening old tool results tokenized the
+  whole chat once per message (seconds), and anything slow was announced as a summary. It now tokenizes a few
+  times in total, the banner appears only when the model is really writing a summary, and each fit logs its time.
 - Image encoding moved to the CPU in this PC's config (`vision.gpu` false, 768 tokens), so the encoder takes no
   VRAM from the expert cache (pictures take 10-30 s). The engine's "LOW: 160 MiB of VRAM free" start-up warning
   stays: it comes from `--vram-reserve-mib 640`, chosen on purpose (+5% decode over the default 1022).
