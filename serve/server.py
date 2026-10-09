@@ -3804,9 +3804,12 @@ TOOL_RESULT_KEEP_CHARS = 1500          # what is left of an older tool result sh
 
 def fit_tool_results(svc: Service, messages: list, tools, kw, max_req) -> int:
     """Long tool loops (a dozen file reads) outgrow the context: before the next round, shorten the oldest tool
-    results - in place, to their first TOOL_RESULT_KEEP_CHARS characters and a note - until the prompt leaves room
-    for an answer (a quarter of the context, at most 8K tokens).  The newest results are shortened last.  Returns how
-    many were shortened (0: it already fit)."""
+    results - to their first TOOL_RESULT_KEEP_CHARS characters and a note - until the prompt leaves room for an
+    answer (a quarter of the context, at most 8K tokens).  The newest results are shortened last.  Returns how
+    many were shortened (0: it already fit).
+
+    Tokenizing a long chat takes seconds, so it is done once to learn the tokens-per-character of this chat, the
+    results to shorten are picked from that estimate, and one more pass checks them (a few at most)."""
     ctx = svc.engine.max_context or getattr(svc.engine, "known_ctx", 0)
     if ctx <= 0:
         return 0
@@ -3814,15 +3817,27 @@ def fit_tool_results(svc: Service, messages: list, tools, kw, max_req) -> int:
     note = ("\n\n[... {n:,} more characters of this tool result were dropped to keep the conversation inside the "
             "context; call the tool again if you need them]")
     shrunk = 0
-    for i, m in enumerate(messages):                     # oldest first
-        if len(svc.encode_prompt(messages, tools, kw)) + CTX_SLACK + want <= ctx:
+    for _ in range(4):
+        n_tokens = len(svc.encode_prompt(messages, tools, kw))
+        excess = n_tokens + CTX_SLACK + want - ctx
+        if excess <= 0:
             break
-        text = m.get("content") if isinstance(m, dict) and m.get("role") == "tool" else None
-        if not isinstance(text, str) or len(text) <= TOOL_RESULT_KEEP_CHARS + 200:
-            continue
-        cut = len(text) - TOOL_RESULT_KEEP_CHARS         # a new dict: the request's own messages are not changed
-        messages[i] = {**m, "content": text[:TOOL_RESULT_KEEP_CHARS] + note.format(n=cut)}
-        shrunk += 1
+        chars = sum(len(_plain_text(m)) for m in messages) or 1
+        per_char = max(n_tokens / chars, 0.05)
+        need = int(excess / per_char * 1.15) + 1                # characters to take out (a little more than the estimate)
+        got = 0
+        for i, m in enumerate(messages):                         # oldest first
+            if got >= need:
+                break
+            text = m.get("content") if isinstance(m, dict) and m.get("role") == "tool" else None
+            if not isinstance(text, str) or len(text) <= TOOL_RESULT_KEEP_CHARS + 200:
+                continue
+            cut = len(text) - TOOL_RESULT_KEEP_CHARS             # a new dict: the request's own messages are not changed
+            messages[i] = {**m, "content": text[:TOOL_RESULT_KEEP_CHARS] + note.format(n=cut)}
+            got += cut
+            shrunk += 1
+        if not got:                                              # nothing left to shorten
+            break
     if shrunk:
         print(f"[strata] tool loop: shortened {shrunk} older tool result(s) to fit the context", flush=True)
     return shrunk
@@ -3879,7 +3894,7 @@ def prompt_fits(svc: Service, messages: list, tools, kw) -> bool:
     return len(svc.encode_prompt(messages, tools, kw)) + CTX_SLACK + min(8192, ctx // 4) <= ctx
 
 
-def compact_history(svc: Service, messages: list, tools, kw, cancel, orig: list | None = None) -> int:
+def compact_history(svc: Service, messages: list, tools, kw, cancel, orig: list | None = None, on_summary=None) -> int:
     """When shortening tool results is not enough, the model summarizes the older part of the conversation: the
     system messages and the newest SUMMARY_KEEP_TAIL messages stay as they are, everything between them becomes one
     message holding the summary (made by the same model, thinking off, at most SUMMARY_MAX_TOKENS).
@@ -3920,6 +3935,8 @@ def compact_history(svc: Service, messages: list, tools, kw, cancel, orig: list 
     svc.embeddings.path = None
     parts = []
     t0 = time.monotonic()
+    if on_summary is not None:
+        on_summary()                                 # only now is the model really going to write a summary
     try:
         for kind, x in svc.run(ids, False, None, SUMMARY_MAX_TOKENS, {"temperature": 0.3}, cancel):
             if kind == "event" and x.kind == "content":
@@ -3940,11 +3957,15 @@ def compact_history(svc: Service, messages: list, tools, kw, cancel, orig: list 
     return replaced + len(middle) - (1 if covered else 0)
 
 
-def fit_context(svc: Service, messages: list, tools, kw, max_req, cancel) -> tuple[int, int]:
+def fit_context(svc: Service, messages: list, tools, kw, max_req, cancel, on_summary=None) -> tuple[int, int]:
     """Shorten old tool results, then (if still too long) summarize the older conversation -> (shortened, summarized)."""
+    t0 = time.monotonic()
     orig = list(messages)
     shrunk = fit_tool_results(svc, messages, tools, kw, max_req)
-    return shrunk, compact_history(svc, messages, tools, kw, cancel, orig)
+    summarized = compact_history(svc, messages, tools, kw, cancel, orig, on_summary)
+    print(f"[strata] fitting the conversation into the context: {time.monotonic() - t0:.1f} s "
+          f"({shrunk} result(s) shortened, {summarized} message(s) summarized)", flush=True)
+    return shrunk, summarized
 
 
 def fit_context_live(svc: Service, messages: list, tools, kw, max_req, cancel):
@@ -3955,7 +3976,7 @@ def fit_context_live(svc: Service, messages: list, tools, kw, max_req, cancel):
 
     def work():
         try:
-            box["r"] = fit_context(svc, messages, tools, kw, max_req, cancel)
+            box["r"] = fit_context(svc, messages, tools, kw, max_req, cancel, lambda: box.update(summarizing=True))
         except Exception as ex:                      # the next prepare() reports a prompt that still does not fit
             print(f"[strata] fitting the conversation into the context failed: {ex}", flush=True)
             box["r"] = (0, 0)
@@ -3966,7 +3987,7 @@ def fit_context_live(svc: Service, messages: list, tools, kw, max_req, cancel):
         while worker.is_alive():
             worker.join(1.0)
             if worker.is_alive():
-                if not told:
+                if box.get("summarizing") and not told:      # told only when a summary is really being written
                     told = True
                     yield "mcp", {"event": "compacting"}
                 yield "ping", None

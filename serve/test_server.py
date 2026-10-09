@@ -311,6 +311,16 @@ class FitToolResults(unittest.TestCase):
         self.assertEqual(msgs[2]["content"], "b" * 20000)            # the newest result is kept whole
         self.assertEqual(len(first["content"]), 20000)               # the caller's dict is not changed
 
+    def test_a_long_chat_is_tokenized_a_few_times_not_once_per_message(self):
+        from serve.server import fit_tool_results
+        n = []
+        enc = lambda messages, tools, kw: n.append(1) or [0] * sum(len(str(m.get("content", ""))) for m in messages)  # noqa: E731
+        svc = SimpleNamespace(engine=SimpleNamespace(max_context=32768), encode_prompt=enc)
+        msgs = [{"role": "user", "content": "hi"}] + [m for i in range(40) for m in (
+            {"role": "assistant", "content": "ok"}, {"role": "tool", "content": "x" * 3000})]
+        self.assertGreater(fit_tool_results(svc, msgs, None, {}, 0), 0)
+        self.assertLessEqual(len(n), 5)
+
     def test_fits_already(self):
         from serve.server import fit_tool_results
         msgs = [{"role": "tool", "content": "x" * 3000}]
