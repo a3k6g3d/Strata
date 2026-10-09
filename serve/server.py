@@ -3782,9 +3782,9 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
                          **({"reasoning_content": "".join(reasoning).strip()} if reasoning else {}),
                          "tool_calls": [{"function": {"name": c.name, "arguments": c.arguments}} for c in calls]})
         messages += [{"role": "tool", "content": r} for r in results]
-        shrunk = fit_tool_results(svc, messages, tools, kw, max_req)
-        if shrunk:
-            yield "mcp", {"event": "compact", "shrunk": shrunk}
+        shrunk, summarized = fit_context(svc, messages, tools, kw, max_req, cancel)
+        if shrunk or summarized:
+            yield "mcp", {"event": "compact", "shrunk": shrunk, "summarized": summarized}
         ids, thinking, max_new = svc.prepare(messages, tools, kw, max_req)
     yield "done", {**done, "completion_tokens": total, "prompt_tokens": len(ids)}
 
@@ -3816,6 +3816,94 @@ def fit_tool_results(svc: Service, messages: list, tools, kw, max_req) -> int:
     if shrunk:
         print(f"[strata] tool loop: shortened {shrunk} older tool result(s) to fit the context", flush=True)
     return shrunk
+
+
+SUMMARY_KEEP_TAIL = 4                  # the newest messages kept word for word when the older ones are summarized
+SUMMARY_PROMPT = ("Below is the earlier part of a conversation between a user and you, an AI assistant working with "
+                  "tools. Write a summary that lets you continue the work without the original text: the user's goal "
+                  "and instructions, what has been done so far, which files, commands and results mattered (exact "
+                  "paths, names, numbers, errors), decisions made, and what remains to be done. Be complete but "
+                  "compact, in plain text.\n\n")
+
+
+def _plain_text(m: dict) -> str:
+    c = m.get("content")
+    if isinstance(c, list):
+        c = " ".join(p.get("text", "") for p in c if isinstance(p, dict))
+    return str(c or "")
+
+
+def _transcript(messages: list, cap_chars: int) -> str:
+    lines = []
+    for m in messages:
+        role = m.get("role")
+        if role == "tool":
+            lines.append("TOOL RESULT: " + _plain_text(m)[:800])
+            continue
+        text = _plain_text(m)
+        if m.get("tool_calls"):
+            calls = "; ".join(f"{(c.get('function') or {}).get('name')}({str((c.get('function') or {}).get('arguments'))[:300]})"
+                              for c in m["tool_calls"] if isinstance(c, dict))
+            text = (text + " " if text else "") + "[called " + calls + "]"
+        lines.append(f"{'USER' if role == 'user' else 'SYSTEM' if role == 'system' else 'ASSISTANT'}: {text[:3000]}")
+    out = "\n".join(lines)
+    if len(out) > cap_chars:                             # the start (the goal) and the end (where it got to) matter most
+        out = out[:cap_chars // 4] + "\n[... the middle is left out ...]\n" + out[-(cap_chars * 3 // 4):]
+    return out
+
+
+def compact_history(svc: Service, messages: list, tools, kw, cancel) -> int:
+    """When shortening tool results is not enough, the model summarizes the older part of the conversation: the
+    system messages and the newest SUMMARY_KEEP_TAIL messages stay as they are, everything between them becomes one
+    message holding the summary (made by the same model, thinking off).  The same older part gives the same summary
+    again (cached), so a long chat is summarized once, not on every turn.  Returns how many messages were replaced."""
+    ctx = svc.engine.max_context or getattr(svc.engine, "known_ctx", 0)
+    if ctx <= 0:
+        return 0
+    want = min(8192, ctx // 4)
+    if len(svc.encode_prompt(messages, tools, kw)) + CTX_SLACK + want <= ctx:
+        return 0
+    head = 0
+    while head < len(messages) and messages[head].get("role") == "system":
+        head += 1
+    start = max(head, len(messages) - SUMMARY_KEEP_TAIL)
+    while start > head and messages[start].get("role") == "tool":     # a result stays with the call that asked for it
+        start -= 1
+    middle = messages[head:start]
+    if len(middle) < 2:
+        return 0
+    key = hashlib.sha256(json.dumps(middle, sort_keys=True, default=str).encode()).hexdigest()
+    cache = svc.__dict__.setdefault("summary_cache", {})
+    summary = cache.get(key)
+    if summary is None:
+        text = SUMMARY_PROMPT + _transcript(middle, max(4000, (ctx - 4000 - 1500) * 3))
+        sk = {"enable_thinking": False}
+        ids = svc.encode_prompt([{"role": "user", "content": text}], None, sk)
+        svc.embeddings.path = None
+        parts = []
+        try:
+            for kind, x in svc.run(ids, False, None, 1500, {"temperature": 0.3}, cancel):
+                if kind == "event" and x.kind == "content":
+                    parts.append(x.text)
+        except Exception as ex:                          # no summary: the caller's own error for a too-long prompt follows
+            print(f"[strata] summarizing the earlier conversation failed: {ex}", flush=True)
+            return 0
+        summary = "".join(parts).strip()
+        if not summary:
+            return 0
+        cache[key] = summary
+        if len(cache) > 16:
+            cache.pop(next(iter(cache)))
+    messages[head:start] = [{"role": "user", "content": "[Summary of the earlier part of this conversation, written by "
+                             "you so you can continue the work:]\n" + summary}]
+    print(f"[strata] summarized {len(middle)} earlier message(s) to keep the conversation inside the context", flush=True)
+    return len(middle)
+
+
+def fit_context(svc: Service, messages: list, tools, kw, max_req, cancel) -> tuple[int, int]:
+    """Shorten old tool results, then (if still too long) summarize the older conversation -> (shortened, summarized)."""
+    shrunk = fit_tool_results(svc, messages, tools, kw, max_req)
+    return shrunk, compact_history(svc, messages, tools, kw, cancel)
 
 
 # ------------------------------------------------------------------------------------------------ OpenAI
@@ -4883,7 +4971,7 @@ def make_handler(svc: Service):
             stop_strings(req)                                 # ... and so is a bad stop / stop_sequences
             if use_mcp:                                       # earlier turns' tool results: shortened to fit, oldest first
                 messages = list(messages)
-                fit_tool_results(svc, messages, tools, kw, max_req)
+                fit_context(svc, messages, tools, kw, max_req, threading.Event())
             ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new, force=force, req=req)
             _debug_req("openai", req, messages, tools, max_new, thinking, len(ids))
             cancel = threading.Event()

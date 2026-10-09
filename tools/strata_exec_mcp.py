@@ -16,7 +16,7 @@ treats every one of its tools as kind "exec":
 The no-read list and the C: protection look at the paths a call names; they do not follow what a command then does.
 
 What this server itself does: no input is ever given to the program (stdin is closed); a call ends after `timeout_s`
-(default 60, at most 300) with the whole process tree stopped; each of stdout and stderr is cut at 20,000 characters
+(default 600, at most 3600) with the whole process tree stopped; each of stdout and stderr is cut at 20,000 characters
 (the start and the end are kept); a command line over 8,000 characters is refused.
 """
 from __future__ import annotations
@@ -32,8 +32,8 @@ import time
 
 MAX_COMMAND = 8000
 MAX_OUT = 20_000
-DEFAULT_TIMEOUT = 60.0
-MAX_TIMEOUT = 300.0
+DEFAULT_TIMEOUT = 600.0
+MAX_TIMEOUT = 3600.0
 
 
 class ExecError(Exception):
@@ -138,7 +138,7 @@ def run_python(code: str, cwd: str = "", timeout_s=DEFAULT_TIMEOUT) -> str:
 TOOLS = [
     {"name": "run_command", "description": "Run one command line on the user's PC (PowerShell by default; shell='cmd' for cmd.exe) and "
                                             "return its exit code, stdout and stderr. Every call waits for the user's approval, who sees "
-                                            "the exact command. No input can be given to it; it is stopped after timeout_s (default 60, "
+                                            "the exact command. No input can be given to it; it is stopped after timeout_s (default 600, "
                                             "max 300).",
      "inputSchema": {"type": "object", "properties": {"command": {"type": "string"}, "shell": {"type": "string", "enum": ["powershell", "cmd"]},
                                                        "cwd": {"type": "string", "description": "the folder to run in"},
@@ -146,7 +146,7 @@ TOOLS = [
      "annotations": {"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True}},
     {"name": "run_python", "description": "Run a Python program on the user's PC (a fresh interpreter, python -I) and return its exit code, "
                                            "stdout and stderr. Print what you want to see. Every call waits for the user's approval, who "
-                                           "sees the program. No input can be given to it; it is stopped after timeout_s (default 60, max 300).",
+                                           "sees the program. No input can be given to it; it is stopped after timeout_s (default 600, max 3600).",
      "inputSchema": {"type": "object", "properties": {"code": {"type": "string"}, "cwd": {"type": "string"}, "timeout_s": {"type": "number"}},
                      "required": ["code"]},
      "annotations": {"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True}},
