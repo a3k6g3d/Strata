@@ -60,6 +60,11 @@ On this PC the link first negotiated PCIe 2.0. Set to 3.0 in the BIOS, it measur
 link replays per second at idle (`nvidia-smi -q`, "Replays Since Reset"), and the PC hard-hung twice under decode
 load, with no bugcheck. Check that counter before trusting a link speed. A link that replays is not stable.
 
+## Chat and tools
+
+The MCP permission modes, the no-read list, the exec tools, long-chat summarizing and queued messages are described in
+[DETAILS.md](DETAILS.md#tools-from-mcp-servers); what changed and when is in [CHANGELOG.md](../CHANGELOG.md).
+
 ## Not measured
 
 No end-to-end tokens/s for the kernel changes: the model on this PC is SSD-bound (about 30 GB of reads per 256-token
