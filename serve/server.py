@@ -2678,8 +2678,40 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
                          **({"reasoning_content": "".join(reasoning).strip()} if reasoning else {}),
                          "tool_calls": [{"function": {"name": c.name, "arguments": c.arguments}} for c in calls]})
         messages += [{"role": "tool", "content": r} for r in results]
+        shrunk = fit_tool_results(svc, messages, tools, kw, max_req)
+        if shrunk:
+            yield "mcp", {"event": "compact", "shrunk": shrunk}
         ids, thinking, max_new = svc.prepare(messages, tools, kw, max_req)
     yield "done", {**done, "completion_tokens": total, "prompt_tokens": len(ids)}
+
+
+TOOL_RESULT_KEEP_CHARS = 1500          # what is left of an older tool result shortened to fit the context
+
+
+def fit_tool_results(svc: Service, messages: list, tools, kw, max_req) -> int:
+    """Long tool loops (a dozen file reads) outgrow the context: before the next round, shorten the oldest tool
+    results - in place, to their first TOOL_RESULT_KEEP_CHARS characters and a note - until the prompt leaves room
+    for an answer (a quarter of the context, at most 8K tokens).  The newest results are shortened last.  Returns how
+    many were shortened (0: it already fit)."""
+    ctx = svc.engine.max_context or getattr(svc.engine, "known_ctx", 0)
+    if ctx <= 0:
+        return 0
+    want = min(8192, ctx // 4)
+    note = ("\n\n[... {n:,} more characters of this tool result were dropped to keep the conversation inside the "
+            "context; call the tool again if you need them]")
+    shrunk = 0
+    for i, m in enumerate(messages):                     # oldest first
+        if len(svc.encode_prompt(messages, tools, kw)) + CTX_SLACK + want <= ctx:
+            break
+        text = m.get("content") if isinstance(m, dict) and m.get("role") == "tool" else None
+        if not isinstance(text, str) or len(text) <= TOOL_RESULT_KEEP_CHARS + 200:
+            continue
+        cut = len(text) - TOOL_RESULT_KEEP_CHARS         # a new dict: the request's own messages are not changed
+        messages[i] = {**m, "content": text[:TOOL_RESULT_KEEP_CHARS] + note.format(n=cut)}
+        shrunk += 1
+    if shrunk:
+        print(f"[strata] tool loop: shortened {shrunk} older tool result(s) to fit the context", flush=True)
+    return shrunk
 
 
 # ------------------------------------------------------------------------------------------------ OpenAI
@@ -3512,6 +3544,9 @@ def make_handler(svc: Service):
                 use_mcp = bool(extra)
                 tools = (tools or []) + extra or None
             svc.reasoning_budget(req)                         # a bad value is a 400 before anything is sent
+            if use_mcp:                                       # earlier turns' tool results: shortened to fit, oldest first
+                messages = list(messages)
+                fit_tool_results(svc, messages, tools, kw, max_req)
             ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new)
             _debug_req("openai", req, messages, tools, max_new, thinking, len(ids))
             cancel = threading.Event()

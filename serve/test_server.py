@@ -214,6 +214,35 @@ class FitMaxTokens(unittest.TestCase):
         self.assertIn("no room to answer", b["error"]["message"])
 
 
+class FitToolResults(unittest.TestCase):
+    """A long MCP tool loop shortens its oldest tool results so the next round still fits the context."""
+
+    def svc(self, ctx):
+        enc = lambda messages, tools, kw: [0] * sum(len(str(m.get("content", ""))) for m in messages)  # noqa: E731
+        return SimpleNamespace(engine=SimpleNamespace(max_context=ctx), encode_prompt=enc)
+
+    def test_oldest_shortened_first_and_request_untouched(self):
+        from serve.server import TOOL_RESULT_KEEP_CHARS, fit_tool_results
+        first = {"role": "tool", "content": "a" * 20000}
+        msgs = [{"role": "user", "content": "hi"}, first, {"role": "tool", "content": "b" * 20000}]
+        n = fit_tool_results(self.svc(40000), msgs, None, {}, 0)
+        self.assertEqual(n, 1)
+        self.assertTrue(msgs[1]["content"].startswith("a" * TOOL_RESULT_KEEP_CHARS))
+        self.assertIn("dropped", msgs[1]["content"])
+        self.assertEqual(msgs[2]["content"], "b" * 20000)            # the newest result is kept whole
+        self.assertEqual(len(first["content"]), 20000)               # the caller's dict is not changed
+
+    def test_fits_already(self):
+        from serve.server import fit_tool_results
+        msgs = [{"role": "tool", "content": "x" * 3000}]
+        self.assertEqual(fit_tool_results(self.svc(32768), msgs, None, {}, 0), 0)
+
+    def test_shortens_all_when_needed(self):
+        from serve.server import fit_tool_results
+        msgs = [{"role": "tool", "content": "x" * 20000} for _ in range(4)]
+        self.assertEqual(fit_tool_results(self.svc(32768), msgs, None, {}, 0), 4)
+
+
 class ImageMarkers(unittest.TestCase):
     """#150: the text "<|image_pad|>" inside a message is text, not an image's place."""
 
