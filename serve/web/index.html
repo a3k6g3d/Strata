@@ -48,6 +48,11 @@
     <div class="composer-wrap">
       <form class="st-composer" id="composer">
         <div class="attachments" id="attachments" hidden></div>
+        <div class="queued" id="queued" hidden>
+          <span class="queued__label">Queued</span><span class="queued__text" id="queued-text"></span>
+          <button type="button" class="st-btn st-btn--secondary" id="queued-now" title="Stop the answer here and send this now">Send now</button>
+          <button type="button" class="st-btn st-btn--icon" id="queued-cancel" title="Remove the queued message" aria-label="Remove the queued message">&times;</button>
+        </div>
         <textarea id="input" rows="2" placeholder="Ask anything&hellip;" aria-label="Message"></textarea>
         <div class="st-composer__bar">
           <button type="button" class="st-btn st-btn--icon" id="attach-btn" title="Attach a text file (or drop it here)" aria-label="Attach a file">
