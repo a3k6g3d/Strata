@@ -13,6 +13,13 @@ dated, and the fork's releases follow [SemVer](https://semver.org) once it tags 
   anyway), the Q4_0 prompt-attention kernel (the config uses `--kv int8`) and the linear tool-call scan.
 - Kept from it: `tools/mtp_from_gguf.py` and `docs/SPEED_BRANCH.md`.
 - The engine must be rebuilt from this branch before its server is used: its Python expects the 0.1.40.2 engine.
+- Measured (RTX 5070 on PCIe 3.0 x16, 13 GB/s; IQ4_XS, 44 GiB pinned; held-out decode, two alternating runs each):
+  0.1.40.2 engine 16.61 tok/s vs the 0.1.39 build 16.06 (+3.4%). Upstream options, no gain, left off:
+  `--expert-cache-per-layer` 16.68, `STRATA_PREFILL_CPU_SHARE=auto` 16.62 (prompt speed unchanged).
+  Second sweep (all runs slowed ~1 tok/s by an `nvidia-smi` crash guard polling every 3 s; compare within it):
+  auto `--pcie-frac` (0.35 at 13 GB/s) 15.6; 0.20 14.6; 0.50 14.2; 0.70 12.5 - keep auto. `--pool-tasks` 12 / 30:
+  14.8 / 15.0, `--host-core last` 15.0 - ties, left at their defaults. The PC hard-hung during the second 0.50 run
+  (the PCIe 3.0 link logs ~2,000 replays/s under load; no warning sign before the hang).
 
 ### Added
 - Chat: a message typed while the model is answering is queued and sent when the answer ends; **Send now** stops the
