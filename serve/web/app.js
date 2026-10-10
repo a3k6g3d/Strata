@@ -597,10 +597,24 @@ function timeStr(t) { return new Date(t).toLocaleTimeString([], {hour: "2-digit"
 // With a run config the server keeps each chat in a file (serve/sessions.py) and the list sits on the left; without
 // one (or when the server has no sessions folder) the page keeps one chat in the browser, as before.
 let sessionsOn = false;
+let savesRunning = 0;                     // saves not finished yet (the autosave skips a beat while one is)
 let sessionList = [];                     // [{id, title, updated, messages, custom_title}]
 let current = {id: null, title: "New chat", custom: false};
 let saveTimer = null, saving = Promise.resolve();
 
+// An answer that was still being written when the page, the app or the model stopped: its text and the tool calls it had
+// finished were saved on the way; it is marked, and 'continue' carries on from what it did.
+function fixLoaded(list) {
+  const out = Array.isArray(list) ? list : [];
+  for (const m of out) {
+    if (!m || !m.partial) continue;
+    delete m.partial;
+    m.interrupted = true;
+    for (const t of m.tools || []) if (t.state === "writing" || t.state === "running" || t.state === "waiting" || t.state === "asking") { t.state = "skipped"; t.ms = null; }
+    m.meta = "Stopped before it finished (the app or the model was closed). What it did so far is kept; say continue to pick up from here.";
+  }
+  return out;
+}
 function newSessionId() { return `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`; }
 function autoTitle() {
   const first = messages.find((m) => m.role === "user" && (m.text || "").trim());
@@ -623,12 +637,13 @@ function saveNow() {
   if (!sessionsOn || !current.id || !messages.length) return saving;      // an empty chat is not kept
   if (!current.custom) current.title = autoTitle();
   const id = current.id, body = {title: current.title, custom_title: current.custom, messages: chatPayload()};
+  savesRunning++;
   saving = saving.then(() => sessionApi(`sessions/${id}`, body)).then((meta) => {
     const at = sessionList.findIndex((s) => s.id === id);
     if (at >= 0) sessionList[at] = meta; else sessionList.unshift(meta);
     sessionList.sort((a, b) => b.updated - a.updated);
     renderSessions();
-  }).catch((e) => { toast("error", "The chat was not saved", e.message, 6000); });
+  }).catch((e) => { toast("error", "The chat was not saved", e.message, 6000); }).finally(() => { savesRunning--; });
   return saving;
 }
 function saveChat() {
@@ -707,7 +722,7 @@ async function openSession(id) {
   try {
     const data = await sessionApi(`sessions/${id}`);
     current = {id, title: data.title || "Chat", custom: !!data.custom_title};
-    messages = Array.isArray(data.messages) ? data.messages : [];
+    messages = fixLoaded(data.messages);
     store.set("session", id);
     renderChat();
     renderSessions();
@@ -769,7 +784,7 @@ $("chat-title").addEventListener("dblclick", () => { if (current.id) renameSessi
 $("session-new").onclick = newSession;
 $("sessions-toggle").onclick = () => showSessions($("sessions").hidden);
 // leaving the page: what is waiting to be saved goes out now
-addEventListener("pagehide", () => { if (saveTimer) saveNow(); });
+addEventListener("pagehide", () => { if (saveTimer || busy) saveNow(); });
 async function initSessions() {
   let listing;
   try { listing = await sessionApi("sessions"); } catch (e) { return false; }           // no sessions folder: one chat in the browser
@@ -786,11 +801,11 @@ async function initSessions() {
   } else if (wanted && sessionList.some((s) => s.id === wanted)) {
     const data = await sessionApi(`sessions/${wanted}`);
     current = {id: wanted, title: data.title || "Chat", custom: !!data.custom_title};
-    messages = Array.isArray(data.messages) ? data.messages : [];
+    messages = fixLoaded(data.messages);
   } else if (sessionList.length && !legacy) {
     const data = await sessionApi(`sessions/${sessionList[0].id}`);
     current = {id: sessionList[0].id, title: data.title || "Chat", custom: !!data.custom_title};
-    messages = Array.isArray(data.messages) ? data.messages : [];
+    messages = fixLoaded(data.messages);
   } else {
     current = {id: newSessionId(), title: "New chat", custom: false};
     if (!legacy) messages = [];
@@ -1202,6 +1217,9 @@ async function send(ready) {
   const controller = new AbortController();
   busy = {controller, msg: m};
   setBusy(true);
+  m.partial = true;                                   // in progress: saved every few seconds, so a stop mid-way loses little
+  const autosave = setInterval(() => { if (sessionsOn && !savesRunning) saveNow(); }, 4000);
+  saveChat();                                         // the question is kept at once
 
   const body = {model: health.model, messages: apiMessages(), stream: true,
                 reasoning_effort: settings.thinking};
@@ -1282,6 +1300,8 @@ async function send(ready) {
   if (ran) m.meta = `${m.meta ? `${m.meta} · ` : ""}${ran} tool call${ran > 1 ? "s" : ""}`;
   if (m.summarized) m.meta = `${m.meta || ""} · summarized ${m.summarized} earlier messages to stay inside the context`;
   if (m.limit) m.meta = `${m.meta || ""} · stopped at the limit of ${m.limit} tool rounds (mcp.max_rounds)`;
+  clearInterval(autosave);
+  delete m.partial;
   busy = null;
   setBusy(false);
   if (frame) cancelAnimationFrame(frame);
