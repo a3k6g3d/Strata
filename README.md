@@ -15,6 +15,16 @@ Strata runs **[Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Nex
 large, smart AI model that usually needs a server. It chats, writes code, reads pictures and works with your apps
 and coding agents. Nothing leaves your PC.
 
+## About the `speed-work-0.1.40.2` branch
+
+This branch lives in a personal fork of [architectds/Strata](https://github.com/architectds/Strata) (the speed fork
+described next), which is itself a fork of [Niko1221/Strata](https://github.com/Niko1221/Strata), the original project.
+The engine, the model support, the server and the web app are Niko1221's and the Strata contributors' work, under the
+MIT licence in [`LICENSE`](LICENSE), and their commits are all in this branch's history. What this branch adds on top of
+0.1.40.2 is a layer around the chat page: tool permissions and tools for the model (files, search, web, commands),
+separate chats, and Electron and Tauri desktop apps (`desktop/`). It is listed in [`CHANGELOG.md`](CHANGELOG.md), and
+was written with Claude Code.
+
 ## About this fork
 
 This fork of [Niko1221/Strata](https://github.com/Niko1221/Strata) is tuned for speed. Its default branch, `best`, is

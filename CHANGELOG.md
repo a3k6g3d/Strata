@@ -1,6 +1,8 @@
 # Changelog (the `speed-work` fork)
 
-Changes on top of upstream's engine (0.1.39). The engine's own version number stays upstream's; these entries are
+Changes on top of [Niko1221/Strata](https://github.com/Niko1221/Strata) (the original project, MIT) as carried by
+[architectds/Strata](https://github.com/architectds/Strata), whose engine and server this builds on (0.1.39, then
+0.1.40.2); all of their work and history are in this repository. The engine's own version number stays upstream's; these entries are
 dated, and the fork's releases follow [SemVer](https://semver.org) once it tags them (features = minor, fixes = patch).
 
 ## Unreleased - 2026-10-09
