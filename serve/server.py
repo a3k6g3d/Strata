@@ -3902,6 +3902,40 @@ def _previews(messages: list) -> list:
              _plain_text(m)[:50].replace(chr(10), " ")) for m in messages]
 
 
+def _summary_cache_path(svc):
+    sessions = getattr(svc, "sessions", None)
+    return Path(sessions.root) / "summary-cache.json" if sessions is not None else None
+
+
+def _summary_cache(svc) -> list:
+    """The summaries made so far [(n messages, digest of them, summary, previews)]: in memory, and kept in
+    <sessions folder>/summary-cache.json, so that a restart does not summarize a long chat again."""
+    cache = svc.__dict__.get("summary_cache") if hasattr(svc, "__dict__") else None
+    if cache is None:
+        cache = []
+        path = _summary_cache_path(svc)
+        if path is not None:
+            try:
+                for n, digest, text in json.loads(path.read_text(encoding="utf-8")):
+                    cache.append((int(n), str(digest), str(text), []))
+            except (OSError, ValueError, TypeError):
+                pass
+        svc.summary_cache = cache
+    return cache
+
+
+def _summary_cache_save(svc, cache: list) -> None:
+    path = _summary_cache_path(svc)
+    if path is None:
+        return
+    try:
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps([[n, d, t] for n, d, t, _ in cache[-16:]], ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
 def _digest(messages: list) -> str:
     return hashlib.sha256(json.dumps(messages, sort_keys=True, default=str).encode()).hexdigest()
 
@@ -3929,7 +3963,7 @@ def compact_history(svc: Service, messages: list, tools, kw, cancel, orig: list 
     head = 0
     while head < len(messages) and messages[head].get("role") == "system":
         head += 1
-    cache = svc.__dict__.setdefault("summary_cache", [])      # [(n original messages after the head, digest, summary, previews)]
+    cache = _summary_cache(svc)                               # [(n original messages after the head, digest, summary, previews)]
     covered, summary = 0, None
     _fitlog(f"compact: {len(orig)} messages (head {head}), {len(messages)} now, cache entries {[e[0] for e in cache]}")
     if len(orig) == len(messages):                               # the list is still the client's own (plus shortened results)
@@ -3979,7 +4013,8 @@ def compact_history(svc: Service, messages: list, tools, kw, cancel, orig: list 
     if len(orig) == len(messages) + max(0, covered - 1) and head + n_orig <= len(orig):
         cache.append((n_orig, _digest(orig[head:head + n_orig]), summary, _previews(orig[head:head + n_orig])))
         _fitlog(f"compact: stored a summary of {n_orig} messages")
-        del cache[:-8]
+        del cache[:-16]
+        _summary_cache_save(svc, cache)
     messages[head:start] = [_summary_message(summary)]
     print(f"[strata] summarized {len(middle)} earlier message(s) in {time.monotonic() - t0:.0f} s to keep the "
           f"conversation inside the context", flush=True)

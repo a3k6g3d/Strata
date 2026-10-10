@@ -384,6 +384,22 @@ class CompactHistory(unittest.TestCase):
         self.assertIn("SUMMARY OF WORK", later[1]["content"])
         self.assertEqual(later[-2:], grown[-2:])
 
+    def test_a_summary_survives_a_restart(self):
+        import tempfile
+        from serve.server import compact_history
+        from serve.sessions import SessionStore
+        with tempfile.TemporaryDirectory() as d:
+            svc, calls = self.svc(12000)
+            svc.sessions = SessionStore(d)
+            compact_history(svc, self.msgs(), None, {}, threading.Event(), orig=self.msgs())
+            self.assertEqual(len(calls), 1)
+            svc2, calls2 = self.svc(12000)                       # a new server process: nothing in memory
+            svc2.sessions = SessionStore(d)
+            msgs = self.msgs()
+            compact_history(svc2, msgs, None, {}, threading.Event(), orig=list(msgs))
+            self.assertEqual(calls2, [])                         # found on disk, not written again
+            self.assertIn("SUMMARY OF WORK", msgs[1]["content"])
+
     def test_a_stopped_request_keeps_the_messages_and_remembers_nothing(self):
         from serve.server import compact_history
         svc, calls = self.svc(12000)

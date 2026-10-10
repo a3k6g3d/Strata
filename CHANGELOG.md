@@ -7,6 +7,14 @@ dated, and the fork's releases follow [SemVer](https://semver.org) once it tags 
 
 ## Unreleased - 2026-10-09
 
+### Fixed (2026-10-10, chat page)
+- A chat is saved while an answer is being written (every 4 s, and the question at once), not only when the answer
+  ends: a long tool turn that was cut off (the app quit, the model stopped) used to be lost, and the model redid
+  its work. What it had said and the tool calls it had finished are kept, the answer is marked "Stopped before it
+  finished", and the next message carries them back to the model, so "continue" picks up where it was.
+- The summary of a long chat is kept in `<sessions folder>/summary-cache.json`: a restart no longer summarizes
+  the same chat again (about a minute).
+
 ### Changed (2026-10-10, desktop app)
 - The Tauri app is the one installed ("Strata", per user, shortcuts on the Desktop and in the Start Menu). The Electron
   app was uninstalled and its build files deleted; its source stays in `desktop/electron` and still builds.
