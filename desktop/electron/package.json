@@ -19,10 +19,10 @@
     "appId": "local.strata.desktop",
     "productName": "Strata",
     "directories": { "output": "dist" },
-    "files": ["main.js", "preload.js", "loading.html", "build/icon.png", "package.json"],
+    "files": ["main.js", "preload.js", "loading.html", "assets/icon.png", "package.json"],
     "win": {
       "target": ["nsis", "portable"],
-      "icon": "build/icon.ico"
+      "icon": "assets/icon.ico"
     },
     "nsis": {
       "oneClick": false,
