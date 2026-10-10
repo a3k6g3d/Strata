@@ -5,6 +5,11 @@ dated, and the fork's releases follow [SemVer](https://semver.org) once it tags 
 
 ## Unreleased - 2026-10-09
 
+### Added (2026-10-09, desktop app)
+- `desktop/electron` 0.1.0: Strata in its own window (Electron 44): starts the model if it is not running and shows
+  how the loading goes, tray icon (restart / stop the model, open the log), window place remembered, quitting stops
+  the model it started. Installer and portable exe from `npm run dist`. A Tauri build is planned after this one.
+
 ### Added (2026-10-09, chat page)
 - Separate chats, listed on the left like Claude's: new chat, open, rename (double-click), delete, grouped by day.
   The server keeps them as files next to the run config (`serve/sessions.py`, `GET /sessions`, `POST /sessions/<id>`,
