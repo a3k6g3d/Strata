@@ -1,6 +1,6 @@
 # Strata desktop (Electron)
 
-Strata's chat page in its own window. It is a thin shell: the page, the sessions and the model all stay in the server.
+Strata's chat page in its own window. Strata is [Niko1221/Strata](https://github.com/Niko1221/Strata) (MIT, see `LICENSE`); this app only holds a window around it. It is a thin shell: the page, the sessions and the model all stay in the server.
 
 - Opens `http://127.0.0.1:8080`. If the model is not running it starts it (`launcher`), shows how the loading goes
   (the last lines of the console log), and opens the chat as soon as the server answers.
