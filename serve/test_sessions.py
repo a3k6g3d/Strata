@@ -5,6 +5,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -62,6 +63,68 @@ class Store(unittest.TestCase):
         self.assertEqual([m["id"] for m in listed], ["s-a"])
         self.assertLessEqual(len(listed[0]["title"]), 120)
         self.assertNotIn("\n", listed[0]["title"])
+
+
+class Durability(unittest.TestCase):
+    """A hard reset can leave a file of the right size that is all zeros: nothing may be lost to it."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name) / "sessions"
+        self.store = SessionStore(self.root)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_the_data_is_forced_to_disk_before_the_rename(self):
+        from unittest import mock
+        order = []
+        real_fsync, real_replace = os.fsync, os.replace
+        with mock.patch("os.fsync", side_effect=lambda fd: (order.append("fsync"), real_fsync(fd))[1]),                 mock.patch("os.replace", side_effect=lambda a, b: (order.append("replace"), real_replace(a, b))[1]):
+            self.store.save("s-a", "t", [{"role": "user", "text": "x"}])
+        self.assertIn("fsync", order)
+        self.assertLess(order.index("fsync"), order.index("replace"))      # the first write: data, then the name
+
+    def test_a_zero_filled_main_file_is_restored_from_the_backup(self):
+        self.store.save("s-a", "First", [{"role": "user", "text": "one"}])
+        bak = self.root / "s-a.json.bak"
+        os.utime(self.root / "s-a.json", (0, 0))
+        # a second save an hour later: the first version is kept as the backup
+        old = time.time
+        try:
+            import serve.sessions as S
+            S.time.time = lambda: old() + 3600
+            self.store.save("s-a", "Second", [{"role": "user", "text": "one"}, {"role": "assistant", "text": "two"}])
+        finally:
+            S.time.time = old
+        self.assertTrue(bak.exists())
+        (self.root / "s-a.json").write_bytes(b"\x00" * 2000)                  # the reset
+        got = self.store.get("s-a")
+        self.assertTrue(got["recovered_from_backup"])
+        self.assertEqual(got["title"], "First")                              # the version before, not nothing
+        again = self.store.get("s-a")                                         # and the main file is whole again
+        self.assertNotIn("recovered_from_backup", again)
+        self.assertTrue(list(self.root.glob("s-a.json.damaged")))             # the damaged file is kept, renamed
+
+    def test_a_zero_filled_list_entry_is_rebuilt_and_the_session_still_listed(self):
+        self.store.save("s-a", "Kept chat", [{"role": "user", "text": "x"}])
+        (self.root / "s-a.meta.json").write_bytes(b"\x00" * 148)
+        listed = self.store.list()
+        self.assertEqual([(m["id"], m["title"], m["messages"]) for m in listed], [("s-a", "Kept chat", 1)])
+        self.assertGreater((self.root / "s-a.meta.json").stat().st_size, 100)  # written again
+
+    def test_a_session_with_nothing_readable_is_not_listed_and_is_quarantined(self):
+        (self.root / "s-dead.json").write_bytes(b"\x00" * 500)
+        (self.root / "s-dead.meta.json").write_bytes(b"\x00" * 100)
+        self.assertEqual(self.store.list(), [])
+        self.assertTrue((self.root / "s-dead.json.damaged").exists())
+        self.assertIsNone(self.store.get("s-dead"))                          # gone from the list, the damaged file kept aside
+
+    def test_the_summary_cache_file_is_not_taken_for_a_session(self):
+        (self.root / "_summary-cache.json").write_text("[[1, 'd', 't']]", encoding="utf-8")
+        self.store.save("s-a", "t", [])
+        self.assertEqual([m["id"] for m in self.store.list()], ["s-a"])
+        self.assertTrue((self.root / "_summary-cache.json").exists())          # untouched, not quarantined
 
 
 class Http(unittest.TestCase):
