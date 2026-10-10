@@ -35,15 +35,13 @@ struct PrefillStats {
     int64_t experts_streamed = 0;   ///< expert blobs copied host -> device
     int64_t experts_dma = 0;        ///< ...of which straight from the pinned arena (no CPU copy)
     int64_t experts_resident = 0;   ///< expert-layer groups served from the VRAM tier
-    int64_t experts_cpu = 0;        ///< ...computed on the CPU pool instead of streamed (CPU assist, or STRATA_PREFILL_CPU_SHARE)
+    int64_t experts_cpu = 0;        ///< ...computed on the CPU pool instead of streamed (STRATA_PREFILL_CPU_SHARE)
     double cpu_share = 0;           ///< ...the share of the streamed ones it took last (measured by default)
     double ms_ple = 0;
-    double ms_cpu_wait = 0;         ///< host time waiting for the pool after the GPU half was issued
 };
 
 }  // namespace strata::prefill
 namespace strata::core { class MtpDrafter; }
-namespace strata::kernels::cpu { class ExpertPool; }
 namespace strata::prefill {
 
 class Prefill {
@@ -53,8 +51,9 @@ public:
     /// scratch - call it from on_chunk.  false with `err` empty: not applicable here (a ring or hybrid K/V, another
     /// device, too little scratch; STRATA_MTP_BATCH=0), the caller runs the drafter's own pass.  Not bit-identical to
     /// that pass (FP16 GEMMs instead of Q8_1 activations): the drafts may differ, never the target's tokens' logits.
+    /// `why` (optional): on a decline (false, `err` empty) the reason, a static string.
     bool draft_kv(core::MtpDrafter& mtp, const float* R_rows, const int32_t* next_tokens, int64_t n, int64_t cell0,
-                  std::string& err);
+                  std::string& err, const char** why = nullptr);
     Prefill();
     ~Prefill();
     Prefill(const Prefill&) = delete;
@@ -90,27 +89,19 @@ public:
     /// fits it keeps 0.1.39's ring).  0 slots = none.  A layer split's set_ring_override and STRATA_PREFILL_RING win.
     static void set_ring_budget(int slots, int64_t small_max);
 
-    /// CPU assist (STRATA_PREFILL_CPU: on by default on CUDA builds, 0 turns it off): a chunk that stages only its
-    /// routed experts (below the streamed walk) hands the expert pool the non-resident experts with the fewest tokens,
-    /// so the pool reads those from RAM while the copy engine brings the rest over PCIe.  The pool's arithmetic is the
-    /// token path's CPU experts' (ggml-cpu), not MMQ's, so the outputs are close to, not bitwise, the GPU-only path's.
-    /// Null pool: GPU only.  (The fork's name for it: upstream's own set_cpu_pool is STRATA_PREFILL_CPU_SHARE's pool.)
-    /// Only a prompt path that runs every layer uses it (no layer split); the pool must be idle during `run`.
-    void set_assist_pool(strata::kernels::cpu::ExpertPool* pool);
-    /// Before any loan is sized (bytes_needed): CPU assist's chunks are staged up to 3,072 tokens, and the buffers
-    /// follow that threshold.  `applies`: a pool on a path that runs every layer, or on every stage of a layer split
-    /// with STRATA_SPLIT_CPU_ASSIST=1 - what `init` checks again.
-    static void arm_cpu_assist(bool applies);
-
-    /// Device bytes `init` needs for a chunk of `chunk` tokens (what a borrowed region must hold).
-    static uint64_t bytes_needed(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk);
+    /// Device bytes `init` needs for a chunk of `chunk` tokens (what a borrowed region must hold).  `src`: init gets an
+    /// ExpertSource (carve picks the fused MoE layout only then).
+    static uint64_t bytes_needed(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk,
+                                 bool src = true);
 
     /// The same without the streamed ring: what the chunk's own buffers cost.  The auto chunk scan sizes the chunk
     /// first and hands the ring what the chunk leaves over, so it needs the chunk priced on its own.
     /// What `init` allocates when the prompt path OWNS its buffers: each cudaMalloc rounded up to a 2 MiB page and the
     /// ring as one allocation (the startup sizing of a cache without a loan).
-    static uint64_t bytes_needed_owned(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk);
-    static uint64_t bytes_needed_no_ring(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk);
+    static uint64_t bytes_needed_owned(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk,
+                                       bool src = true);
+    static uint64_t bytes_needed_no_ring(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk,
+                                         bool src = true);
 
     /// The streamed ring's byte budget as a slot count for this pack (the measured slot count x Q2_0's blob, over
     /// max_blob, never past ring_cap()):
@@ -182,14 +173,22 @@ public:
     /// The CPU expert pool (decode's, idle while a prompt is read). With STRATA_PREFILL_CPU_SHARE set, a chunk below
     /// stream_all_min() tokens - an agent's tool output - hands it the non-resident experts routed by at most MAXT of
     /// its tokens, fewest first, up to a share of the experts it would stream (`auto`: measured, where both sides end
-    /// together). The CPU reads them from RAM while the rest come over PCIe; their rows go to Dm's tail, as a peer's
-    /// do. Not bit-identical to the GPU's rows (the CPU's own activation format). Unset (default) or null: every
-    /// expert on the GPU. Only for a pool no other thread runs meanwhile (no batch slots). Set before `init`.
+    /// together). The CPU reads them from RAM (the arena, the page-locked copy, or the mapped experts.bin's pages)
+    /// while the rest come over PCIe; their rows go to Dm's tail, as a peer's do. Not bit-identical to the GPU's rows
+    /// (the CPU's own activation format). Unset (default) or null: every expert on the GPU. Only for a pool no other
+    /// thread runs meanwhile (no batch slots); on a layer split every stage may have it - one stage at a time takes it
+    /// for a chunk. Set before `init`.
     void set_cpu_pool(kernels::cpu::ExpertPool* pool);
+    /// With STRATA_PREFILL_CPU_SHARE set and `applies` (a pool will be set): the chunks staged after their routing - the
+    /// only ones the share applies to - go up to STRATA_PREFILL_CPU_SHARE_MAX tokens (default 3072) instead of 1024.
+    /// Before any `bytes_needed` (the ring and the small-chunk buffers follow the limit); `init` also sets it.
+    /// `by_default`: this path is one the share was measured on (CUDA, one GPU, no batch slots), so with the variable unset
+    /// the share is on for chunks below 1024 tokens (STRATA_PREFILL_CPU_SHARE=0 turns it off).
+    static void arm_cpu_share(bool applies, bool by_default = false);
 
 private:
     static uint64_t bytes_needed_impl(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk,
-                                      bool owned_pages);
+                                      bool owned_pages, bool src);
     kernels::cpu::ExpertPool* cpu_pool_ = nullptr;   ///< set_cpu_pool
     // Stage-1 pipeline: intermediate stages return after handing their chunk to
     // the direct successor. The public run() drains the chain once at prompt end.
@@ -207,7 +206,6 @@ private:
     std::future<bool> next_run_;
     int hand_buf_ = 0;
 
-    strata::kernels::cpu::ExpertPool* pool_ = nullptr;   ///< set_assist_pool (kept by `reset`)
     bool carve(std::size_t T, void* alloc);   // the device buffers of a chunk (prefill.cpp's Alloc)
     void release();                          // the destructor's cleanup (also `reset`'s)
     struct Impl;
