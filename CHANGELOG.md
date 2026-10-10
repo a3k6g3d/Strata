@@ -8,6 +8,9 @@ dated, and the fork's releases follow [SemVer](https://semver.org) once it tags 
 ## Unreleased - 2026-10-09
 
 ### Added (2026-10-09, desktop app)
+- `desktop/tauri` 0.1.0: the same app on Tauri 2 (Rust, the system's WebView2): 1.2 MB installer against the
+  Electron app's 111 MB, 3.5 MB installed against 369 MB; memory about the same (120 MB against 106 MB, WebView2's
+  processes). The chat page has no access to the app's commands (checked). It shares `desktop.json` with the Electron app.
 - `desktop/electron` 0.1.0: Strata in its own window (Electron 44): starts the model if it is not running and shows
   how the loading goes, tray icon (restart / stop the model, open the log), window place remembered, quitting stops
   the model it started. Installer and portable exe from `npm run dist`. A Tauri build is planned after this one.
