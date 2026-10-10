@@ -1,0 +1,14 @@
+{
+  "name": "strata-desktop-tauri",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Strata's chat page in its own window (Tauri: the system's WebView2, a few MB).",
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "tauri build --bundles nsis"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.12.1"
+  }
+}

@@ -63,3 +63,6 @@ build-vision-cuda12.bat
 /.rocm-win/
 desktop/electron/node_modules/
 desktop/electron/dist/
+desktop/tauri/node_modules/
+desktop/tauri/src-tauri/target/
+desktop/tauri/src-tauri/gen/

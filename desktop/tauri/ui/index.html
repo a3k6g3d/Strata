@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src ipc: http://ipc.localhost">
+<title>Strata</title>
+<style>
+  :root { --bg: #0e1113; --ink: #e8eaed; --muted: #8b949e; --accent: #10b981; --line: #232a30; --danger: #f0616d; }
+  @media (prefers-color-scheme: light) { :root { --bg: #f9fafb; --ink: #221e1f; --muted: #6f6f6f; --line: #dee5ee; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; height: 100vh; display: grid; place-items: center; background: var(--bg); color: var(--ink);
+         font: 15px/1.5 "Segoe UI", system-ui, sans-serif; }
+  main { width: min(640px, 92vw); text-align: center; }
+  h1 { margin: 0 0 6px; font-size: 26px; letter-spacing: .01em; }
+  .sub { color: var(--muted); margin: 0 0 22px; }
+  .bar { height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; margin: 0 auto 18px; width: 260px; }
+  .bar i { display: block; height: 100%; width: 40%; background: var(--accent); border-radius: 2px; animation: slide 1.4s ease-in-out infinite; }
+  @keyframes slide { 0% { transform: translateX(-110%); } 100% { transform: translateX(290%); } }
+  .failed .bar { display: none; }
+  .failed h1 { color: var(--danger); }
+  pre { margin: 0 0 18px; padding: 12px 14px; text-align: left; background: color-mix(in srgb, var(--ink) 6%, transparent);
+        border: 1px solid var(--line); border-radius: 10px; font: 12px/1.5 Consolas, monospace; color: var(--muted);
+        white-space: pre-wrap; overflow-wrap: anywhere; max-height: 230px; overflow: auto; }
+  pre:empty { display: none; }
+  .btns { display: flex; gap: 10px; justify-content: center; }
+  button { padding: 9px 16px; border-radius: 9px; border: 1px solid var(--line); background: none; color: var(--ink); font: inherit; cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btns[hidden] { display: none; }
+</style>
+</head>
+<body>
+<main id="main">
+  <h1 id="title">Starting Strata</h1>
+  <p class="sub" id="sub">Loading the model onto this PC. It takes about 90 seconds.</p>
+  <div class="bar"><i></i></div>
+  <pre id="log"></pre>
+  <div class="btns" id="btns" hidden>
+    <button class="primary" id="retry">Try again</button>
+    <button id="openlog">Open the log</button>
+    <button id="quit">Quit</button>
+  </div>
+</main>
+<script>
+  const $ = (id) => document.getElementById(id);
+  const invoke = (cmd) => window.__TAURI__.core.invoke(cmd);
+  $('retry').onclick = () => invoke('retry');
+  $('openlog').onclick = () => invoke('open_log');
+  $('quit').onclick = () => invoke('quit_app');
+  window.__TAURI__.event.listen('status', (e) => {
+    const s = e.payload;
+    const failed = s.state === 'failed';
+    $('main').className = failed ? 'failed' : '';
+    $('btns').hidden = !failed;
+    if (failed) {
+      $('title').textContent = 'Strata did not start';
+      $('sub').textContent = 'The model has not answered after ' + Math.round(s.secs / 60) + ' minutes. The last lines of its log:';
+    } else if (s.state === 'waiting') {
+      $('title').textContent = 'Waiting for Strata';
+      $('sub').textContent = 'Start it with Start-Strata.bat. This window opens the chat as soon as it answers (' + s.secs + ' s).';
+    } else {
+      $('title').textContent = 'Starting Strata';
+      $('sub').textContent = 'Loading the model onto this PC. It takes about 90 seconds (' + s.secs + ' s so far).';
+    }
+    $('log').textContent = (s.lines || []).join('\n');
+  });
+</script>
+</body>
+</html>
