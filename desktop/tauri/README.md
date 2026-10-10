@@ -1,6 +1,6 @@
 # Strata desktop (Tauri)
 
-The same app as [`../electron`](../electron), built with Tauri 2: the window is the system's Edge WebView2 instead of a
+This is the app in daily use. [`../electron`](../electron) is the same app on Electron, kept as source only (it is bigger: 369 MB installed). Built with Tauri 2: the window is the system's Edge WebView2 instead of a
 bundled Chromium, and the shell is Rust. Strata is [Niko1221/Strata](https://github.com/Niko1221/Strata) (MIT, see
 `LICENSE`); this app only holds a window around it.
 
@@ -32,8 +32,9 @@ for progress and press its three buttons. Navigation away from Strata's own orig
 
 ```
 npm install
-npm run build        # src-tauri/target/release/bundle/nsis/Strata Tauri_<version>_x64-setup.exe (needs Rust: https://rustup.rs)
+npm run build        # src-tauri/target/release/bundle/nsis/Strata_<version>_x64-setup.exe (needs Rust: https://rustup.rs)
 ```
 
-The first build compiles about 400 crates (a few minutes); the next ones are fast. The installer is per user and is named
-"Strata Tauri", so it can sit beside the Electron app's "Strata".
+The first build compiles about 400 crates (a few minutes); the next ones are fast. The installer is per user (no
+administrator rights): it installs to `%LOCALAPPDATA%\Strata` with a Desktop and a Start Menu shortcut named "Strata".
+Silent install: `Strata_<version>_x64-setup.exe /S`.
