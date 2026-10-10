@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Strata Tauri",
+  "productName": "Strata",
   "version": "0.1.0",
   "identifier": "local.strata.desktop.tauri",
   "build": {

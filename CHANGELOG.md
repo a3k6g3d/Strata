@@ -7,6 +7,10 @@ dated, and the fork's releases follow [SemVer](https://semver.org) once it tags 
 
 ## Unreleased - 2026-10-09
 
+### Changed (2026-10-10, desktop app)
+- The Tauri app is the one installed ("Strata", per user, shortcuts on the Desktop and in the Start Menu). The Electron
+  app was uninstalled and its build files deleted; its source stays in `desktop/electron` and still builds.
+
 ### Added (2026-10-09, desktop app)
 - `desktop/tauri` 0.1.0: the same app on Tauri 2 (Rust, the system's WebView2): 1.2 MB installer against the
   Electron app's 111 MB, 3.5 MB installed against 369 MB; memory about the same (120 MB against 106 MB, WebView2's
