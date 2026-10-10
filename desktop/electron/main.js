@@ -129,7 +129,7 @@ function createWindow() {
   win = new BrowserWindow({
     width: b.width, height: b.height, x: b.x, y: b.y, minWidth: 720, minHeight: 520, show: false,
     backgroundColor: '#0e1113', title: 'Strata', autoHideMenuBar: true,
-    icon: path.join(__dirname, 'build', 'icon.png'),
+    icon: path.join(__dirname, 'assets', 'icon.png'),
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
   if (b.maximized) win.maximize();
@@ -175,7 +175,7 @@ function showWindow() {
 
 // ------------------------------------------------------------------ tray
 function createTray() {
-  tray = new Tray(nativeImage.createFromPath(path.join(__dirname, 'build', 'icon.png')).resize({ width: 16, height: 16 }));
+  tray = new Tray(nativeImage.createFromPath(path.join(__dirname, 'assets', 'icon.png')).resize({ width: 16, height: 16 }));
   tray.setToolTip('Strata');
   const menu = Menu.buildFromTemplate([
     { label: 'Show Strata', click: showWindow },
