@@ -61,3 +61,5 @@ build-vision-cuda12.bat
 
 /.ccache/
 /.rocm-win/
+desktop/electron/node_modules/
+desktop/electron/dist/
