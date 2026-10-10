@@ -5,6 +5,14 @@ Changes on top of [Niko1221/Strata](https://github.com/Niko1221/Strata) (the ori
 0.1.40.2); all of their work and history are in this repository. The engine's own version number stays upstream's; these entries are
 dated, and the fork's releases follow [SemVer](https://semver.org) once it tags them (features = minor, fixes = patch).
 
+## Unreleased - 2026-10-10
+
+### Changed (2026-10-10, merged Niko1221/Strata v0.1.42)
+- Merged `niko/main` (engine 0.1.42, 386 commits) onto the fork; conflicts in `serve/server.py` kept both sides, the prefill/generate
+  CPU-share conflicts took Niko's version. All 652 server tests pass. On IQ3_S at a 32 GiB RAM budget: decode 17.6 -> 21.8 tok/s,
+  SSD reads/token 26.8 -> 15.2, GPU-cache hit 50.8% -> 59%, prompt 31 -> 44 tok/s; hard set 46/47 unchanged.
+- The live model is now SC117's GSQ-RCO IQ3_S (was mradermacher i1-IQ4_XS): same hard-set score, ~35% faster.
+
 ## Unreleased - 2026-10-09
 
 ### Fixed (2026-10-10, sessions survive a hard reset)
