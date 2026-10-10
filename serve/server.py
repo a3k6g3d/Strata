@@ -60,7 +60,7 @@ from serve.frontend import (ChatTemplate, Event, OutputParser, anthropic_to_mess
 from serve.mcp import MODE_INFO, MODES, McpCancelled, decide, hub_from_config  # noqa: E402
 from serve import runconfig  # noqa: E402
 from serve.winjob import contain  # noqa: E402
-from serve.sessions import MAX_BYTES as SESSION_MAX_BYTES, SessionError, SessionStore  # noqa: E402
+from serve.sessions import MAX_BYTES as SESSION_MAX_BYTES, SessionError, SessionStore, atomic_write_json  # noqa: E402
 from serve.structured import StructuredOutputError, prepare_format, validated_json  # noqa: E402
 from serve import responses as responses_api  # noqa: E402
 from serve.responses import ResponsesError, error_body as responses_error_body  # noqa: E402
@@ -3904,12 +3904,12 @@ def _previews(messages: list) -> list:
 
 def _summary_cache_path(svc):
     sessions = getattr(svc, "sessions", None)
-    return Path(sessions.root) / "summary-cache.json" if sessions is not None else None
+    return Path(sessions.root) / "_summary-cache.json" if sessions is not None else None      # (not a session id: it starts with _)
 
 
 def _summary_cache(svc) -> list:
     """The summaries made so far [(n messages, digest of them, summary, previews)]: in memory, and kept in
-    <sessions folder>/summary-cache.json, so that a restart does not summarize a long chat again."""
+    <sessions folder>/_summary-cache.json, so that a restart does not summarize a long chat again."""
     cache = svc.__dict__.get("summary_cache") if hasattr(svc, "__dict__") else None
     if cache is None:
         cache = []
@@ -3929,9 +3929,7 @@ def _summary_cache_save(svc, cache: list) -> None:
     if path is None:
         return
     try:
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps([[n, d, t] for n, d, t, _ in cache[-16:]], ensure_ascii=False), encoding="utf-8")
-        os.replace(tmp, path)
+        atomic_write_json(path, [[n, d, t] for n, d, t, _ in cache[-16:]])
     except OSError:
         pass
 

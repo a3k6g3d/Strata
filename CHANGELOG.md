@@ -7,12 +7,19 @@ dated, and the fork's releases follow [SemVer](https://semver.org) once it tags 
 
 ## Unreleased - 2026-10-09
 
+### Fixed (2026-10-10, sessions survive a hard reset)
+- A chat file could come back **all zeros** after the PC reset while it was being saved: the file was written to a
+  temporary name and renamed, but its data was never forced to the disk, so Windows kept the rename and lost the data.
+  Saves now fsync before the rename (`atomic_write_json`, also used for the summary cache), the previous version is
+  kept as `<id>.json.bak` (at most once a minute), a damaged chat is restored from it, a damaged list entry is rebuilt
+  from the conversation, and a file nothing can be read from is renamed `.damaged`, not deleted.
+
 ### Fixed (2026-10-10, chat page)
 - A chat is saved while an answer is being written (every 4 s, and the question at once), not only when the answer
   ends: a long tool turn that was cut off (the app quit, the model stopped) used to be lost, and the model redid
   its work. What it had said and the tool calls it had finished are kept, the answer is marked "Stopped before it
   finished", and the next message carries them back to the model, so "continue" picks up where it was.
-- The summary of a long chat is kept in `<sessions folder>/summary-cache.json`: a restart no longer summarizes
+- The summary of a long chat is kept in `<sessions folder>/_summary-cache.json`: a restart no longer summarizes
   the same chat again (about a minute).
 
 ### Changed (2026-10-10, desktop app)
