@@ -279,6 +279,8 @@ fn main() {
                 .title("Strata")
                 .inner_size(1280.0, 860.0)
                 .min_inner_size(720.0, 520.0)
+                // Tauri's own file-drop handler would swallow the page's drag and drop (the chat list order, dropped files)
+                .disable_drag_drop_handler()
                 .on_navigation(move |url| {
                     let s = url.as_str();
                     if s.starts_with(&allowed) || url.host_str() == Some("tauri.localhost") || url.scheme() == "tauri" {

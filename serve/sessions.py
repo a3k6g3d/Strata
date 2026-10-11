@@ -23,6 +23,7 @@ import time
 from pathlib import Path
 
 ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+ORDER_FILE = "_order.json"                   # the drag-and-drop order of the list (not a chat: its name is not a valid id)
 MAX_BYTES = 128 * 1024 * 1024         # one session; a tool-heavy chat is a few MB
 TITLE_MAX = 120
 BACKUP_EVERY_S = 60                   # the .bak is the version before, taken at most this often
@@ -151,7 +152,36 @@ class SessionStore:
                 meta = self._meta_of(sid)
                 if meta is not None:
                     out.append(meta)
-        return sorted(out, key=lambda m: -float(m.get("updated") or 0))
+        by_date = sorted(out, key=lambda m: -float(m.get("updated") or 0))
+        order = self.get_order()
+        if order is None:
+            return by_date
+        rank = {sid: i for i, sid in enumerate(order)}
+        # the user's own order (drag and drop); a chat that is not in it yet (a new one) goes on top, newest first
+        return [m for m in by_date if m["id"] not in rank] + sorted((m for m in by_date if m["id"] in rank), key=lambda m: rank[m["id"]])
+
+    def get_order(self):
+        """The ids in the order the user arranged them, or None while the list follows the dates."""
+        try:
+            data = _read_json(self.root / ORDER_FILE)
+        except (OSError, ValueError):
+            return None
+        ids = data.get("order") if isinstance(data, dict) else None
+        return [i for i in ids if isinstance(i, str) and ID.match(i)] if isinstance(ids, list) else None
+
+    def set_order(self, ids) -> None:
+        """Keep the order of the chats in the list; None goes back to newest first."""
+        with self.lock:
+            f = self.root / ORDER_FILE
+            if ids is None:
+                try:
+                    f.unlink()
+                except FileNotFoundError:
+                    pass
+                return
+            if not isinstance(ids, list) or len(ids) > 5000 or any(not isinstance(i, str) or not ID.match(i) for i in ids):
+                raise SessionError("expected a list of session ids")
+            atomic_write_json(f, {"order": list(dict.fromkeys(ids))})
 
     def get(self, sid: str):
         self._path(sid)                                            # the id check
