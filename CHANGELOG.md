@@ -7,6 +7,11 @@ dated, and the fork's releases follow [SemVer](https://semver.org) once it tags 
 
 ## Unreleased - 2026-10-10
 
+### Added (2026-10-11, memory commit warning)
+- The server and the web app now watch Windows' **commit headroom** (RAM + pagefile minus what is promised). Under 8 GiB or 10% left
+  the app shows a warning, under 3 GiB an error, and the server prints one at start-up; `/metrics` has a `commit` block. It says
+  to enlarge the pagefile on the fast drive or lower `--resident-budget-gib`. New `serve/commit.py` with tests.
+
 ### Changed (2026-10-10, merged Niko1221/Strata v0.1.42)
 - Merged `niko/main` (engine 0.1.42, 386 commits) onto the fork; conflicts in `serve/server.py` kept both sides, the prefill/generate
   CPU-share conflicts took Niko's version. All 652 server tests pass. On IQ3_S at a 32 GiB RAM budget: decode 17.6 -> 21.8 tok/s,

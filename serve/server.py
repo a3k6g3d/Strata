@@ -59,6 +59,7 @@ from serve.frontend import (THINK_END, ChatTemplate, Event, OutputParser, anthro
                             tool_choice_of, unmark_think_literals)
 from serve.mcp import MODE_INFO, MODES, McpCancelled, decide, hub_from_config  # noqa: E402
 from serve import runconfig  # noqa: E402
+from serve import commit as commit_headroom  # noqa: E402
 from serve import logit_bias as bias_api  # noqa: E402
 from serve.winjob import contain  # noqa: E402
 from serve.sessions import MAX_BYTES as SESSION_MAX_BYTES, SessionError, SessionStore, atomic_write_json  # noqa: E402
@@ -3259,6 +3260,7 @@ class Service:
         return {"engine": engine, "live": live, "requests": hist[::-1][:None if all_requests else 12],
                 "conversation_cache": conversation_cache_view(engine, hist, totals, parked),
                 "requests_kept": len(hist), "totals": totals, "hardware": tel["now"],
+                "commit": commit_headroom.read(),
                 "hardware_static":
                 tel["static"], "history": tel["history"], "time": now}
 
@@ -6231,6 +6233,9 @@ def serve(svc: Service, host="127.0.0.1", port=8095) -> ThreadingHTTPServer:
     svc.start_telemetry()
     httpd = Server((host, port), make_handler(svc))
     httpd.svc = svc
+    warn = commit_headroom.advice(commit_headroom.read())    # the PC's memory promises (RAM + pagefile) nearly used up
+    if warn:
+        print(f"[strata] WARNING: {warn}", flush=True)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     return httpd
 
