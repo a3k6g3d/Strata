@@ -450,7 +450,8 @@ class PermissionRules(unittest.TestCase):
 
     def test_decide_matrix(self):
         table = {"off": ("deny", "deny", "deny"), "read": ("allow", "deny", "deny"), "ask": ("allow", "ask", "ask"),
-                 "edit": ("allow", "allow", "ask"), "full": ("allow", "allow", "allow")}
+                 "edit": ("allow", "allow", "ask"), "auto": ("allow", "allow", "ask"),    # auto: the dangerous ones ask until serve/auto_mode.py clears them
+                 "full": ("allow", "allow", "allow")}
         self.assertEqual(set(table), set(MODES))
         for mode, row in table.items():
             self.assertEqual(tuple(decide(mode, k) for k in ("read", "write", "danger")), row, mode)
@@ -965,6 +966,23 @@ class Permissions(unittest.TestCase):
             self.assertTrue(hit(text), text)
         for text in (r"dir C:\Users\me", "echo %USERPROFILE%", r"del %TEMP%\x.txt", "echo hello"):
             self.assertFalse(hit(text), text)
+
+    def test_auto_mode_runs_routine_commands_and_asks_about_risky_ones(self):
+        self.make_exec(protected_paths=["C:\\Windows"])
+        self.start(call_script("exec__echo", text="hello"), "</think>\n\ndone")
+        ev = self.run_mode("auto")                                                    # routine: no click at all
+        self.assertEqual([e["event"] for e in ev], ["start", "call", "result"])
+        self.assertEqual((ev[2]["ok"], ev[2]["text"]), (True, "hello"))
+        self.start(call_script("exec__echo", text="git " "push origin main"), "</think>\n\nasked")
+        ev = self.run_mode("auto", answer=False)                                      # risky: asks, with the reason
+        appr = [e for e in ev if e["event"] == "approval"]
+        self.assertEqual(len(appr), 1)
+        self.assertIn("git", appr[0]["reason"])
+        self.assertEqual(appr[0]["mode"], "auto")
+        self.start(call_script("exec__echo", text="type C:\\Windows\\win.ini"), "</think>\n\nasked")
+        ev = self.run_mode("auto", answer=False)                                      # a protected folder asks in Auto too
+        appr = [e for e in ev if e["event"] == "approval"]
+        self.assertTrue(appr and appr[0]["protected"] and "protected" in appr[0]["reason"])
 
     def test_a_denied_command_never_runs_and_read_only_refuses_without_asking(self):
         self.make_exec()

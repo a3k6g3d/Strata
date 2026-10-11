@@ -4202,6 +4202,11 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
             verdict = decide(mode, kind_of_tool, c.name in hub.gate.always and not protected)
             if protected and verdict == "allow":
                 verdict = "ask"
+            reason = "it touches a protected location" if protected and verdict == "ask" else None
+            if mode == "auto" and verdict == "ask" and not protected:
+                reason = hub.auto_risk(kind_of_tool, c.name, c.arguments)    # None: routine, runs by itself (serve/auto_mode.py)
+                if reason is None:
+                    verdict = "allow"
             blocked = None
             if no_read:
                 blocked = "that location is on the user's no-read list, so the call was not run"
@@ -4211,7 +4216,7 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
                 token = hub.gate.open(c.name, protected)
                 limit = float(hub.settings["approval_timeout_s"])
                 yield "mcp", {"event": "approval", "id": c.id, "approval": token, "kind": kind_of_tool, "mode": mode,
-                              "timeout_s": limit, "protected": protected, "leak": leak, "exec": exec_call}
+                              "timeout_s": limit, "protected": protected, "leak": leak, "exec": exec_call, "reason": reason}
                 print(f"[strata] tool {c.name} ({kind_of_tool}) waits for the user's click", flush=True)
                 answer, end = None, time.monotonic() + limit
                 try:

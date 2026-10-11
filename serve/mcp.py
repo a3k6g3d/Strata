@@ -37,7 +37,7 @@ from serve.winjob import contain
 PROTOCOL = "2025-06-18"               # the MCP revision Strata asks for; the server's answer is used as given
 DEFAULTS = {"timeout_s": 60.0, "max_result_chars": 20000, "max_rounds": 8, "start_timeout_s": 120.0,
             "permission": "ask", "approval_timeout_s": 300.0, "tool_classes": {}, "protected_paths": [],
-            "blocked_paths": [], "network_servers": [], "exec_servers": [], "ask_user": True}
+            "blocked_paths": [], "network_servers": [], "exec_servers": [], "ask_user": True, "auto_scratch_paths": []}
 
 # ------------------------------------------------------------------------------------------------ permission modes
 # The web app's mode list (a request says which one it runs in: "strata_permission").  Every tool is classed as
@@ -45,12 +45,14 @@ DEFAULTS = {"timeout_s": 60.0, "max_result_chars": 20000, "max_rounds": 8, "star
 #   write   - changes things but is not usually destructive (create, write, edit ...)
 #   danger  - deletes, moves, runs commands or sends something out (delete, move, exec, shell, send ...)
 # and the mode decides what runs by itself, what waits for the user's click, and what is refused.
-MODES = ("off", "read", "ask", "edit", "full")
+MODES = ("off", "read", "ask", "edit", "auto", "full")
 MODE_INFO = {
     "off":  {"label": "No tools", "hint": "The model cannot use tools at all."},
     "read": {"label": "Read-only", "hint": "Tools that only look run by themselves; anything else is refused."},
     "ask":  {"label": "Ask before changes", "hint": "Looking is automatic; every change waits for your click."},
     "edit": {"label": "Allow edits", "hint": "Looking and editing are automatic; deleting, moving and commands ask first."},
+    "auto": {"label": "Auto", "hint": "Routine work runs by itself; it asks only for risky things (deleting outside temp, system or "
+                                      "registry changes, installs, uploads, git pushes) and for protected folders."},
     "full": {"label": "Full access", "hint": "Every tool runs without asking. Use with care."},
 }
 KINDS = ("read", "write", "danger", "net", "exec")
@@ -90,9 +92,9 @@ def decide(mode: str, kind: str, always: bool = False) -> str:
         return "allow"
     if mode == "read":                                   # "allow always" never overrides a read-only chat
         return "deny"
-    if always or (mode == "edit" and kind == "write"):
+    if always or (mode in ("edit", "auto") and kind == "write"):
         return "allow"
-    return "ask"                                        # mode "ask": every change; mode "edit": the dangerous ones
+    return "ask"      # mode "ask": every change; "edit": the dangerous ones; "auto": those too, until serve/auto_mode.py clears them
 
 
 def _strings(value, out: list, depth: int = 0) -> None:
@@ -855,6 +857,14 @@ class McpHub:
         """True when a call's arguments name a path inside the config's `mcp.protected_paths`."""
         return touches_protected(arguments, self.settings.get("protected_paths"))
 
+    def auto_risk(self, kind: str, name: str, arguments):
+        """Auto mode: None when this call looks routine (it runs without a click), else why it asks (serve/auto_mode.py)."""
+        from serve import auto_mode
+        scratch = self.settings.get("auto_scratch_paths") or []
+        if kind == "exec":
+            return auto_mode.assess_exec(arguments, scratch)
+        return auto_mode.assess_tool(name, arg_paths(arguments), scratch)
+
     def protected_text(self, arguments) -> bool:
         """A command or program in the call's arguments names a place inside `mcp.protected_paths` (best effort: a
         path written in the text, or, for the system drive, an environment variable or ~ that points into it)."""
@@ -1051,6 +1061,10 @@ def settings_from(cfg: dict) -> dict:
         elif key == "exec_servers":                      # servers whose tools run commands or code: kind "exec"
             if not isinstance(value, list) or any(not isinstance(v, str) or not v.strip() for v in value):
                 raise SystemExit("[strata] config mcp.exec_servers: expected a list of server names, e.g. [\"exec\"]")
+            out[key] = [v.strip() for v in value]
+        elif key == "auto_scratch_paths":                # extra folders where Auto mode deletes without asking (temp is built in)
+            if not isinstance(value, list) or any(not isinstance(v, str) or not v.strip() for v in value):
+                raise SystemExit("[strata] config mcp.auto_scratch_paths: expected a list of folders, e.g. [\"J:\\Strata-work\\workspace\"]")
             out[key] = [v.strip() for v in value]
         elif key == "ask_user":                          # the built-in ask_user tool (default on)
             if not isinstance(value, bool):
