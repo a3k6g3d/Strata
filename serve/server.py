@@ -6752,6 +6752,10 @@ def main() -> int:
         hub.start()
         atexit.register(hub.close)                      # the servers Strata started end with it
     httpd = serve(svc, host=a.host, port=a.port)
+    if isinstance(cfg.get("discord"), dict):            # the optional Discord front end (serve/discord_bot.py)
+        from serve import discord_bot
+        keys = key_list(svc.api_key) if svc.api_key else []
+        discord_bot.start(cfg["discord"], f"http://127.0.0.1:{a.port}", keys[0] if keys else "", Path(a.config).resolve().parent)
     svc.start_idle_unload()
     here = "127.0.0.1" if a.host in ("0.0.0.0", "", "::") else a.host
     print(f"ready: http://{here}:{a.port}/v1  (OpenAI: /v1/chat/completions, Anthropic: /v1/messages, "

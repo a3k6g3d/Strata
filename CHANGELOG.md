@@ -7,6 +7,13 @@ dated, and the fork's releases follow [SemVer](https://semver.org) once it tags 
 
 ## Unreleased - 2026-10-10
 
+### Added (2026-10-11, Discord front end)
+- `serve/discord_bot.py`: talk to the model, and let it use its tools, from the Discord app (similar to Claude's remote sessions).
+  Optional, off until the config has a `discord` section. Only the accounts in `allowed_user_ids` are answered; tools never go above
+  `ask` (changes and commands show Allow / Deny buttons; the protected folders and the no-read list apply as in the web app).
+  Streams the answer into one message, keeps one conversation per DM or channel, takes pictures, `!new !stop !status !mode !think`.
+  Setup in `docs/DISCORD.md`; needs `pip install discord.py httpx`. 14 tests.
+
 ### Added (2026-10-11, memory commit warning)
 - The server and the web app now watch Windows' **commit headroom** (RAM + pagefile minus what is promised). Under 8 GiB or 10% left
   the app shows a warning, under 3 GiB an error, and the server prints one at start-up; `/metrics` has a `commit` block. It says
