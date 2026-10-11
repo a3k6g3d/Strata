@@ -21,3 +21,7 @@ charset-normalizer==3.5.1
 idna==3.20
 urllib3==2.8.0
 colorama==0.4.6; sys_platform == "win32"
+
+# optional: the Discord front end (docs/DISCORD.md); not needed otherwise
+# discord.py==2.7.1
+# httpx==0.28.1
