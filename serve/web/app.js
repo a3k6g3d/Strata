@@ -542,6 +542,148 @@ $("cfg-save").addEventListener("click", async () => {
   }
 });
 
+// ------------------------------------------------------------------ side panel: Browser and Gallery (on the right of the chat)
+// Links in the chat open in the Browser tab instead of a separate window (Ctrl-click still opens your own browser); the
+// pictures of the chat are the Gallery.  A site that forbids being framed is said so (the server checks: GET /panel/frameable)
+// and offered in your own browser.
+const panelState = {open: false, tab: "browser", url: ""};
+let galleryAt = -1;
+function galleryItems() {
+  return messages.flatMap((m) => (m.images || []).filter((i) => i.url).map((i) => ({url: i.url, name: i.name || "picture"})));
+}
+function updateGalleryCount() {
+  const n = galleryItems().length;
+  $("gallery-count").textContent = n ? String(n) : "";
+}
+function setPanel(open, tab) {
+  panelState.open = open;
+  if (tab) panelState.tab = tab;
+  $("sidepanel").hidden = !open;
+  $("panel-toggle").setAttribute("aria-expanded", String(open));
+  for (const b of document.querySelectorAll(".sidepanel__tab")) b.setAttribute("aria-selected", String(b.dataset.ptab === panelState.tab));
+  $("panel-browser").hidden = panelState.tab !== "browser";
+  $("panel-gallery").hidden = panelState.tab !== "gallery";
+  if (open && panelState.tab === "gallery") renderGallery();
+}
+function panelUrl(raw) {
+  // only an http(s) page of the internet: not this server's own page (it would run with Strata's rights), not this PC
+  let u;
+  try { u = new URL(/^[a-z][a-z0-9+.-]*:/i.test(raw.trim()) ? raw.trim() : "https://" + raw.trim()); } catch (e) { return null; }
+  if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+  if (u.origin === location.origin || /^(localhost|.*\.localhost|127\..*|\[::1\]|0\.0\.0\.0)$/i.test(u.hostname)) return null;
+  return u;
+}
+function openExternal(href) {
+  const a = document.createElement("a");
+  a.href = href; a.target = "_blank"; a.rel = "noopener noreferrer";
+  document.body.appendChild(a); a.click(); a.remove();
+}
+async function openInPanel(raw) {
+  const u = panelUrl(raw);
+  if (!u) { toast("warn", "Not shown here", "Only web pages from the internet open in the side panel."); return; }
+  setPanel(true, "browser");
+  const frame = $("panel-frame"), note = $("panel-notice");
+  panelState.url = u.href;
+  $("panel-url").value = u.href;
+  $("panel-empty").hidden = true;
+  note.hidden = true;
+  frame.hidden = true;
+  frame.removeAttribute("src");
+  let info = null;
+  try { info = await sessionApi("panel/frameable?url=" + encodeURIComponent(u.href)); } catch (e) { /* unsure: try showing it */ }
+  if (panelState.url !== u.href) return;                                     // another page was opened meanwhile
+  if (info && info.frameable === false) {
+    note.textContent = "";
+    const t = document.createElement("div");
+    t.textContent = "This page can't be shown inside Strata: " + (info.reason || "the site does not allow it") + ".";
+    const b = document.createElement("button");
+    b.type = "button"; b.className = "st-btn st-btn--primary"; b.textContent = "Open in your browser";
+    b.onclick = () => openExternal(u.href);
+    note.append(t, b);
+    note.hidden = false;
+    return;
+  }
+  frame.src = u.href;
+  frame.hidden = false;
+}
+function renderGallery() {
+  const items = galleryItems();
+  updateGalleryCount();
+  if (galleryAt >= items.length) galleryAt = items.length - 1;
+  const grid = $("gallery-grid");
+  grid.textContent = "";
+  items.forEach((it, i) => {
+    const b = document.createElement("button");
+    b.type = "button"; b.title = it.name;
+    const img = document.createElement("img");
+    img.src = it.url; img.alt = it.name;
+    b.appendChild(img);
+    b.onclick = () => showPicture(i);
+    grid.appendChild(b);
+  });
+  $("gallery-empty").hidden = items.length > 0;
+  grid.hidden = items.length === 0 || galleryAt >= 0;
+  $("gallery-viewer").hidden = galleryAt < 0;
+  if (galleryAt >= 0) {
+    const it = items[galleryAt];
+    $("gallery-img").src = it.url;
+    $("gallery-img").alt = it.name;
+    $("gallery-name").textContent = `${galleryAt + 1} of ${items.length} · ${it.name}`;
+    $("gallery-save").href = it.url;
+    $("gallery-save").download = it.name;
+  }
+}
+function showPicture(i) { galleryAt = i; renderGallery(); }
+function openGallery(url) {
+  const at = galleryItems().findIndex((it) => it.url === url);
+  galleryAt = at;
+  setPanel(true, "gallery");
+  renderGallery();
+}
+$("panel-toggle").onclick = () => setPanel(!panelState.open);
+$("sidepanel-close").onclick = () => setPanel(false);
+for (const b of document.querySelectorAll(".sidepanel__tab")) b.onclick = () => { if (b.dataset.ptab === "gallery") galleryAt = -1; setPanel(true, b.dataset.ptab); };
+$("panel-form").onsubmit = (e) => { e.preventDefault(); if ($("panel-url").value.trim()) openInPanel($("panel-url").value); };
+$("panel-reload").onclick = () => { if (panelState.url) openInPanel(panelState.url); };
+$("panel-external").onclick = () => { const raw = $("panel-url").value.trim() || panelState.url; const u = raw && panelUrl(raw); if (u) openExternal(u.href); };
+$("gallery-back").onclick = () => { galleryAt = -1; renderGallery(); };
+$("gallery-prev").onclick = () => { const n = galleryItems().length; if (n) showPicture((galleryAt - 1 + n) % n); };
+$("gallery-next").onclick = () => { const n = galleryItems().length; if (n) showPicture((galleryAt + 1) % n); };
+document.addEventListener("keydown", (e) => {
+  if (!panelState.open || panelState.tab !== "gallery" || galleryAt < 0 || /^(INPUT|TEXTAREA|SELECT)$/.test((e.target || {}).tagName || "")) return;
+  if (e.key === "ArrowLeft") $("gallery-prev").click();
+  else if (e.key === "ArrowRight") $("gallery-next").click();
+  else if (e.key === "Escape") $("gallery-back").click();
+});
+// a link in the chat opens in the panel (Ctrl / Shift / middle click: your own browser, as before)
+document.addEventListener("click", (e) => {
+  const a = e.target.closest && e.target.closest("#chat a[href]");
+  if (!a || e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || !panelUrl(a.getAttribute("href"))) return;
+  e.preventDefault();
+  openInPanel(a.getAttribute("href"));
+});
+// the panel's width: drag its left edge (kept between visits)
+(function () {
+  const panel = $("sidepanel"), grip = $("sidepanel-resize"), saved = +store.get("panel_w", 0);
+  if (saved >= 320) panel.style.setProperty("--panel-w", saved + "px");
+  grip.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    grip.setPointerCapture(e.pointerId);
+    grip.classList.add("dragging");
+    $("panel-frame").style.pointerEvents = "none";                            // the page inside would swallow the drag
+    const right = panel.getBoundingClientRect().right, room = panel.parentElement.getBoundingClientRect().width;
+    const move = (ev) => { const w = Math.max(320, Math.min(room * 0.75, right - ev.clientX)); panel.style.setProperty("--panel-w", w + "px"); };
+    const up = () => {
+      grip.removeEventListener("pointermove", move); grip.removeEventListener("pointerup", up);
+      grip.classList.remove("dragging");
+      $("panel-frame").style.pointerEvents = "";
+      store.set("panel_w", Math.round(panel.getBoundingClientRect().width));
+    };
+    grip.addEventListener("pointermove", move);
+    grip.addEventListener("pointerup", up);
+  });
+})();
+
 // ------------------------------------------------------------------ Markdown (escaped first, then formatted)
 function inline(s) {
   const codes = [];
@@ -672,6 +814,8 @@ function saveNow() {
   return saving;
 }
 function saveChat() {
+  updateGalleryCount();
+  if (panelState.open && panelState.tab === "gallery") renderGallery();   // a picture just sent shows up
   if (!sessionsOn) {
     store.set("chat", chatPayload());
     return;
@@ -932,7 +1076,7 @@ function msgEl(m, i) {
       const wrap = document.createElement("div");
       wrap.className = "msg-images";
       for (const im of m.images) {
-        if (im.url) { const img = document.createElement("img"); img.src = im.url; img.alt = im.name || "image"; wrap.appendChild(img); }
+        if (im.url) { const img = document.createElement("img"); img.src = im.url; img.alt = im.name || "image"; img.title = "Open in the gallery"; img.onclick = () => openGallery(im.url); wrap.appendChild(img); }
         else { const c = document.createElement("span"); c.className = "chip"; c.innerHTML = icon("image", "st-icon st-icon--sm"); c.append(im.name || "image"); wrap.appendChild(c); }
       }
       el.appendChild(wrap);
@@ -1149,6 +1293,8 @@ function renderChat() {
   $("chat-empty").hidden = messages.length > 0;
   messages.forEach((m, i) => chat.appendChild(msgEl(m, i)));
   scrollDown(true);
+  updateGalleryCount();
+  if (panelState.open && panelState.tab === "gallery") renderGallery();
 }
 // The chat follows the newest text: it stays pinned to the bottom, however much a frame adds (a tool block, a long
 // answer), until the user scrolls up to read; scrolling back to the bottom (or sending a message) pins it again.

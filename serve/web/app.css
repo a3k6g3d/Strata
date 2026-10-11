@@ -267,3 +267,50 @@ main { flex: 1; min-height: 0; display: flex; }
   .sessions { position: absolute; z-index: 20; top: 0; bottom: 0; left: 0; background: var(--st-bg, #111); box-shadow: 0 0 40px rgba(0, 0, 0, .35); }
   .view--chat { position: relative; }
 }
+
+/* ---------------------------------------------------------------- side panel (browser and gallery) */
+.chat-top { gap: var(--st-s-2); }
+.chat-top__title { flex: 1; min-width: 0; }
+.sidepanel { position: relative; flex: none; width: var(--panel-w, 42%); min-width: 320px; max-width: 75%; display: flex; flex-direction: column;
+             min-height: 0; border-left: 1px solid var(--st-line); background: var(--st-surface, transparent); }
+.sidepanel[hidden] { display: none; }
+.sidepanel__resize { position: absolute; left: -4px; top: 0; bottom: 0; width: 8px; cursor: col-resize; z-index: 3; }
+.sidepanel__resize:hover, .sidepanel__resize.dragging { background: color-mix(in srgb, var(--st-accent) 30%, transparent); }
+.sidepanel__head { flex: none; display: flex; align-items: center; justify-content: space-between; padding: var(--st-s-2) var(--st-s-3);
+                   border-bottom: 1px solid var(--st-line); }
+.sidepanel__tabs { display: flex; gap: 4px; }
+.sidepanel__tab { background: none; border: 0; padding: 6px 12px; border-radius: var(--st-r-md); color: var(--st-ink-muted); font: inherit;
+                  font-size: var(--st-fs-sm); cursor: pointer; }
+.sidepanel__tab:hover { color: var(--st-ink); }
+.sidepanel__tab[aria-selected="true"] { color: var(--st-ink); background: color-mix(in srgb, var(--st-accent) 16%, transparent); }
+.sidepanel__count { color: var(--st-ink-muted); font-size: var(--st-fs-xs); }
+.sidepanel__body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.sidepanel__body[hidden] { display: none; }
+.sidepanel__bar { flex: none; display: flex; gap: var(--st-s-2); align-items: center; padding: var(--st-s-2) var(--st-s-3); }
+.sidepanel__bar .st-input { flex: 1; min-width: 0; height: 34px; }
+.sidepanel__notice { flex: none; margin: 0 var(--st-s-3) var(--st-s-2); padding: var(--st-s-3); border-radius: var(--st-r-md); font-size: var(--st-fs-sm);
+                     background: color-mix(in srgb, var(--st-warn, #d9a400) 14%, transparent); border: 1px solid var(--st-line); }
+.sidepanel__notice[hidden] { display: none; }
+.sidepanel__notice button { margin-top: var(--st-s-2); }
+#panel-frame { flex: 1; min-height: 0; width: 100%; border: 0; background: #fff; }
+#panel-frame[hidden] { display: none; }
+.sidepanel__empty { margin: auto; padding: var(--st-s-6); text-align: center; color: var(--st-ink-muted); }
+.sidepanel__empty[hidden] { display: none; }
+.gallery__grid { flex: 1; min-height: 0; overflow-y: auto; padding: var(--st-s-3); display: grid; gap: var(--st-s-2);
+                 grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); align-content: start; }
+.gallery__grid button { padding: 0; border: 1px solid var(--st-line); border-radius: var(--st-r-md); background: none; cursor: pointer; overflow: hidden; aspect-ratio: 1; }
+.gallery__grid img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.gallery__grid button:hover, .gallery__grid button:focus-visible { border-color: var(--st-accent); outline: none; }
+.gallery__empty { margin: auto; padding: var(--st-s-6); text-align: center; color: var(--st-ink-muted); }
+.gallery__empty[hidden], .gallery__grid[hidden] { display: none; }
+.gallery__viewer { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.gallery__viewer[hidden] { display: none; }
+.gallery__bar { flex: none; display: flex; align-items: center; gap: var(--st-s-2); padding: var(--st-s-2) var(--st-s-3); }
+.gallery__name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--st-ink-muted); font-size: var(--st-fs-sm); }
+.gallery__stage { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; padding: var(--st-s-3); }
+.gallery__stage img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: var(--st-r-md); }
+.msg-images img { cursor: zoom-in; }
+@media (max-width: 900px) {
+  .sidepanel { position: absolute; z-index: 25; top: 0; bottom: 0; right: 0; width: min(92vw, 520px); max-width: none; background: var(--st-bg, #111);
+               box-shadow: 0 0 40px rgba(0, 0, 0, .35); }
+}
