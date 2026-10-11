@@ -957,6 +957,15 @@ class Permissions(unittest.TestCase):
             self.assertIn("approval", [e["event"] for e in ev], text)
             self.assertTrue([e for e in ev if e["event"] == "approval"][0]["protected"], text)
 
+    def test_folder_protection_covers_windows_but_not_the_rest_of_the_drive(self):
+        self.make_exec(protected_paths=[r"C:\Windows", r"C:\Program Files"])
+        hit = lambda text: self.hub.protected_text({"command": text})
+        for text in (r"del C:\Windows\win.ini", "dir C:/Program Files", r"type %windir%\win.ini",
+                     r"gc $env:SystemRoot\win.ini"):
+            self.assertTrue(hit(text), text)
+        for text in (r"dir C:\Users\me", "echo %USERPROFILE%", r"del %TEMP%\x.txt", "echo hello"):
+            self.assertFalse(hit(text), text)
+
     def test_a_denied_command_never_runs_and_read_only_refuses_without_asking(self):
         self.make_exec()
         self.start(call_script("exec__echo", text="nope"), "</think>\n\nnot run")
