@@ -7,6 +7,14 @@ dated, and the fork's releases follow [SemVer](https://semver.org) once it tags 
 
 ## Unreleased - 2026-10-10
 
+### Added (2026-10-11, Auto permission mode)
+- A new **Auto** mode in the permission drop-down (between "Allow edits" and "Full access"): reads and ordinary edits run by
+  themselves, and a command or program is read first (`serve/auto_mode.py`). Routine ones (listing, git status, GPU queries, running
+  a script, deleting a temp file) run without a click; the ones that delete outside the temp folders, change the registry or
+  system/security settings, run as administrator, run decoded or downloaded code, upload data, install or remove software, push
+  git changes or stop programs ask, and the approval card says why. The protected folders and the no-read list still apply first.
+  Plain text rules, not a model: fast and predictable. `mcp.auto_scratch_paths` adds folders where deleting is routine. 7 new tests.
+
 ### Added (2026-10-11, Discord front end)
 - `serve/discord_bot.py`: talk to the model, and let it use its tools, from the Discord app (similar to Claude's remote sessions).
   Optional, off until the config has a `discord` section. Only the accounts in `allowed_user_ids` are answered; tools never go above
