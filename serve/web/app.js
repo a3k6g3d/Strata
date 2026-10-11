@@ -178,7 +178,20 @@ function setPill(state, text) {
   $("pill-text").textContent = text;
 }
 
+// Windows commit headroom (RAM + pagefile): warn once when it runs low, again only if it gets worse or after 10 minutes
+let commitSeen = {level: "ok", at: 0};
+function warnCommit(c) {
+  if (!c || c.level === "ok") { commitSeen.level = "ok"; return; }
+  const worse = c.level === "critical" && commitSeen.level !== "critical";
+  if (!worse && Date.now() - commitSeen.at < 600000 && commitSeen.level !== "ok") return;
+  commitSeen = {level: c.level, at: Date.now()};
+  const fix = c.pagefile_gib < 16 ? " The pagefile is small or off: set it to 64 GB on the fast drive (Advanced system settings > Performance > Virtual memory), or lower the resident budget." : " Close other programs, or lower the resident budget.";
+  toast(c.level === "critical" ? "error" : "warn", c.level === "critical" ? "Memory almost full" : "Memory getting low",
+    `Commit ${c.used_gib} of ${c.limit_gib} GiB (${c.free_gib} GiB left).` + fix, 15000);
+}
+
 function render(m) {
+  warnCommit(m.commit);
   const live = m.live || {}, hw = m.hardware || {}, st = m.hardware_static || {}, eng = m.engine || {}, h = m.history || {};
   const last = (m.requests || [])[0];
   // the header pill
