@@ -873,6 +873,11 @@ class McpHub:
                                            r"\$env:|(^|[\s\"'])~(\\|$|\s)|expanduser|path\.home\(|gethomedir|"
                                            r"environ\[|getenv\(", text):
                 return True
+            if r != sysdrive:                  # a folder: the variables that point into it (%windir%, $env:ProgramFiles ...)
+                for name, val in os.environ.items():
+                    v = val.lower().replace("/", "\\").rstrip("\\")
+                    if v and (v == r or v.startswith(r + "\\")) and (f"%{name.lower()}%" in text or f"$env:{name.lower()}" in text):
+                        return True
         return False
 
     def kind_of(self, name: str) -> str:
