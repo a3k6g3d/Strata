@@ -48,6 +48,7 @@
     <div class="chat-top" id="chat-top" hidden>
       <button type="button" class="st-btn st-btn--icon" id="sessions-toggle" title="Show or hide your chats" aria-label="Show or hide your chats" aria-expanded="false">&#9776;</button>
       <span class="chat-top__title" id="chat-title" title="Double-click to rename">New chat</span>
+      <button type="button" class="st-btn st-btn--icon" id="panel-toggle" title="Show or hide the side panel (browser and gallery)" aria-label="Show or hide the side panel" aria-expanded="false">&#9707;</button>
     </div>
     <div class="chat-scroll" id="chat-scroll">
       <div class="chat" id="chat">
@@ -88,7 +89,42 @@
         </div>
       </form>
     </div>
+    </div><!-- /chat-main -->
+      
+    <aside class="sidepanel" id="sidepanel" aria-label="Side panel" hidden>
+      <div class="sidepanel__resize" id="sidepanel-resize" role="separator" aria-orientation="vertical" title="Drag to resize"></div>
+      <div class="sidepanel__head">
+        <div class="sidepanel__tabs" role="tablist">
+          <button type="button" class="sidepanel__tab" role="tab" data-ptab="browser">Browser</button>
+          <button type="button" class="sidepanel__tab" role="tab" data-ptab="gallery">Gallery <span class="sidepanel__count" id="gallery-count"></span></button>
+        </div>
+        <button type="button" class="st-btn st-btn--icon" id="sidepanel-close" title="Close the side panel" aria-label="Close the side panel">&times;</button>
       </div>
+      <div class="sidepanel__body" id="panel-browser">
+        <form class="sidepanel__bar" id="panel-form">
+          <input type="text" class="st-input" id="panel-url" placeholder="Type or paste an address" aria-label="Address" spellcheck="false" autocomplete="off">
+          <button type="button" class="st-btn st-btn--icon" id="panel-reload" title="Reload" aria-label="Reload">&#8635;</button>
+          <button type="button" class="st-btn st-btn--secondary" id="panel-external" title="Open this page in your own browser">Open in browser</button>
+        </form>
+        <div class="sidepanel__notice" id="panel-notice" hidden></div>
+        <iframe id="panel-frame" title="Web page" sandbox="allow-scripts allow-forms allow-popups allow-same-origin allow-downloads" referrerpolicy="no-referrer" hidden></iframe>
+        <div class="sidepanel__empty" id="panel-empty">Click a link in the chat and it opens here, or type an address above.<br><span class="muted small">Ctrl-click a link to open it in your own browser instead.</span></div>
+      </div>
+      <div class="sidepanel__body" id="panel-gallery" hidden>
+        <div class="gallery__grid" id="gallery-grid"></div>
+        <div class="gallery__empty" id="gallery-empty">Pictures you send in this chat appear here.</div>
+        <div class="gallery__viewer" id="gallery-viewer" hidden>
+          <div class="gallery__bar">
+            <button type="button" class="st-btn st-btn--secondary" id="gallery-back">&larr; All pictures</button>
+            <span class="gallery__name" id="gallery-name"></span>
+            <button type="button" class="st-btn st-btn--icon" id="gallery-prev" title="Previous (left arrow)" aria-label="Previous picture">&lsaquo;</button>
+            <button type="button" class="st-btn st-btn--icon" id="gallery-next" title="Next (right arrow)" aria-label="Next picture">&rsaquo;</button>
+            <a class="st-btn st-btn--secondary" id="gallery-save" download>Save</a>
+          </div>
+          <div class="gallery__stage"><img id="gallery-img" alt=""></div>
+        </div>
+      </div>
+    </aside>
   </section>
 
   <!-- ============================ Monitor ============================ -->

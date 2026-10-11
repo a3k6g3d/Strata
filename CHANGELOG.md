@@ -7,6 +7,14 @@ dated, and the fork's releases follow [SemVer](https://semver.org) once it tags 
 
 ## Unreleased - 2026-10-10
 
+### Added (2026-10-11, side panel: Browser and Gallery)
+- A **side panel** on the right of the chat (toggle in the chat bar). **Browser**: a link in the chat opens there instead of a separate
+  window (Ctrl-click still opens your own browser), with an address bar, reload and "Open in browser". Before showing a page the server
+  checks whether the site allows being framed (`GET /panel/frameable`, `serve/panel.py`: X-Frame-Options and CSP frame-ancestors) and
+  says so, with a button for your own browser, when it does not. Only http(s) pages of the internet are shown: this server's own page and
+  anything on this PC or the local network are refused. **Gallery**: the pictures sent in the chat as thumbnails and a viewer
+  (arrow keys, Save); clicking a picture in the chat opens it there. The panel can be resized by dragging its left edge. 4 tests.
+
 ### Added (2026-10-11, chat list order and message width)
 - The chats in the sidebar can be **dragged into your own order** (or moved with Alt+Up / Alt+Down); the order is kept by the server
   (`POST /sessions-order`, `sessions/_order.json`), so every window shows it. While you have an order the day groups give way to a

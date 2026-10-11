@@ -5085,6 +5085,9 @@ def make_handler(svc: Service):
             if path == "/sessions" or path.startswith("/sessions/"):
                 self._sessions_get(path)
                 return
+            if path == "/panel/frameable":
+                self._panel_frameable()
+                return
             if path.startswith("/fonts/"):
                 # the web app's font (Outfit, OFL: serve/web/fonts); the page falls back to the system font
                 name = path[len("/fonts/"):]
@@ -5510,6 +5513,22 @@ def make_handler(svc: Service):
                 self._json(400, {"error": {"message": str(e)}})
                 return
             self._json(200, meta)
+
+        def _panel_frameable(self):
+            """GET /panel/frameable?url=...: may the side panel show this page (serve/panel.py)?  Strata's own page only."""
+            if not self._authorized():
+                return
+            if self._foreign_origin():
+                self._json(403, {"error": {"message": "only Strata's own page may ask"}})
+                return
+            from serve import panel
+            url = (parse_qs(urlsplit(self.path).query).get("url") or [""])[0]
+            host = self.headers.get("Host", "")
+            try:
+                out = panel.check(url, parent=f"http://{host}" if host else "")
+            except Exception as e:  # noqa: BLE001 - a refused address or an unreachable site: said, not a server error
+                out = {"frameable": False, "reason": str(e), "url": url, "status": 0}
+            self._json(200, out)
 
         def _sessions_order(self):
             """POST /sessions-order {"ids": [...]} keeps the chat list in that order (the web app's drag and drop);
