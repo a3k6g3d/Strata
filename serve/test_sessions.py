@@ -27,6 +27,35 @@ class Store(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def test_a_dragged_order_is_kept_and_a_new_chat_goes_on_top(self):
+        for sid in ("s-a", "s-b", "s-c"):
+            self.store.save(sid, sid, [])
+            time.sleep(0.01)
+        self.assertEqual([m["id"] for m in self.store.list()], ["s-c", "s-b", "s-a"])         # no order yet: newest first
+        self.assertIsNone(self.store.get_order())
+        self.store.set_order(["s-a", "s-c", "s-b"])
+        self.assertEqual([m["id"] for m in self.store.list()], ["s-a", "s-c", "s-b"])
+        self.store.save("s-a", "edited", [{"role": "user", "text": "x"}])                      # saving does not move it
+        self.assertEqual([m["id"] for m in self.store.list()], ["s-a", "s-c", "s-b"])
+        self.store.save("s-d", "new", [])                                                      # a chat not in the order: on top
+        self.assertEqual([m["id"] for m in self.store.list()], ["s-d", "s-a", "s-c", "s-b"])
+        self.store.delete("s-c")                                                               # a deleted one just drops out
+        self.assertEqual([m["id"] for m in self.store.list()], ["s-d", "s-a", "s-b"])
+        self.store.set_order(None)                                                             # back to the dates
+        self.assertEqual([m["id"] for m in self.store.list()], ["s-d", "s-a", "s-b"])          # s-a was saved after s-b
+        self.assertIsNone(self.store.get_order())
+
+    def test_the_order_file_is_not_a_chat_and_bad_orders_are_refused(self):
+        self.store.save("s-a", "a", [])
+        self.store.set_order(["s-a"])
+        self.assertEqual([m["id"] for m in self.store.list()], ["s-a"])                        # _order.json is not listed as a chat
+        for bad in ("s-a", [1], ["../x"], ["a" * 80], [[]]):
+            with self.assertRaises(SessionError):
+                self.store.set_order(bad)
+        self.assertEqual(self.store.get_order(), ["s-a"])                                      # a refused one changed nothing
+        (Path(self.tmp.name) / "sessions" / "_order.json").write_text("\x00\x00", encoding="utf-8")
+        self.assertIsNone(self.store.get_order())                                              # a damaged file: back to the dates
+
     def test_save_list_get_delete(self):
         meta = self.store.save("s-a", "First chat", [{"role": "user", "text": "hi"}])
         self.assertEqual((meta["id"], meta["title"], meta["messages"]), ("s-a", "First chat", 1))

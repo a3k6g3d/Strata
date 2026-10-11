@@ -5249,6 +5249,9 @@ def make_handler(svc: Service):
             if path.startswith("/sessions/"):
                 self._sessions_post(path)
                 return
+            if path == "/sessions-order":
+                self._sessions_order()
+                return
             if path == "/config":
                 self._config_post()
                 return
@@ -5475,7 +5478,7 @@ def make_handler(svc: Service):
                 return
             try:
                 if path == "/sessions":
-                    self._json(200, {"sessions": svc.sessions.list()})
+                    self._json(200, {"sessions": svc.sessions.list(), "ordered": svc.sessions.get_order() is not None})
                     return
                 found = svc.sessions.get(path[len("/sessions/"):])
             except SessionError as e:
@@ -5507,6 +5510,21 @@ def make_handler(svc: Service):
                 self._json(400, {"error": {"message": str(e)}})
                 return
             self._json(200, meta)
+
+        def _sessions_order(self):
+            """POST /sessions-order {"ids": [...]} keeps the chat list in that order (the web app's drag and drop);
+            {"ids": null} goes back to newest first.  Strata's own page only (_own_page)."""
+            if not self._own_page("the chat list can be reordered") or svc.sessions is None:
+                if svc.sessions is None:
+                    self._json(404, {"error": {"message": "no sessions folder (start the server with a config file)"}})
+                return
+            try:
+                body = json.loads(self._body() or b"{}")
+                svc.sessions.set_order(body.get("ids"))
+            except (SessionError, ValueError, TypeError) as e:
+                self._json(400, {"error": {"message": str(e)}})
+                return
+            self._json(200, {"ok": True, "ordered": svc.sessions.get_order() is not None})
 
         def _mcp_approve(self):
             """POST /mcp/approve {"approval": <token from the approval event>, "allow": true|false, "always": bool}:

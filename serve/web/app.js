@@ -18,6 +18,14 @@ const store = {
   remove(k) { try { localStorage.removeItem("strata." + k); } catch (e) { /* ignore */ } },
 };
 
+// the messages keep a scrollbar gutter on both sides (so they stay centred); the message box gets the same margin, so both are as wide
+function syncGutter() {
+  const sc = document.getElementById("chat-scroll");
+  if (sc) document.documentElement.style.setProperty("--sbw", Math.max(0, (sc.offsetWidth - sc.clientWidth) / 2) + "px");
+}
+addEventListener("resize", syncGutter);
+addEventListener("load", syncGutter);
+
 // ------------------------------------------------------------------ toasts
 function toast(kind, title, text = "", ms = 3500, action = null) {
   const names = {info: "info", success: "check", warn: "warning", error: "error"};
@@ -615,6 +623,7 @@ function timeStr(t) { return new Date(t).toLocaleTimeString([], {hour: "2-digit"
 let sessionsOn = false;
 let savesRunning = 0;                     // saves not finished yet (the autosave skips a beat while one is)
 let sessionList = [];                     // [{id, title, updated, messages, custom_title}]
+let sessionOrdered = false;               // the user dragged the chats into their own order (the server keeps it): no day groups
 let current = {id: null, title: "New chat", custom: false};
 let saveTimer = null, saving = Promise.resolve();
 
@@ -657,7 +666,7 @@ function saveNow() {
   saving = saving.then(() => sessionApi(`sessions/${id}`, body)).then((meta) => {
     const at = sessionList.findIndex((s) => s.id === id);
     if (at >= 0) sessionList[at] = meta; else sessionList.unshift(meta);
-    sessionList.sort((a, b) => b.updated - a.updated);
+    if (!sessionOrdered) sessionList.sort((a, b) => b.updated - a.updated);       // a dragged order keeps its places; a new chat is on top
     renderSessions();
   }).catch((e) => { toast("error", "The chat was not saved", e.message, 6000); }).finally(() => { savesRunning--; });
   return saving;
@@ -676,6 +685,56 @@ function dayLabel(t) {
   const diff = Math.round((day(now) - day(d)) / 86400000);
   return diff <= 0 ? "Today" : diff === 1 ? "Yesterday" : diff < 7 ? "Previous 7 days" : "Older";
 }
+// ---- dragging the chats into the user's own order (kept by the server: POST /sessions-order)
+let dragId = null;
+function clearDropMarks() {
+  document.querySelectorAll(".sess--before, .sess--after").forEach((el) => el.classList.remove("sess--before", "sess--after"));
+}
+function wireDrag(row, id) {
+  row.draggable = true;
+  row.addEventListener("dragstart", (e) => {
+    dragId = id;
+    e.dataTransfer.effectAllowed = "move";
+    try { e.dataTransfer.setData("text/plain", id); } catch (err) { /* some webviews refuse */ }
+    row.classList.add("sess--drag");
+  });
+  row.addEventListener("dragend", () => { dragId = null; row.classList.remove("sess--drag"); clearDropMarks(); });
+  row.addEventListener("dragover", (e) => {
+    if (!dragId || dragId === id) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    const r = row.getBoundingClientRect(), after = e.clientY > r.top + r.height / 2;
+    clearDropMarks();
+    row.classList.add(after ? "sess--after" : "sess--before");
+  });
+  row.addEventListener("drop", (e) => {
+    if (!dragId || dragId === id) return;
+    e.preventDefault();
+    const r = row.getBoundingClientRect();
+    const moving = dragId;
+    dragId = null;
+    clearDropMarks();
+    moveSession(moving, id, e.clientY > r.top + r.height / 2);
+  });
+}
+function moveSession(id, targetId, after) {
+  const from = sessionList.findIndex((s) => s.id === id);
+  if (from < 0 || id === targetId) return;
+  const [item] = sessionList.splice(from, 1);
+  const to = sessionList.findIndex((s) => s.id === targetId);
+  sessionList.splice(to < 0 ? sessionList.length : to + (after ? 1 : 0), 0, item);
+  sessionOrdered = true;
+  renderSessions();
+  sessionApi("sessions-order", {ids: sessionList.map((s) => s.id)}).catch((e) => toast("error", "The order was not saved", e.message, 6000));
+}
+async function resetSessionOrder() {
+  try {
+    await sessionApi("sessions-order", {ids: null});
+    sessionOrdered = false;
+    sessionList.sort((a, b) => b.updated - a.updated);
+    renderSessions();
+  } catch (e) { toast("error", "Could not sort by date", e.message, 6000); }
+}
 function renderSessions() {
   const box = $("sessions-list");
   box.textContent = "";
@@ -683,11 +742,20 @@ function renderSessions() {
   const shown = sessionList.some((s) => s.id === current.id) || !messages.length
     ? sessionList : [{id: current.id, title: autoTitle(), updated: Date.now() / 1000}, ...sessionList];
   for (const s of shown) {
-    const label = dayLabel(s.updated);
+    const label = sessionOrdered ? "Your order" : dayLabel(s.updated);
     if (label !== last) {
       const h = document.createElement("div");
       h.className = "sessions__day";
       h.textContent = label;
+      if (sessionOrdered) {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "sessions__reset";
+        b.textContent = "Sort by date";
+        b.title = "Go back to newest first";
+        b.onclick = resetSessionOrder;
+        h.appendChild(b);
+      }
       box.appendChild(h);
       last = label;
     }
@@ -695,11 +763,21 @@ function renderSessions() {
     row.className = "sess" + (s.id === current.id ? " sess--current" : "");
     row.dataset.id = s.id;
     row.setAttribute("role", "listitem");
+    if (sessionList.some((x) => x.id === s.id)) wireDrag(row, s.id);
     const title = document.createElement("button");
     title.type = "button";
     title.className = "sess__title";
     title.textContent = s.id === current.id ? (current.custom ? current.title : autoTitle()) : s.title;
-    title.title = "Open this chat. Double-click to rename.";
+    title.title = "Open this chat. Double-click to rename. Drag to reorder (or Alt+Up / Alt+Down).";
+    title.onkeydown = (e) => {
+      if (!e.altKey || (e.key !== "ArrowUp" && e.key !== "ArrowDown")) return;
+      e.preventDefault();
+      const at = sessionList.findIndex((x) => x.id === s.id), to = at + (e.key === "ArrowUp" ? -1 : 1);
+      if (at < 0 || to < 0 || to >= sessionList.length) return;
+      moveSession(s.id, sessionList[to].id, e.key === "ArrowDown");
+      const again = box.querySelector(`.sess[data-id="${s.id}"] .sess__title`);
+      if (again) again.focus();
+    };
     const del = document.createElement("button");
     del.type = "button";
     del.className = "sess__del";
@@ -806,6 +884,7 @@ async function initSessions() {
   try { listing = await sessionApi("sessions"); } catch (e) { return false; }           // no sessions folder: one chat in the browser
   sessionsOn = true;
   sessionList = listing.sessions || [];
+  sessionOrdered = !!listing.ordered;
   $("chat-top").hidden = false;
   showSessions(store.get("sessions_open", innerWidth > 900));
   const legacy = messages.length ? messages : null;                                      // the one chat the browser kept so far

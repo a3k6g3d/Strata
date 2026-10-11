@@ -7,6 +7,13 @@ dated, and the fork's releases follow [SemVer](https://semver.org) once it tags 
 
 ## Unreleased - 2026-10-10
 
+### Added (2026-10-11, chat list order and message width)
+- The chats in the sidebar can be **dragged into your own order** (or moved with Alt+Up / Alt+Down); the order is kept by the server
+  (`POST /sessions-order`, `sessions/_order.json`), so every window shows it. While you have an order the day groups give way to a
+  "Your order" heading with a **Sort by date** link; a new chat goes on top. The desktop app's own file-drop handler is switched off
+  (`disable_drag_drop_handler`) so the page's drag and drop works in it.
+- The messages are now exactly as wide as the message box under them (they were narrower).
+
 ### Added (2026-10-11, Auto permission mode)
 - A new **Auto** mode in the permission drop-down (between "Allow edits" and "Full access"): reads and ordinary edits run by
   themselves, and a command or program is read first (`serve/auto_mode.py`). Routine ones (listing, git status, GPU queries, running
