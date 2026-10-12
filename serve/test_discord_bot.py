@@ -124,6 +124,8 @@ class AnswerTests(unittest.TestCase):
         seen = {}
 
         def handler(request):
+            if request.url.path != "/v1/chat/completions":              # the bot also saves the chat as a Strata session: not under test here
+                return httpx.Response(404, json={})
             seen["body"] = json.loads(request.content)
             seen["auth"] = request.headers.get("authorization")
             return httpx.Response(status, content=stream_text.encode(), headers={"content-type": "text/event-stream"})
@@ -153,7 +155,7 @@ class AnswerTests(unittest.TestCase):
         self.assertEqual((seen["body"]["strata_permission"], seen["body"]["reasoning_effort"]), ("ask", "low"))
         self.assertEqual(st.history, [{"role": "user", "content": "hello"}, {"role": "assistant", "content": "Hello there"}])
         saved = json.loads((Path(d.name) / "42.json").read_text(encoding="utf-8"))
-        self.assertEqual(saved, st.history)
+        self.assertEqual(saved["history"], st.history)                  # the file also names the Strata chat it belongs to ("session")
         d.cleanup()
 
     def test_a_long_answer_becomes_several_messages(self):

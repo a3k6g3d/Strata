@@ -806,6 +806,7 @@ function saveNow() {
   const id = current.id, body = {title: current.title, custom_title: current.custom, messages: chatPayload()};
   savesRunning++;
   saving = saving.then(() => sessionApi(`sessions/${id}`, body)).then((meta) => {
+    if (current.id === id) current.syncedAt = meta.updated;                  // this window is in step with the server up to here
     const at = sessionList.findIndex((s) => s.id === id);
     if (at >= 0) sessionList[at] = meta; else sessionList.unshift(meta);
     if (!sessionOrdered) sessionList.sort((a, b) => b.updated - a.updated);       // a dragged order keeps its places; a new chat is on top
@@ -959,7 +960,7 @@ async function openSession(id) {
   await saveNow();
   try {
     const data = await sessionApi(`sessions/${id}`);
-    current = {id, title: data.title || "Chat", custom: !!data.custom_title};
+    current = {id, title: data.title || "Chat", custom: !!data.custom_title, syncedAt: data.updated || 0};
     messages = fixLoaded(data.messages);
     store.set("session", id);
     renderChat();
@@ -1023,6 +1024,34 @@ $("session-new").onclick = newSession;
 $("sessions-toggle").onclick = () => showSessions($("sessions").hidden);
 // leaving the page: what is waiting to be saved goes out now
 addEventListener("pagehide", () => { if (saveTimer || busy) saveNow(); });
+// Chats can change behind this window's back - the Discord bot saves its conversations as chats here and continues the ones it is
+// given.  Every few seconds, while the window is idle: refresh the list, and reload the open chat when the server has a newer copy.
+let listSig = "";
+async function pollSessions() {
+  if (!sessionsOn || document.hidden || busy || savesRunning || saveTimer) return;
+  let listing;
+  try { listing = await sessionApi("sessions"); } catch (e) { return; }
+  const list = listing.sessions || [];
+  const sig = list.map((x) => `${x.id}:${x.updated}`).join("|") + (listing.ordered ? "o" : "");
+  if (sig === listSig) return;
+  listSig = sig;
+  sessionList = list;
+  sessionOrdered = !!listing.ordered;
+  const mine = list.find((x) => x.id === current.id);
+  if (mine && mine.updated > (current.syncedAt || 0) + 0.001 && !busy && !savesRunning && !saveTimer) {
+    try {
+      const data = await sessionApi(`sessions/${current.id}`);
+      if (!busy && !savesRunning && !saveTimer) {
+        messages = fixLoaded(data.messages);
+        current.syncedAt = data.updated || mine.updated;
+        current.title = data.title || current.title;
+        renderChat();
+      }
+    } catch (e) { /* the next poll tries again */ }
+  }
+  renderSessions();
+}
+setInterval(pollSessions, 8000);
 async function initSessions() {
   let listing;
   try { listing = await sessionApi("sessions"); } catch (e) { return false; }           // no sessions folder: one chat in the browser
@@ -1039,11 +1068,11 @@ async function initSessions() {
     store.remove("chat");
   } else if (wanted && sessionList.some((s) => s.id === wanted)) {
     const data = await sessionApi(`sessions/${wanted}`);
-    current = {id: wanted, title: data.title || "Chat", custom: !!data.custom_title};
+    current = {id: wanted, title: data.title || "Chat", custom: !!data.custom_title, syncedAt: data.updated || 0};
     messages = fixLoaded(data.messages);
   } else if (sessionList.length && !legacy) {
     const data = await sessionApi(`sessions/${sessionList[0].id}`);
-    current = {id: sessionList[0].id, title: data.title || "Chat", custom: !!data.custom_title};
+    current = {id: sessionList[0].id, title: data.title || "Chat", custom: !!data.custom_title, syncedAt: data.updated || 0};
     messages = fixLoaded(data.messages);
   } else {
     current = {id: newSessionId(), title: "New chat", custom: false};

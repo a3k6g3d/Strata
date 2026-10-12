@@ -31,6 +31,7 @@ from pathlib import Path
 PERMISSIONS = ("off", "read", "ask")           # what a phone may be given: never edit / full access
 THINKING = ("off", "low", "medium", "high")
 HELP = ("**Strata on Discord**\n`!new` start a new conversation   `!stop` stop the answer   `!status` model and PC state\n"
+        "`!chats` your latest chats (the same ones the Strata app lists)   `!open 2` continue one of them here\n"
         "`!mode off|read|ask` tools: none / look only / look + ask before changes   `!think off|low|medium|high`\n"
         "Send a picture with your message to ask about it. Anything that changes files or runs a command waits for your button.")
 MAX_MESSAGE = 1900                              # Discord's limit is 2000 characters
@@ -151,6 +152,32 @@ def read_token(cfg: dict, base_dir: Path | None = None):
     return None
 
 
+def api_history(messages) -> list:
+    """The chat messages of a saved session (the web app's format: {"role", "text", ...}) as the plain {"role", "content"} list a request takes."""
+    out = []
+    for m in messages if isinstance(messages, list) else []:
+        if isinstance(m, dict) and m.get("role") in ("user", "assistant") and isinstance(m.get("text"), str) and m["text"].strip() and not m.get("partial"):
+            out.append({"role": m["role"], "content": m["text"]})
+    return trim_history(out)
+
+
+def web_message(role: str, text: str, via: str = "") -> dict:
+    """One message in the web app's saved format (so the chat opens in the Strata app as if it had been typed there)."""
+    m = {"role": role, "text": text, "images": [], "files": [], "time": str(int(time.time() * 1000))}
+    if role == "assistant":
+        m.update(reasoning="", tools=[], meta=via)
+    return m
+
+
+def session_title(first_text: str) -> str:
+    t = re.sub(r"\s+", " ", first_text or "").strip()
+    return "Discord · " + (t[:50] + "…" if len(t) > 50 else t or "chat")
+
+
+def new_session_id(channel_id, now=None) -> str:
+    return f"s-discord-{channel_id}-{int(now if now is not None else time.time())}"
+
+
 def chat_body(history: list, text: str, images: list, thinking: str, permission: str, model=None) -> dict:
     content = text
     if images:
@@ -174,6 +201,8 @@ class ChannelState:
         self.lock = asyncio.Lock()
         self.tasks: set = set()                # the answers being written or waiting (so !stop can cancel them)
         self.question = None                   # (approval token) of an ask_user question that waits for a typed reply
+        self.session = None                    # the Strata chat (sessions/<id>) this channel continues; None: the next message starts one
+        self.listing: list = []                # the chats !chats showed, for !open N
 
 
 class StrataDiscordBot:
@@ -190,30 +219,53 @@ class StrataDiscordBot:
         st = self.channels.get(channel_id)
         if st is None:
             st = self.channels[channel_id] = ChannelState(self.default_thinking, self.default_permission)
-            st.history = self._load(channel_id)
+            st.history, st.session = self._load(channel_id)
         return st
 
     def _file(self, channel_id: int):
         return self.history_dir / f"{channel_id}.json" if self.history_dir else None
 
-    def _load(self, channel_id: int) -> list:
+    def _load(self, channel_id: int):
+        """(the local copy of the conversation, the Strata chat id it belongs to).  The file was a bare list before chats were shared."""
         f = self._file(channel_id)
         try:
-            return trim_history(json.loads(f.read_text(encoding="utf-8"))) if f and f.exists() else []
+            data = json.loads(f.read_text(encoding="utf-8")) if f and f.exists() else []
         except (OSError, ValueError):
-            return []
+            return [], None
+        if isinstance(data, dict):
+            sid = data.get("session")
+            return trim_history(data.get("history") or []), sid if isinstance(sid, str) else None
+        return trim_history(data), None
 
-    def _save(self, channel_id: int, history: list) -> None:
+    def _save(self, channel_id: int, history: list, session=None) -> None:
         f = self._file(channel_id)
         if not f:
             return
         try:
             f.parent.mkdir(parents=True, exist_ok=True)
             tmp = f.with_suffix(".tmp")
-            tmp.write_text(json.dumps(history, ensure_ascii=False), encoding="utf-8")
+            tmp.write_text(json.dumps({"session": session, "history": history}, ensure_ascii=False), encoding="utf-8")
             os.replace(tmp, f)
         except OSError:
             pass
+
+    # -- the chats of the Strata app (GET/POST /sessions): what the Discord conversation is saved to and continued from
+    async def session_get(self, sid: str):
+        try:
+            r = await self.http.get(f"{self.base}/sessions/{sid}", headers=self.headers(), timeout=30)
+            return r.json() if r.status_code == 200 else None
+        except Exception:  # noqa: BLE001 - no sessions folder, or the server is busy: the local copy is used
+            return None
+
+    async def session_save(self, sid: str, title: str, messages: list, custom: bool = True) -> bool:
+        return await self.post(self.http, f"/sessions/{sid}", {"title": title, "custom_title": custom, "messages": messages})
+
+    async def session_list(self) -> list:
+        try:
+            r = await self.http.get(self.base + "/sessions", headers=self.headers(), timeout=30)
+            return (r.json().get("sessions") or []) if r.status_code == 200 else []
+        except Exception:  # noqa: BLE001
+            return []
 
     def headers(self) -> dict:
         h = {"Content-Type": "application/json"}
@@ -301,9 +353,30 @@ class StrataDiscordBot:
         if name in ("help", "start"):
             return await send(HELP)
         if name == "new":
-            st.history = []
-            self._save(msg.channel.id, [])
-            return await send("New conversation started.")
+            st.history, st.session = [], None
+            self._save(msg.channel.id, [], None)
+            return await send("New conversation started. The earlier one stays in the Strata app's chat list.")
+        if name == "chats":
+            chats = [c for c in await self.session_list() if isinstance(c, dict) and c.get("id")][:8]
+            st.listing = [c["id"] for c in chats]
+            if not chats:
+                return await send("No saved chats yet.")
+            rows = [f"{i + 1}. {'▶ ' if c['id'] == st.session else ''}{c.get('title') or c['id']} ({c.get('messages', 0)} messages)" for i, c in enumerate(chats)]
+            return await send("**Your latest chats** (`!open 2` continues one here):\n" + "\n".join(rows))
+        if name == "open":
+            sid = None
+            if arg.isdigit() and 1 <= int(arg) <= len(st.listing):
+                sid = st.listing[int(arg) - 1]
+            elif arg.startswith("s-"):
+                sid = arg
+            if not sid:
+                return await send("Use `!chats` first, then `!open 2` (a number from that list).")
+            data = await self.session_get(sid)
+            if not data:
+                return await send("That chat could not be opened.")
+            st.session, st.history = sid, api_history(data.get("messages"))
+            self._save(msg.channel.id, st.history, sid)
+            return await send(f"Continuing **{data.get('title') or sid}** ({len(data.get('messages') or [])} messages). Your next message goes on from there.")
         if name == "stop":
             running = [t for t in st.tasks if not t.done()]
             if running:
@@ -332,7 +405,7 @@ class StrataDiscordBot:
                 lines = [f"Model: `{s.get('model')}` (engine {s.get('engine')}), loaded: {s.get('loaded')}",
                          f"Last answer: {speed:.1f} tok/s" if isinstance(speed, (int, float)) else "No answer yet",
                          f"Memory commit: {c.get('used_gib')} of {c.get('limit_gib')} GiB ({c.get('level')})" if c else "",
-                         f"This chat: {len(st.history)} messages, tools **{st.permission}**, thinking **{st.thinking}**"]
+                         f"This chat: {len(st.history)} messages{' (saved in the Strata app)' if st.session else ''}, tools **{st.permission}**, thinking **{st.thinking}**"]
                 return await send("\n".join(x for x in lines if x))
             except Exception as e:  # noqa: BLE001
                 return await send(f"Strata is not answering: {type(e).__name__}")
@@ -345,6 +418,9 @@ class StrataDiscordBot:
             note = await channel.send("💭 …")
             typing = asyncio.ensure_future(self._typing(channel))
             content, tools, last_edit, status = "", {}, 0.0, "💭 thinking …"
+            saved = await self.session_get(st.session) if st.session else None     # the chat as the Strata app has it now (it may have been continued there)
+            if saved is not None:
+                st.history = api_history(saved.get("messages"))
             body = chat_body(st.history, text, images, st.thinking, st.permission)
 
             def view():
@@ -404,7 +480,14 @@ class StrataDiscordBot:
             if content.strip() and not error:
                 st.history = trim_history(st.history + [{"role": "user", "content": text or "[picture]"},
                                                         {"role": "assistant", "content": content.strip()}])
-                self._save(channel.id, st.history)
+                # save it as a chat of the Strata app: it appears in the chat list there, and can be continued there or here
+                web = list(saved.get("messages") or []) if saved is not None else []
+                web += [web_message("user", text or "[picture]"), web_message("assistant", content.strip(), "via Discord")]
+                sid = st.session or new_session_id(channel.id)
+                title = (saved or {}).get("title") if saved else None
+                if await self.session_save(sid, title or session_title(next((m.get("text") for m in web if m.get("role") == "user"), "")), web):
+                    st.session = sid
+                self._save(channel.id, st.history, st.session)
 
     async def _typing(self, channel):
         try:
