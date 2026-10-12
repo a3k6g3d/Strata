@@ -226,6 +226,8 @@ class BlockList:
             return False
         for m in _WORD.finditer(text or ""):
             word = next(g for g in m.groups() if g)
+            if word.startswith(("\\\\.\\", "\\\\?\\")) and not re.match(r"[A-Za-z]:", word[4:]):
+                continue                                 # a device name (\\.\PhysicalDrive0) is not a file; auto mode makes a raw disk read ask
             if any(self.hit(p) for p in arg_paths(word)):
                 return True
         return False

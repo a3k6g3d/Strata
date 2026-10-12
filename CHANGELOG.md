@@ -7,6 +7,12 @@ dated, and the fork's releases follow [SemVer](https://semver.org) once it tags 
 
 ## Unreleased - 2026-10-10
 
+### Fixed (2026-10-12, disk tools were refused as "no-read list")
+- A command that names a raw device (`smartctl -a "\\.\PhysicalDrive4"`) was refused by the no-read scan: a device name cannot be resolved to a path and
+  an unresolvable path counts as blocked. The scan of a command's text now lets a device name pass (it is not a file); in auto mode a command that reads a
+  raw disk or volume device asks, since a raw read skips the file rules. File-tool arguments are unchanged (still fail closed). 3 new tests
+  (`serve/test_device_paths.py`).
+
 ### Changed (2026-10-12, Discord chats are Strata chats)
 - A Discord conversation is now saved as a chat of the Strata app ("Discord · ..."): it appears in the chat list and can be continued from
   the app or from Discord. The bot starts each answer from the saved chat (so what was added in the app is included); `!new` starts a new chat,
