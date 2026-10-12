@@ -1136,7 +1136,8 @@ function msgEl(m, i) {
     el.innerHTML = `<details class="st-collapse think" hidden><summary>${icon("thinking", "st-icon st-icon--sm")}<span class="think-title"></span>` +
       `${icon("chevron", "st-icon st-icon--sm st-chev")}</summary><div class="st-collapse__body thinking"></div></details>` +
       `<div class="st-bubble"></div><div class="st-msg__meta"><span class="meta-text"></span>` +
-      `<button class="st-btn st-btn--icon" data-msg-copy aria-label="Copy the answer" title="Copy">${icon("copy")}</button></div>`;
+      `<button class="st-btn st-btn--icon" data-msg-copy aria-label="Copy the answer" title="Copy">${icon("copy")}</button>` +
+      `<button class="st-btn st-btn--secondary" data-continue title="Send the answer on further">Continue</button></div>`;
     updateAssistant(el, m, false);
   }
   return el;
@@ -1330,6 +1331,8 @@ function updateAssistant(el, m, streaming) {
   }
   el.querySelector(".meta-text").textContent = m.meta || (streaming ? "" : m.stopped ? "Stopped" : "");
   el.querySelector("[data-msg-copy]").hidden = streaming || !m.text;
+  const cont = el.querySelector("[data-continue]");
+  if (cont) cont.hidden = streaming || !m.text;      // a stopped or cut-off answer can be carried on
 }
 function renderChat() {
   const chat = $("chat");
@@ -1371,6 +1374,8 @@ if (window.ResizeObserver) new ResizeObserver(() => { if (pinned) toBottom(); })
 $("chat").addEventListener("click", (e) => {
   const cc = e.target.closest("[data-code-copy]");
   if (cc) { copyText(cc.closest(".st-code").querySelector("pre").textContent, cc); return; }
+  const cn = e.target.closest("[data-continue]");
+  if (cn) { if (!busy) send({text: "Continue"}); return; }   // while an answer is still coming, the box queues instead
   const rt = e.target.closest("[data-retry]");
   if (rt) { retryFrom(+rt.closest(".st-msg").dataset.i); return; }
   const mc = e.target.closest("[data-msg-copy]");
@@ -1472,6 +1477,9 @@ function assistantMessages(m) {
 
 function setBusy(on) {
   $("stop-btn").hidden = !on;
+  $("composer").classList.toggle("is-busy", on);
+  // say what Enter does right now: it queues, it does not send, and it does not fail
+  $("input").placeholder = on ? "Type here and Enter queues it for the next turn\u2026" : "Ask anything\u2026";
   $("composer-hint").textContent = on ? "Enter: queue" : "Shift+Enter: new line";
 }
 
@@ -1620,6 +1628,8 @@ $("queued-now").onclick = () => { if (busy) busy.controller.abort(); else sendQu
 $("queued-cancel").onclick = () => { queued = null; renderQueued(); };
 $("input").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
+  // Escape is the fastest way to say "that is going wrong", and it keeps everything written so far
+  if (e.key === "Escape" && busy) { e.preventDefault(); busy.controller.abort(); }
 });
 // a failed request costs you nothing but the click: the question, its pictures and its files come back editable
 function retryFrom(i) {
