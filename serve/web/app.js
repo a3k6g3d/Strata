@@ -1318,7 +1318,8 @@ function updateAssistant(el, m, streaming) {
   }
   const bubble = el.querySelector(".st-bubble");
   if (m.error) {
-    bubble.innerHTML = `<div class="msg-error"></div>`;
+    bubble.innerHTML = `<div class="msg-error"></div><button type="button" class="st-btn st-btn--secondary" data-retry>` +
+      `Edit and resend</button>`;
     bubble.firstChild.textContent = m.error;
   } else if (!m.text && streaming && !(m.tools && m.tools.length)) {
     bubble.innerHTML = m.compacting ? `<span class="muted cursor">Summarizing the earlier conversation to fit the context (up to a minute)</span>`
@@ -1370,6 +1371,8 @@ if (window.ResizeObserver) new ResizeObserver(() => { if (pinned) toBottom(); })
 $("chat").addEventListener("click", (e) => {
   const cc = e.target.closest("[data-code-copy]");
   if (cc) { copyText(cc.closest(".st-code").querySelector("pre").textContent, cc); return; }
+  const rt = e.target.closest("[data-retry]");
+  if (rt) { retryFrom(+rt.closest(".st-msg").dataset.i); return; }
   const mc = e.target.closest("[data-msg-copy]");
   if (mc) { const i = +mc.closest(".st-msg").dataset.i; copyText(messages[i].text, mc); return; }
   const qo = e.target.closest("[data-answer-opt], [data-answer-send]");
@@ -1618,6 +1621,18 @@ $("queued-cancel").onclick = () => { queued = null; renderQueued(); };
 $("input").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
 });
+// a failed request costs you nothing but the click: the question, its pictures and its files come back editable
+function retryFrom(i) {
+  const um = messages[i - 1];
+  if (!um || um.role !== "user") return;
+  messages.splice(i - 1, 2);
+  attachments = [...(um.images || []), ...(um.files || [])];
+  renderAttachments();
+  $("input").value = um.text; autosize(); $("input").focus();
+  renderChat();
+  saveChat();
+}
+
 function autosize() { const t = $("input"); t.style.height = "auto"; t.style.height = `${Math.min(t.scrollHeight, innerHeight * 0.4)}px`; }
 $("input").addEventListener("input", autosize);
 
