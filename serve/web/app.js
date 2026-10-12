@@ -32,6 +32,7 @@ function toast(kind, title, text = "", ms = 3500, action = null) {
   const el = document.createElement("div");
   el.className = `st-toast st-toast--${kind}`;
   if (kind === "error") el.setAttribute("role", "alert");   // a failure must interrupt a screen reader, not wait its turn
+  else el.setAttribute("role", "status");                    // everything else waits its turn politely
   el.innerHTML = `${icon(names[kind] || "info")}<div><div class="st-toast__title"></div><div class="t-text"></div></div>`;
   el.querySelector(".st-toast__title").textContent = title;
   el.querySelector(".t-text").textContent = text;
@@ -44,8 +45,18 @@ function toast(kind, title, text = "", ms = 3500, action = null) {
     b.onclick = () => { action.run(); el.remove(); };
     el.appendChild(b);
   }
+  const x = document.createElement("button");            // a toast you did not read yet stays until you dismiss it
+  x.type = "button"; x.className = "st-toast__x"; x.innerHTML = "&times;";
+  x.setAttribute("aria-label", "Dismiss this notification");
+  x.onclick = () => el.remove();
+  el.appendChild(x);
+  const kill = () => el.remove();
+  let timer = setTimeout(kill, ms);
+  el.addEventListener("mouseenter", () => clearTimeout(timer));   // reading it, or tabbed into it: it does not vanish
+  el.addEventListener("focusin", () => clearTimeout(timer));
+  el.addEventListener("mouseleave", () => { timer = setTimeout(kill, 2500); });
+  el.addEventListener("focusout", () => { timer = setTimeout(kill, 2500); });
   $("toasts").appendChild(el);
-  setTimeout(() => el.remove(), ms);
 }
 
 async function copyText(text, btn) {
@@ -1117,7 +1128,9 @@ function msgEl(m, i) {
     el.appendChild(b);
     const meta = document.createElement("div");
     meta.className = "st-msg__meta";
-    meta.textContent = `You · ${timeStr(m.time)}`;
+    meta.innerHTML = `<span class="meta-text"></span>` +
+      `<button class="st-btn st-btn--icon" data-msg-copy aria-label="Copy what you asked" title="Copy">${icon("copy")}</button>`;
+    meta.querySelector(".meta-text").textContent = `You · ${timeStr(m.time)}`;
     el.appendChild(meta);
   } else {
     el.innerHTML = `<details class="st-collapse think" hidden><summary>${icon("thinking", "st-icon st-icon--sm")}<span class="think-title"></span>` +
@@ -1337,10 +1350,18 @@ function toBottom() {
 function scrollDown(force) {
   if (force) pinned = true;
   if (pinned) toBottom();
+  showJump();
 }
+// an answer that outgrows the window while you are reading higher up needs a way back down that does not need the mouse
+function showJump() {
+  const b = $("jump-latest");
+  if (b) b.hidden = pinned || !messages.length;
+}
+$("jump-latest").onclick = () => { pinned = true; toBottom(); showJump(); $("chat-scroll").focus?.(); };
 $("chat-scroll").addEventListener("scroll", () => {
   if (ownScroll) { ownScroll = false; return; }
   pinned = nearBottom(40);                       // the user scrolled: up unpins, back to the bottom pins again
+  showJump();
 }, {passive: true});
 $("chat-scroll").addEventListener("wheel", (e) => { if (e.deltaY < 0) pinned = false; }, {passive: true});
 // growth from anything (images, a block opening, the markdown settling) keeps a pinned chat at the bottom
@@ -1599,6 +1620,12 @@ $("input").addEventListener("keydown", (e) => {
 });
 function autosize() { const t = $("input"); t.style.height = "auto"; t.style.height = `${Math.min(t.scrollHeight, innerHeight * 0.4)}px`; }
 $("input").addEventListener("input", autosize);
+
+$("chat-empty-asks").addEventListener("click", (e) => {
+  const a = e.target.closest("[data-ask]");
+  if (!a) return;
+  $("input").value = a.dataset.ask; autosize(); $("input").focus();
+});
 
 $("new-btn").onclick = () => {
   if (sessionsOn) { newSession(); return; }                 // the old chat stays in the list on the left

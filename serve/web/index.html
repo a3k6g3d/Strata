@@ -59,9 +59,15 @@
         <div class="chat-empty" id="chat-empty">
           <div class="chat-empty__title">Ask anything</div>
           <div class="chat-empty__sub" id="chat-empty-sub">The model runs on this PC. Nothing leaves it.</div>
+          <div class="chat-empty__asks" id="chat-empty-asks">
+            <button type="button" class="ask" data-ask="Summarize what is using my GPU right now.">What is using my GPU?</button>
+            <button type="button" class="ask" data-ask="List the largest files in my Downloads folder and what they look like.">Clean up my Downloads</button>
+            <button type="button" class="ask" data-ask="What can I ask you to do on this PC?">What can you do here?</button>
+          </div>
         </div>
       </div>
     </div>
+    <button type="button" class="jump-latest" id="jump-latest" hidden title="Go to the newest message">&#8595; Latest</button>
     <div class="composer-wrap">
       <form class="st-composer" id="composer">
         <div class="attachments" id="attachments" hidden></div>

@@ -22,6 +22,12 @@ main { flex: 1; min-height: 0; display: flex; }
 .chat-empty__title { font-weight: var(--st-fw-black); font-size: var(--st-fs-display); line-height: var(--st-lh-tight);
                      letter-spacing: -.02em; }
 .chat-empty__sub { margin-top: var(--st-s-3); color: var(--st-ink-muted); }
+/* three ways in for someone staring at an empty box: one click fills the message box, it does not send it */
+.chat-empty__asks { margin-top: var(--st-s-6); display: flex; flex-wrap: wrap; gap: var(--st-s-2); justify-content: center; }
+.chat-empty__asks .ask { font: inherit; font-size: var(--st-fs-sm); color: var(--st-ink-soft); background: var(--st-surface);
+  border: 1px solid var(--st-line); border-radius: var(--st-r-pill); padding: 8px 14px; cursor: pointer;
+  transition: border-color var(--st-dur), color var(--st-dur); }
+.chat-empty__asks .ask:hover { border-color: var(--st-accent); color: var(--st-accent-text); }
 .st-msg { width: 100%; }
 .st-msg--assistant { align-self: flex-start; max-width: none; }
 .st-msg--assistant .st-bubble { width: 100%; }
@@ -192,7 +198,10 @@ main { flex: 1; min-height: 0; display: flex; }
 .seg button[aria-checked="true"] { background: var(--st-surface); color: var(--st-ink); font-weight: var(--st-fw-bold);
                                    box-shadow: var(--st-sh-card); }
 .drawer-actions { display: grid; grid-template-columns: 1fr 1fr; gap: var(--st-s-3); margin-top: var(--st-s-2); }
-.st-toast { animation: toast-in 180ms var(--st-ease); }
+.st-toast { animation: toast-in 180ms var(--st-ease); position: relative; padding-right: 34px; }
+.st-toast__x { position: absolute; top: 8px; right: 8px; width: 26px; height: 26px; border: 0; background: none;
+  color: var(--st-ink-muted); font-size: 18px; line-height: 1; cursor: pointer; border-radius: var(--st-r-sm); }
+.st-toast__x:hover { color: var(--st-ink); background: var(--st-surface-2); }
 @keyframes toast-in { from { opacity: 0; transform: translateY(6px); } }
 
 /* ---------------------------------------------------------------- narrow screens */
@@ -238,7 +247,14 @@ main { flex: 1; min-height: 0; display: flex; }
 
 /* separate chats: a list on the left, the chat beside it */
 .view--chat { flex-direction: row; }
-.chat-main { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.chat-main { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; position: relative; }
+/* the chat scrolled up while an answer kept growing: a way back down that does not need the mouse */
+.jump-latest { position: absolute; left: 50%; bottom: 108px; transform: translateX(-50%); z-index: 6;
+  display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 14px; cursor: pointer;
+  border: 1px solid var(--st-line); border-radius: var(--st-r-pill); background: var(--st-surface);
+  color: var(--st-ink-soft); font: inherit; font-size: var(--st-fs-sm); box-shadow: var(--st-sh-pop);
+  transition: border-color var(--st-dur), color var(--st-dur); }
+.jump-latest:hover { border-color: var(--st-accent); color: var(--st-accent-text); }
 .chat-top { flex: none; display: flex; align-items: center; gap: var(--st-s-2); padding: var(--st-s-2) var(--st-s-4); border-bottom: 1px solid var(--st-line); }
 .chat-top[hidden], .sessions[hidden] { display: none; }
 .chat-top__title { font-size: var(--st-fs-sm); color: var(--st-ink-muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: default; }
