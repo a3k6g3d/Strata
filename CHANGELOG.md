@@ -7,6 +7,10 @@ dated, and the fork's releases follow [SemVer](https://semver.org) once it tags 
 
 ## Unreleased - 2026-10-10
 
+### Fixed (2026-10-12, web_search returned unrelated pages)
+- `web_search` sent `setlang=en` to Bing, which made it answer a different query for uncommon terms ("SATAFIRM S11 fix" returned airline pages, a
+  long MPTool query returned Instagram and news sites). The query now goes alone and returns the right pages.
+
 ### Fixed (2026-10-12, disk tools were refused as "no-read list")
 - A command that names a raw device (`smartctl -a "\\.\PhysicalDrive4"`) was refused by the no-read scan: a device name cannot be resolved to a path and
   an unresolvable path counts as blocked. The scan of a command's text now lets a device name pass (it is not a file); in auto mode a command that reads a

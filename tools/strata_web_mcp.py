@@ -302,7 +302,7 @@ def web_search(query: str, max_results: int = 8, allow_private: bool = False) ->
     if len(query) > MAX_QUERY:
         raise WebError(f"the query is longer than {MAX_QUERY} characters; it is refused")
     limit = max(1, min(int(max_results or 8), 15))
-    providers = (("Bing", "https://www.bing.com/search?" + urllib.parse.urlencode({"q": query, "setlang": "en"}), parse_bing),
+    providers = (("Bing", "https://www.bing.com/search?" + urllib.parse.urlencode({"q": query}), parse_bing),   # no setlang / mkt: they make Bing answer a different query
                  ("DuckDuckGo", "https://html.duckduckgo.com/html/?" + urllib.parse.urlencode({"q": query}), parse_results))
     problems, results = [], []
     for name, url, parser in providers:
