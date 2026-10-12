@@ -58,6 +58,8 @@ main { flex: 1; min-height: 0; display: flex; }
 @keyframes blink { 50% { opacity: 0; } }
 .msg-error { color: var(--st-danger-text); background: var(--st-danger-tint); border-radius: var(--st-r-md); padding: 10px 14px;
              font-size: var(--st-fs-md); }
+/* the way out of a failed answer: one click, no retyping */
+.st-bubble [data-retry] { margin-top: var(--st-s-2); }
 /* MCP tool calls inside an answer: one compact collapsible block per call */
 .st-bubble .tool-call { margin: var(--st-s-3) 0; }
 .tool-call > summary { min-width: 0; padding: 8px 12px; }
