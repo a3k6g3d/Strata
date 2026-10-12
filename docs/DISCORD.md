@@ -38,11 +38,21 @@ Strata server.
   no-read list from the Strata config apply exactly as in the web app. `edit` and `full` access are not available from Discord.
 - If the model asks you something (the `ask_user` tool) you answer with a button or by replying.
 
+## Chats are shared with the Strata app
+
+A Discord conversation is saved as a chat of the Strata app, titled "Discord · ...": it shows up in the app's chat list within a few seconds
+and opens there like any other chat. You can continue it from either side: the bot always starts from what the app has saved, so what you added
+in the app is part of the next Discord answer, and the app reloads a chat that the bot continued (while you are not typing an answer there).
+`!new` starts a fresh chat (the old one stays in the list). `!chats` lists your latest chats and `!open 2` makes the channel continue one of them,
+including a chat you started in the app. Continue on one side at a time: both save the whole chat, so answering in both at once can overwrite one.
+
 ## Commands
 
 | | |
 |---|---|
-| `!new` | start a new conversation |
+| `!new` | start a new conversation (the old one stays in the Strata app) |
+| `!chats` | your latest chats (the same list as the Strata app) |
+| `!open N` | continue chat number N from `!chats` here |
 | `!stop` | stop the answer that is being written |
 | `!status` | model, last speed, memory headroom, this chat's settings |
 | `!mode off\|read\|ask` | tools: none / look only / look and ask before changes |

@@ -7,6 +7,12 @@ dated, and the fork's releases follow [SemVer](https://semver.org) once it tags 
 
 ## Unreleased - 2026-10-10
 
+### Changed (2026-10-12, Discord chats are Strata chats)
+- A Discord conversation is now saved as a chat of the Strata app ("Discord · ..."): it appears in the chat list and can be continued from
+  the app or from Discord. The bot starts each answer from the saved chat (so what was added in the app is included); `!new` starts a new chat,
+  `!chats` lists the latest ones and `!open N` continues one here. The app polls the chat list every 8 s (when idle) and reloads the open chat
+  when the server has a newer copy. 8 new tests.
+
 ### Added (2026-10-11, side panel: Browser and Gallery)
 - A **side panel** on the right of the chat (toggle in the chat bar). **Browser**: a link in the chat opens there instead of a separate
   window (Ctrl-click still opens your own browser), with an address bar, reload and "Open in browser". Before showing a page the server
