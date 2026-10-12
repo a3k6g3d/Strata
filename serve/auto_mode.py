@@ -38,6 +38,7 @@ RISKY = [(re.compile(p, _FLAGS), why) for p, why in (
      r"\bgh\s+(pr|repo|release|issue)\s+(create|delete|merge|close|edit)\b", "changes a git remote or discards work"),
     (r"\b(stop-process|taskkill|pkill|killall)\b|\bkill\s+-", "stops running programs"),
     (r"\bwinreg\b|\bctypes\b[^\n]*\bwindll\b", "uses low-level Windows interfaces"),
+    (r"\\\\[.?]\\(physicaldrive\d|harddisk\d|volume\{|globalroot)", "reads a raw disk or volume device (it skips the file rules)"),
 )]
 
 _DELETE_PY = re.compile(r"\bshutil\.rmtree\b|\bos\.(remove|unlink|rmdir|removedirs)\b|\.unlink\(|\.rmdir\(|\brmtree\(", _FLAGS)
