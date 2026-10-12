@@ -31,6 +31,7 @@ function toast(kind, title, text = "", ms = 3500, action = null) {
   const names = {info: "info", success: "check", warn: "warning", error: "error"};
   const el = document.createElement("div");
   el.className = `st-toast st-toast--${kind}`;
+  if (kind === "error") el.setAttribute("role", "alert");   // a failure must interrupt a screen reader, not wait its turn
   el.innerHTML = `${icon(names[kind] || "info")}<div><div class="st-toast__title"></div><div class="t-text"></div></div>`;
   el.querySelector(".st-toast__title").textContent = title;
   el.querySelector(".t-text").textContent = text;
@@ -1705,11 +1706,27 @@ $("input").addEventListener("paste", (e) => {
 });
 
 // ------------------------------------------------------------------ the sampling drawer
+let drawerReturn = null;                                     // where the focus was before the drawer opened
 function openDrawer(open) {
   $("drawer").dataset.open = String(open);
   $("drawer").setAttribute("aria-hidden", String(!open));
   $("scrim").hidden = !open;
-  if (open) { loadDrawer(); loadShared(); loadMcp(); }
+  if (open) {
+    drawerReturn = document.activeElement;
+    loadDrawer(); loadShared(); loadMcp();
+    requestAnimationFrame(() => $("drawer-close").focus());  // a keyboard or screen-reader user lands inside what they opened
+  } else if (drawerReturn && drawerReturn.isConnected) {
+    drawerReturn.focus(); drawerReturn = null;               // and goes back where they came from
+  }
+}
+// Tab stays inside the open drawer: it is a window of its own while it is up
+function trapTab(e, box) {
+  const f = [...box.querySelectorAll("button,[href],input,select,textarea,[tabindex]:not([tabindex='-1'])")]
+    .filter((el) => !el.disabled && !el.hidden && el.offsetParent !== null);
+  if (!f.length) return;
+  const first = f[0], last = f[f.length - 1];
+  if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
 }
 function loadDrawer(s = settings) {
   for (const b of $("s-thinking").children) b.setAttribute("aria-checked", String(b.dataset.v === s.thinking));
@@ -1796,7 +1813,11 @@ $("s-apply").onclick = async () => {
 $("sampling-btn").onclick = () => openDrawer(true);
 $("drawer-close").onclick = () => openDrawer(false);
 $("scrim").onclick = () => openDrawer(false);
-document.addEventListener("keydown", (e) => { if (e.key === "Escape" && $("drawer").dataset.open === "true") openDrawer(false); });
+document.addEventListener("keydown", (e) => {
+  if ($("drawer").dataset.open !== "true") return;
+  if (e.key === "Escape") { openDrawer(false); return; }      // close first, then hand the focus back
+  if (e.key === "Tab") trapTab(e, $("drawer"));
+});
 
 // ------------------------------------------------------------------ start
 setBusy(false);
