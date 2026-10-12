@@ -314,3 +314,34 @@ main { flex: 1; min-height: 0; display: flex; }
   .sidepanel { position: absolute; z-index: 25; top: 0; bottom: 0; right: 0; width: min(92vw, 520px); max-width: none; background: var(--st-bg, #111);
                box-shadow: 0 0 40px rgba(0, 0, 0, .35); }
 }
+
+/* ---------------------------------------------------------------- access and touch */
+/* the skip link: off screen until a keyboard user reaches it */
+.st-skip { position: fixed; top: var(--st-s-2); left: var(--st-s-2); z-index: 60; padding: 12px 16px; border-radius: var(--st-r-md);
+           background: var(--st-surface); border: 1px solid var(--st-focus); color: var(--st-ink); text-decoration: none;
+           font: 600 var(--st-fs-sm)/1 var(--st-font); box-shadow: var(--st-sh-pop); transform: translateY(-180%); }
+.st-skip:focus { transform: none; text-decoration: none; }
+/* a ring the width of a stroke: 2px disappears on busy answers */
+:focus-visible { outline-width: 3px; outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 1ms !important; animation-iteration-count: 1 !important;
+                           transition-duration: 1ms !important; scroll-behavior: auto !important; }
+  .st-btn:active { transform: none; }
+  .cursor::after { animation: none; }
+}
+/* a finger is not a cursor: the small controls grow to a fingertip, the look stays the same */
+@media (pointer: coarse) {
+  .st-btn { min-height: 44px; }
+  .st-btn--icon { width: 44px; height: 44px; }
+  .st-btn--send { width: 44px; }
+  .st-tab { min-height: 44px; }
+  .st-msg__meta .st-btn--icon, .facts .st-btn--icon, .sess__del { width: 40px; height: 40px; }
+  .chip .st-btn--icon { width: 34px; height: 34px; }
+  .perm { height: 44px; }
+  .seg button { height: 40px; }
+  .cfg-form .st-input, .sidepanel__bar .st-input, .tool-call__reply .tool-call__input { height: 44px; }
+  .sidepanel__tab { min-height: 40px; }
+  .st-toggle { position: relative; }
+  .st-toggle::before { content: ""; position: absolute; inset: -11px -4px; }   /* the switch stays small; the touch area does not */
+  .st-composer textarea { min-height: 46px; }
+}
