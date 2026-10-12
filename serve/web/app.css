@@ -60,6 +60,7 @@ main { flex: 1; min-height: 0; display: flex; }
              font-size: var(--st-fs-md); }
 /* the way out of a failed answer: one click, no retyping */
 .st-bubble [data-retry] { margin-top: var(--st-s-2); }
+.st-msg__meta [data-continue] { height: 26px; padding: 0 10px; font-size: var(--st-fs-xs); margin-left: var(--st-s-2); }
 /* MCP tool calls inside an answer: one compact collapsible block per call */
 .st-bubble .tool-call { margin: var(--st-s-3) 0; }
 .tool-call > summary { min-width: 0; padding: 8px 12px; }
@@ -106,6 +107,10 @@ main { flex: 1; min-height: 0; display: flex; }
 .composer-hint { font-size: var(--st-fs-xs); color: var(--st-ink-muted); margin-right: var(--st-s-2); font-variant-numeric: tabular-nums; }
 .attachments { display: flex; flex-wrap: wrap; gap: var(--st-s-2); padding: 2px 4px 0; }
 .st-composer.dragging { outline: 2px dashed var(--st-accent); outline-offset: 3px; }
+/* the model is writing: the box says so, and Stop is the obvious control rather than a grey afterthought */
+.st-composer.is-busy textarea { border-color: var(--st-accent); }
+.st-composer.is-busy #stop-btn { color: var(--st-danger-text); border-color: var(--st-danger-text); }
+.st-composer.is-busy .st-btn--send { opacity: .55; }
 .chip { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 6px 0 10px; border-radius: var(--st-r-pill);
         background: var(--st-surface-2); border: 1px solid var(--st-line); font-size: var(--st-fs-xs); color: var(--st-ink-soft); }
 .chip .st-btn--icon { width: 22px; height: 22px; border-radius: 50%; }
@@ -229,7 +234,7 @@ main { flex: 1; min-height: 0; display: flex; }
 }
 
 .queued { display: flex; align-items: center; gap: var(--st-s-2); padding: 6px 10px; margin-bottom: 6px;
-          border: 1px dashed var(--st-line, currentColor); border-radius: var(--st-r-2, 8px); font-size: var(--st-fs-xs); }
+          border: 1px dashed var(--st-line); border-radius: var(--st-r-md); font-size: var(--st-fs-xs); }
 .queued__label { font-weight: 600; color: var(--st-ink-muted); text-transform: uppercase; letter-spacing: .04em; }
 .queued__text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
