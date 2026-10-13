@@ -226,6 +226,9 @@ main { flex: 1; min-height: 0; display: flex; }
   .st-tab { padding: 0 10px; }
   .st-tab .st-icon { display: none; }
   #pill-text { display: none; }
+  /* the header gained a second icon button: on a narrow phone the wordmark is what can go, the buttons cannot */
+  .st-header__brand { display: none; }
+  .st-header { gap: var(--st-s-1); }
   .chat-scroll { padding: 0 var(--st-s-3); }
   .chat { padding: var(--st-s-5) 0; }
   .composer-wrap { padding: 0 calc(var(--st-s-3) + var(--sbw, 0px)) var(--st-s-3); }
