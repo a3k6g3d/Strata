@@ -1962,9 +1962,11 @@ document.addEventListener("keydown", (e) => {
   }
   if ((e.ctrlKey || e.metaKey) && e.shiftKey && k.toLowerCase() === "d") { e.preventDefault(); flipTheme(); return; }
   // Alt+digit is a legacy menu mnemonic on Windows and needs a different key on some layouts, so the
-  // plain Alt pair is kept as a courtesy but Ctrl+Shift is what the sheet promises.
-  if ((e.ctrlKey || e.metaKey) && e.shiftKey && "123".includes(k)) { e.preventDefault(); showTab(["chat", "monitor", "about"][+k - 1]); return; }
-  if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && "123".includes(k)) { e.preventDefault(); showTab(["chat", "monitor", "about"][+k - 1]); return; }
+  // plain Alt pair is kept as a courtesy but Ctrl+Shift is what the sheet promises. Read the physical
+  // key: holding Shift turns e.key into '@' on a US board, and the digit sits elsewhere on others.
+  const digit = (((e.code || "").match(/^(?:Digit|Numpad)([123])$/) || [])[1] || "");
+  if ((e.ctrlKey || e.metaKey) && e.shiftKey && digit) { e.preventDefault(); showTab(["chat", "monitor", "about"][+digit - 1]); return; }
+  if (e.altKey && digit && !e.ctrlKey && !e.metaKey && !e.shiftKey) { e.preventDefault(); showTab(["chat", "monitor", "about"][+digit - 1]); return; }
   if (isTyping() || e.ctrlKey || e.metaKey || e.altKey) return;
   if (k === "?") { e.preventDefault(); openHelp(true); }
 });
