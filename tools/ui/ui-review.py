@@ -15,15 +15,21 @@ import os
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-WEB = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "serve", "web")   # this checkout
+# this checkout's web files: the script lives in tools/ui, so the repository root is three levels up.  (It was
+# two when this file sat in a loose folder beside the checkout; get it wrong and every web file falls through
+# to the live server below, so the review quietly shows the live app instead of the branch under review.)
+WEB = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "serve", "web")
 LIVE_HOST, LIVE_PORT, UPSTREAM = "127.0.0.1", 8080, "http://127.0.0.1:8080"
 REVIEW_PORT = 8081        # 8080 is the live server itself; 8081 is the next free one, and the pane allows it
 MIME = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8",
         ".js": "text/javascript; charset=utf-8", ".svg": "image/svg+xml",
         ".woff2": "font/woff2", ".json": "application/json", ".png": "image/png",
         ".txt": "text/plain; charset=utf-8"}
-# the files that come from the branch under review; everything else is the live API
-LOCAL = ("/", "/index.html", "/monitor.html", "/favicon.svg")
+# everything the engine owns is proxied; everything the branch owns is served from disk.  The rule is by
+# verb+prefix, not by a file list: the page asks for /app.js, /app.css, /js/*.js, /tokens.css, /sprite.svg...
+# and a list would silently ship the live app's copies of anything left out -- which looks identical enough
+# to pass a review, and quietly reviews the wrong code.
+PROXY_PREFIX = ("/api/", "/health", "/mcp", "/panel")
 _model = None
 
 
@@ -47,12 +53,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def local_path(self):
         p = self.path.split("?")[0]
-        if p.startswith("/web/") or p in LOCAL:
-            if p in ("/", ""):
-                p = "/index.html"
-            f = os.path.normpath(os.path.join(WEB, p.lstrip("/").replace("web/", "")))
-            return f if f.startswith(WEB) and os.path.isfile(f) else None
-        return None
+        if p.startswith(PROXY_PREFIX):
+            return None
+        if p in ("/", ""):
+            p = "/index.html"
+        f = os.path.normpath(os.path.join(WEB, p.lstrip("/").replace("web/", "")))
+        return f if f.startswith(WEB) and os.path.isfile(f) else None
 
     def do_GET(self): self.route(False)
     def do_POST(self): self.route(True)
@@ -81,7 +87,16 @@ class Handler(BaseHTTPRequestHandler):
             return self.wfile.write(data)
         body = self.rfile.read(int(self.headers.get("Content-Length") or 0)) if is_post else b""
         hdrs = {k: v for k, v in self.headers.items()
-                if k.lower() not in ("host", "connection", "accept-encoding", "content-length")}
+                if k.lower() not in ("host", "origin", "connection", "accept-encoding", "content-length")}
+        # the live server counts a request as coming from its own page when the Origin matches the Host it was
+        # served on (serve/server.py: _foreign_origin).  Here the Host becomes 127.0.0.1:8080 while the Origin
+        # would still say 8081, so every "own page" route -- saving a chat, answering a tool approval, the
+        # config -- would be refused with 403.  The page really is this app, on this PC, so the Origin is
+        # rewritten to the address the app is really served on; an Origin that is not the review server's own
+        # is left alone, so a page of another site arriving here is still refused as it would be direct.
+        origin = (self.headers.get("Origin") or "").rstrip("/")
+        if origin.split("://", 1)[-1].rstrip("/") in (f"127.0.0.1:{REVIEW_PORT}", f"localhost:{REVIEW_PORT}"):
+            hdrs["Origin"] = f"http://{LIVE_HOST}:{LIVE_PORT}"
         c = http.client.HTTPConnection(LIVE_HOST, LIVE_PORT, timeout=600)
         try:
             c.request(self.command, self.path, body, hdrs)
@@ -125,4 +140,7 @@ if __name__ == "__main__":
     # through it), so there is no reason to answer the local network here and every reason not to.
     print(f"review: http://127.0.0.1:{REVIEW_PORT}/   (open in your own browser; Strata's Browser pane"
           f" refuses local addresses)\n        files from {WEB}, API -> {LIVE_HOST}:{LIVE_PORT}", flush=True)
+    if not os.path.isdir(WEB):
+        print(f"  !! no such folder: {WEB}\n         every web file will come from the live server instead of this "
+              f"checkout, so what you see is not what you edited", flush=True)
     ThreadingHTTPServer(("127.0.0.1", REVIEW_PORT), Handler).serve_forever()
