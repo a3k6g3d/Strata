@@ -3026,7 +3026,11 @@ class WebApp(unittest.TestCase):
         self.assertIn("text/html", ctype)
         self.assertIn(b"\"web/app.js\"", body)   # relative since #82 (works behind a path-prefixed proxy)
         for path, want in (("/web/app.js", "javascript"), ("/web/app.css", "text/css"), ("/web/tokens.css", "text/css"),
-                           ("/web/components.css", "text/css"), ("/web/sprite.svg", "image/svg+xml")):
+                           ("/web/components.css", "text/css"), ("/web/sprite.svg", "image/svg+xml"),
+                           # the app is ES modules now: one module imports another by a path, so a folder under web/
+                           # has to be served, not refused the way a plain file request used to be
+                           ("/web/js/util.js", "javascript"), ("/web/js/toast.js", "javascript"),
+                           ("/web/js/markdown.js", "javascript")):
             with self.subTest(path=path):
                 code, ctype, _ = self.get(path)
                 self.assertEqual(code, 200)
@@ -3034,7 +3038,9 @@ class WebApp(unittest.TestCase):
 
     def test_only_the_app_files_are_served(self):
         for path in ("/web/..%2Fserver.py", "/web/index.html", "/web/test.py", "/fonts/..%2F..%2Fsetup.py",
-                     "/fonts/missing.woff2", "/fonts/x.ttf"):
+                     "/fonts/missing.woff2", "/fonts/x.ttf",
+                     # a module path may go down into web/, never out of it
+                     "/web/js/../server.py", "/web/js/../../setup.py", "/web/js/../index.html", "/web/js/test.py"):
             with self.subTest(path=path):
                 self.assertEqual(self.get(path)[0], 404)
 
