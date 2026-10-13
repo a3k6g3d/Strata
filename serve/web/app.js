@@ -967,13 +967,22 @@ function renderSessions() {
   }
   $("chat-title").textContent = current.custom ? current.title : autoTitle();
 }
-function stillWriting() {
+// An answer being written holds the chat: switching or clearing it now would drop what the model is writing.  The guard used to
+// say "stop first" and leave you to work out the clicks; now the toast offers them as one button, and does what you asked once
+// the answer has really stopped (the stream ends a moment after the abort, so the wait is on the page, not on you).
+function stillWriting(then) {
   if (!busy) return false;
-  toast("warn", "Still writing", "Stop the answer first, or wait for it to finish.");
+  const run = () => {
+    if (busy) busy.controller.abort();
+    const wait = setInterval(() => { if (busy) return; clearInterval(wait); then(); }, 50);
+    setTimeout(() => { clearInterval(wait); }, 5000);           // never leave the click hanging if the stream stalls
+  };
+  toast("warn", "Still writing", "Stop the answer first, or wait for it to finish.", 9000,
+        {label: "Stop and do it", run});
   return true;
 }
 async function newSession() {
-  if (stillWriting()) return;
+  if (stillWriting(newSession)) return;
   await saveNow();
   current = {id: newSessionId(), title: "New chat", custom: false};
   messages = [];
@@ -983,7 +992,7 @@ async function newSession() {
   $("input").focus();
 }
 async function openSession(id) {
-  if (id === current.id || stillWriting()) return;
+  if (id === current.id || stillWriting(() => openSession(id))) return;
   await saveNow();
   try {
     const data = await sessionApi(`sessions/${id}`);
@@ -997,7 +1006,7 @@ async function openSession(id) {
   }
 }
 async function deleteSession(id) {
-  if (id === current.id && stillWriting()) return;
+  if (id === current.id && stillWriting(() => deleteSession(id))) return;
   if (!confirm("Delete this chat? It cannot be brought back.")) return;
   try {
     await sessionApi(`sessions/${id}/delete`, {});
@@ -1172,6 +1181,10 @@ const TOOL_STATE = {writing: ["st-badge--reading", "Writing"], running: ["st-bad
 const KIND_TEXT = {write: "This tool changes things on this PC.", danger: "This tool can delete, move or run things on this PC.",
                    read: "This tool only looks.", net: "This tool reads from the internet.", ask: "The model is asking you something.",
                    exec: "This runs a command or program on this PC."};
+// Why a call was announced but never ran.  There are only three reasons, and the badge has to say which one it was -
+// "Not run" on its own reads like a failure of the tool, and is really the turn ending first.
+const NOT_RUN = {limit: "stopped at the tool-round limit (mcp.max_rounds)", stop: "you stopped the answer",
+                 length: "the answer ran out of tokens before the call ran"};
 function toolHtml(t, k) {
   const [cls, label] = TOOL_STATE[t.state] || ["", t.state];
   const args = t.arguments == null ? "" : JSON.stringify(t.arguments, null, 2);
@@ -1216,7 +1229,7 @@ function toolHtml(t, k) {
     `<summary>${icon("tool", "st-icon st-icon--sm")}<span class="tool-call__name" title="${esc(t.name || "")}">${esc(t.tool || t.name || "tool")}</span>` +
     (t.server ? `<span class="muted small">${esc(t.server)}</span>` : "") +
     `<span class="tool-call__preview muted">${esc(preview.slice(0, 200))}</span>` +
-    `<span class="st-badge ${cls}">${esc(label)}</span>${t.ms != null && t.state !== "skipped" ? `<span class="muted small">${fmt(t.ms / 1000, 1)} s</span>` : ""}` +
+    `<span class="st-badge ${cls}"${t.state === "skipped" && t.reason ? ` title="It was ${esc(t.reason)}."` : ""}>${esc(label)}</span>${t.ms != null && t.state !== "skipped" ? `<span class="muted small">${fmt(t.ms / 1000, 1)} s</span>` : ""}` +
     `${icon("chevron", "st-icon st-icon--sm st-chev")}</summary><div class="st-collapse__body">${body}</div></details>`;
 }
 // Tool calls that follow each other (no text between them) sit in ONE collapsible group, like the tool lines in Claude
@@ -1298,6 +1311,7 @@ function onTool(m, x) {
     Object.assign(t, {state: "waiting", approval: x.approval, kind: x.kind || t.kind, protectedPath: !!x.protected, leak: !!x.leak, exec: !!x.exec, reason: x.mode === "auto" ? x.reason : null, open: true});
   } else if (x.event === "result") {
     Object.assign(t, {result: x.text, ok: x.ok, chars: x.chars, truncated: x.truncated, ms: x.ms, approval: null,
+                      reason: x.skipped ? (NOT_RUN[x.reason] || NOT_RUN.length) : t.reason,
                       state: x.skipped ? "skipped" : x.denied ? "blocked" : x.ok ? "done" : "error"});
   }
 }
@@ -1646,11 +1660,20 @@ async function send(ready) {
   } else if (m.stopped) {
     m.meta = "Stopped";
   }
-  for (const t of m.tools || []) if (t.state === "writing" || t.state === "running") { t.state = "skipped"; t.ms = null; }
+  // calls that never got an answer at all (the request ended first): the page knows why, the server had no chance to say
+  for (const t of m.tools || []) if (t.state === "writing" || t.state === "running") {
+    t.state = "skipped"; t.ms = null;
+    t.reason = t.reason || (m.stopped ? NOT_RUN.stop : m.limit ? NOT_RUN.limit : "the answer ended before the call ran");
+  }
   const ran = (m.tools || []).filter((t) => t.state === "done" || t.state === "error").length;
   if (ran) m.meta = `${m.meta ? `${m.meta} · ` : ""}${ran} tool call${ran > 1 ? "s" : ""}`;
   if (m.summarized) m.meta = `${m.meta || ""} · summarized ${m.summarized} earlier messages to stay inside the context`;
-  if (m.limit) m.meta = `${m.meta || ""} · stopped at the limit of ${m.limit} tool rounds (mcp.max_rounds)`;
+  // calls that were announced and never ran: say how many and why, and that "continue" picks them up
+  const notRun = (m.tools || []).filter((t) => t.state === "skipped" && t.reason);
+  if (notRun.length) {
+    const why = notRun.map((t) => t.reason).find((r) => r !== NOT_RUN.stop) || NOT_RUN.stop;
+    m.meta = `${m.meta || ""} · ${notRun.length} queued tool call${notRun.length > 1 ? "s" : ""} did not run (${why}); say continue to pick them up`;
+  } else if (m.limit) m.meta = `${m.meta || ""} · stopped at the limit of ${m.limit} tool rounds (mcp.max_rounds); say continue to keep going`;
   clearInterval(tick);
   waiting = null;
   const ttft = firstAt ? (firstAt - startAt) / 1000 : null;      // a long wait is worth remembering, a short one is noise
@@ -1697,14 +1720,16 @@ $("chat-empty-asks").addEventListener("click", (e) => {
 });
 
 $("new-btn").onclick = () => {
+  const clear = () => {
+    if (!messages.length) return;
+    const backup = messages;
+    messages = [];
+    saveChat();
+    renderChat();
+    toast("info", "New chat", "The last one was cleared.", 6000, {label: "Undo", run: () => { messages = backup; saveChat(); renderChat(); }});
+  };
   if (sessionsOn) { newSession(); return; }                 // the old chat stays in the list on the left
-  if (busy) { toast("warn", "Still writing", "Stop the answer first."); return; }
-  if (!messages.length) return;
-  const backup = messages;
-  messages = [];
-  saveChat();
-  renderChat();
-  toast("info", "New chat", "The last one was cleared.", 6000, {label: "Undo", run: () => { messages = backup; saveChat(); renderChat(); }});
+  if (stillWriting(clear)) return;                          // no sessions to fall back on: the guard speaks for itself
 };
 $("export-btn").onclick = () => {
   if (!messages.length) { toast("info", "Nothing to save yet"); return; }

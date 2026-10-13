@@ -16,6 +16,13 @@ main { flex: 1; min-height: 0; display: flex; }
 .card-title { font-weight: var(--st-fw-bold); font-size: var(--st-fs-base); color: var(--st-ink); }
 .st-header { position: relative; z-index: 2; flex: none; }
 .st-header .st-tabs { margin-left: var(--st-s-4); }
+/* The three view tabs sit in the middle of the header rather than beside the wordmark: centred they read as the app's own
+   switcher, not as part of the name.  The spacer has to stop growing for that - flex hands free space to a growing item
+   before auto margins get any - and they go back to the left below 900px, where there is nothing to centre them in. */
+@media (min-width: 900px) {
+  .st-header .st-tabs { margin-left: auto; margin-right: auto; }
+  .st-header__spacer { flex: none; }
+}
 #drawer-close .st-icon { transform: rotate(-90deg); }
 
 /* ---------------------------------------------------------------- chat */
