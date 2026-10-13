@@ -5638,7 +5638,9 @@ def make_handler(svc: Service):
             self._json(200, meta)
 
         def _panel_frameable(self):
-            """GET /panel/frameable?url=...: may the side panel show this page (serve/panel.py)?  Strata's own page only."""
+            """GET /panel/frameable?url=...: may the side panel show this page (serve/panel.py)?  Strata's own page only.
+            A page of this PC is allowed (allow_loopback) so a development server can be looked at in the panel; any other
+            machine of the local network still is not, and neither is a port outside the four usual ones."""
             if not self._authorized():
                 return
             if self._foreign_origin():
@@ -5648,7 +5650,7 @@ def make_handler(svc: Service):
             url = (parse_qs(urlsplit(self.path).query).get("url") or [""])[0]
             host = self.headers.get("Host", "")
             try:
-                out = panel.check(url, parent=f"http://{host}" if host else "")
+                out = panel.check(url, parent=f"http://{host}" if host else "", allow_loopback=True)
             except Exception as e:  # noqa: BLE001 - a refused address or an unreachable site: said, not a server error
                 out = {"frameable": False, "reason": str(e), "url": url, "status": 0}
             self._json(200, out)

@@ -3,6 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" media="(prefers-color-scheme: light)" content="#f6f7f9">
+<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#111315">
 <title>Strata</title>
 <link rel="icon" href="web/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="web/tokens.css">
@@ -18,6 +21,7 @@
 </script>
 </head>
 <body>
+<a class="st-skip" href="#input">Skip to the message box</a>
 <header class="st-header">
   <span class="st-header__brand">Strata</span>
   <nav class="st-tabs" role="tablist" aria-label="Views">
@@ -31,6 +35,8 @@
   <span class="st-header__spacer"></span>
   <span class="st-pill" id="pill" data-state="idle" role="status" aria-live="polite">
     <span class="st-pill__dot"></span><span id="pill-text">Connecting&hellip;</span></span>
+  <button class="st-btn st-btn--icon" id="help-btn" title="Keyboard shortcuts" aria-label="Keyboard shortcuts" aria-haspopup="dialog">
+    <svg class="st-icon"><use href="web/sprite.svg#i-help"/></svg></button>
   <button class="st-btn st-btn--icon" id="theme-btn" title="Light / dark" aria-label="Switch between light and dark">
     <svg class="st-icon"><use id="theme-icon" href="web/sprite.svg#i-moon"/></svg></button>
 </header>
@@ -41,6 +47,8 @@
     <aside class="sessions" id="sessions" aria-label="Chats" hidden>
       <div class="sessions__top">
         <button type="button" class="st-btn st-btn--primary sessions__new" id="session-new">+ New chat</button>
+        <input class="st-input sessions__search" id="sessions-search" type="search" autocomplete="off"
+          placeholder="Search your chats" aria-label="Search your chats">
       </div>
       <div class="sessions__list" id="sessions-list" role="list"></div>
     </aside>
@@ -55,9 +63,15 @@
         <div class="chat-empty" id="chat-empty">
           <div class="chat-empty__title">Ask anything</div>
           <div class="chat-empty__sub" id="chat-empty-sub">The model runs on this PC. Nothing leaves it.</div>
+          <div class="chat-empty__asks" id="chat-empty-asks">
+            <button type="button" class="ask" data-ask="Summarize what is using my GPU right now.">What is using my GPU?</button>
+            <button type="button" class="ask" data-ask="List the largest files in my Downloads folder and what they look like.">Clean up my Downloads</button>
+            <button type="button" class="ask" data-ask="What can I ask you to do on this PC?">What can you do here?</button>
+          </div>
         </div>
       </div>
     </div>
+    <button type="button" class="jump-latest" id="jump-latest" hidden title="Go to the newest message">&#8595; Latest</button>
     <div class="composer-wrap">
       <form class="st-composer" id="composer">
         <div class="attachments" id="attachments" hidden></div>
@@ -243,8 +257,8 @@
 </main>
 
 <!-- ============================ Sampling drawer ============================ -->
-<aside class="st-drawer" id="drawer" data-open="false" aria-label="Sampling and thinking" aria-hidden="true">
-  <div class="st-drawer__head"><span class="card-title">Sampling</span>
+<aside class="st-drawer" id="drawer" data-open="false" role="dialog" aria-modal="true" aria-labelledby="drawer-title" aria-hidden="true">
+  <div class="st-drawer__head"><span class="card-title" id="drawer-title">Sampling</span>
     <button class="st-btn st-btn--icon" id="drawer-close" aria-label="Close">
       <svg class="st-icon"><use href="web/sprite.svg#i-chevron"/></svg></button></div>
   <div class="st-drawer__body">
@@ -294,7 +308,25 @@
   </div>
 </aside>
 <div class="scrim" id="scrim" hidden></div>
-<div class="st-toasts" id="toasts" aria-live="polite"></div>
+<div class="st-dialog" id="help-dialog" role="dialog" aria-modal="true" aria-labelledby="help-title" hidden>
+  <div class="st-dialog__card">
+    <div class="st-dialog__head"><span id="help-title">Keyboard shortcuts</span>
+      <button class="st-btn st-btn--icon" id="help-close" type="button" aria-label="Close">&#10005;</button></div>
+    <div class="st-dialog__body">
+      <div class="st-keys"><span>Jump to the message box</span><span><kbd>Ctrl</kbd> <kbd>K</kbd></span></div>
+      <div class="st-keys"><span>Send</span><span><kbd>Ctrl</kbd> <kbd>Enter</kbd> or <kbd>Enter</kbd></span></div>
+      <div class="st-keys"><span>New line in the message box</span><span><kbd>Shift</kbd> <kbd>Enter</kbd></span></div>
+      <div class="st-keys"><span>Stop the answer</span><span><kbd>Esc</kbd></span></div>
+      <div class="st-keys"><span>Chat / Monitor / About</span><span><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd></span></div>
+      <div class="st-keys"><span>Change view (when a view tab has focus)</span><span><kbd>&#8592;</kbd> <kbd>&#8594;</kbd></span></div>
+      <div class="st-keys"><span>Reorder a chat in the list (when its title has focus)</span><span><kbd>Alt</kbd> <kbd>&#8593;</kbd> <kbd>&#8595;</kbd></span></div>
+      <div class="st-keys"><span>Light / dark</span><span><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>D</kbd></span></div>
+      <div class="st-keys"><span>This list</span><span><kbd>?</kbd></span></div>
+    </div>
+    <div class="st-dialog__foot muted small">Esc or clicking outside closes this.</div>
+  </div>
+</div>
+<div class="st-toasts" id="toasts" role="status" aria-live="polite"></div>
 <script src="web/app.js"></script>
 </body>
 </html>

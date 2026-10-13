@@ -31,6 +31,8 @@ function toast(kind, title, text = "", ms = 3500, action = null) {
   const names = {info: "info", success: "check", warn: "warning", error: "error"};
   const el = document.createElement("div");
   el.className = `st-toast st-toast--${kind}`;
+  if (kind === "error") el.setAttribute("role", "alert");   // a failure must interrupt a screen reader, not wait its turn
+  else el.setAttribute("role", "status");                    // everything else waits its turn politely
   el.innerHTML = `${icon(names[kind] || "info")}<div><div class="st-toast__title"></div><div class="t-text"></div></div>`;
   el.querySelector(".st-toast__title").textContent = title;
   el.querySelector(".t-text").textContent = text;
@@ -43,8 +45,18 @@ function toast(kind, title, text = "", ms = 3500, action = null) {
     b.onclick = () => { action.run(); el.remove(); };
     el.appendChild(b);
   }
+  const x = document.createElement("button");            // a toast you did not read yet stays until you dismiss it
+  x.type = "button"; x.className = "st-toast__x"; x.innerHTML = "&times;";
+  x.setAttribute("aria-label", "Dismiss this notification");
+  x.onclick = () => el.remove();
+  el.appendChild(x);
+  const kill = () => el.remove();
+  let timer = setTimeout(kill, ms);
+  el.addEventListener("mouseenter", () => clearTimeout(timer));   // reading it, or tabbed into it: it does not vanish
+  el.addEventListener("focusin", () => clearTimeout(timer));
+  el.addEventListener("mouseleave", () => { timer = setTimeout(kill, 2500); });
+  el.addEventListener("focusout", () => { timer = setTimeout(kill, 2500); });
   $("toasts").appendChild(el);
-  setTimeout(() => el.remove(), ms);
 }
 
 async function copyText(text, btn) {
@@ -566,11 +578,13 @@ function setPanel(open, tab) {
   if (open && panelState.tab === "gallery") renderGallery();
 }
 function panelUrl(raw) {
-  // only an http(s) page of the internet: not this server's own page (it would run with Strata's rights), not this PC
+  // an http(s) page, and not this server's own page: framed with allow-same-origin it would run inside Strata with Strata's
+  // rights.  A page of this PC on another port is fine (a development server, Strata's own monitor page); the server answers
+  // for the rest, so an address of another machine on the local network is refused there and said there, not here.
   let u;
   try { u = new URL(/^[a-z][a-z0-9+.-]*:/i.test(raw.trim()) ? raw.trim() : "https://" + raw.trim()); } catch (e) { return null; }
   if (u.protocol !== "http:" && u.protocol !== "https:") return null;
-  if (u.origin === location.origin || /^(localhost|.*\.localhost|127\..*|\[::1\]|0\.0\.0\.0)$/i.test(u.hostname)) return null;
+  if (u.username || u.password || u.origin === location.origin) return null;
   return u;
 }
 function openExternal(href) {
@@ -580,7 +594,7 @@ function openExternal(href) {
 }
 async function openInPanel(raw) {
   const u = panelUrl(raw);
-  if (!u) { toast("warn", "Not shown here", "Only web pages from the internet open in the side panel."); return; }
+  if (!u) { toast("warn", "Not shown here", "The side panel shows a web page (http or https) - not Strata's own page, and not an address with a password in it."); return; }
   setPanel(true, "browser");
   const frame = $("panel-frame"), note = $("panel-notice");
   panelState.url = u.href;
@@ -884,8 +898,16 @@ function renderSessions() {
   const box = $("sessions-list");
   box.textContent = "";
   let last = "";
-  const shown = sessionList.some((s) => s.id === current.id) || !messages.length
+  let shown = sessionList.some((s) => s.id === current.id) || !messages.length
     ? sessionList : [{id: current.id, title: autoTitle(), updated: Date.now() / 1000}, ...sessionList];
+  // a search box only earns its place once there are chats to find; with three chats it is an empty box
+  // asking a question you do not have. It filters as you type, and vanishes when no longer wanted - so a
+  // query left in it while it is hidden must not silently hide chats.
+  const search = $("sessions-search");
+  const enough = sessionList.length > 4;
+  if (search) { search.hidden = !enough; if (!enough) search.value = ""; }
+  const q = (enough && search ? search.value : "").trim().toLowerCase();
+  if (q) shown = shown.filter((s) => (s.title || "").toLowerCase().includes(q));
   for (const s of shown) {
     const label = sessionOrdered ? "Your order" : dayLabel(s.updated);
     if (label !== last) {
@@ -913,8 +935,9 @@ function renderSessions() {
     title.type = "button";
     title.className = "sess__title";
     title.textContent = s.id === current.id ? (current.custom ? current.title : autoTitle()) : s.title;
-    title.title = "Open this chat. Double-click to rename. Drag to reorder (or Alt+Up / Alt+Down).";
+    title.title = "Open this chat. F2 (or double-click) renames it. Drag to reorder (or Alt+Up / Alt+Down).";
     title.onkeydown = (e) => {
+      if (e.key === "F2") { e.preventDefault(); renameSession(s.id); return; }   // double-click is invisible to a keyboard
       if (!e.altKey || (e.key !== "ArrowUp" && e.key !== "ArrowDown")) return;
       e.preventDefault();
       const at = sessionList.findIndex((x) => x.id === s.id), to = at + (e.key === "ArrowUp" ? -1 : 1);
@@ -935,8 +958,12 @@ function renderSessions() {
   if (!shown.length) {
     const e = document.createElement("div");
     e.className = "sessions__empty muted small";
-    e.textContent = "Your chats appear here.";
+    e.textContent = q ? `Nothing matches “${($("sessions-search").value || "").trim()}”.` : "Your chats appear here.";
     box.appendChild(e);
+    if (q) { const c = document.createElement("button"); c.type = "button"; c.className = "sessions__reset";
+      c.textContent = "Clear the search"; c.style.marginTop = "8px";
+      c.onclick = () => { $("sessions-search").value = ""; $("sessions-search").focus(); renderSessions(); };
+      box.appendChild(c); }
   }
   $("chat-title").textContent = current.custom ? current.title : autoTitle();
 }
@@ -1020,6 +1047,12 @@ $("sessions-list").addEventListener("dblclick", (e) => {
   if (row && !e.target.closest(".sess__del")) renameSession(row.dataset.id);
 });
 $("chat-title").addEventListener("dblclick", () => { if (current.id) renameSession(current.id); });
+if ($("sessions-search")) {
+  $("sessions-search").addEventListener("input", renderSessions);
+  $("sessions-search").addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { e.preventDefault(); e.target.value = ""; renderSessions(); }   // Esc here empties the box, it does not close the list
+  });
+}
 $("session-new").onclick = newSession;
 $("sessions-toggle").onclick = () => showSessions($("sessions").hidden);
 // leaving the page: what is waiting to be saved goes out now
@@ -1116,13 +1149,16 @@ function msgEl(m, i) {
     el.appendChild(b);
     const meta = document.createElement("div");
     meta.className = "st-msg__meta";
-    meta.textContent = `You · ${timeStr(m.time)}`;
+    meta.innerHTML = `<span class="meta-text"></span>` +
+      `<button class="st-btn st-btn--icon" data-msg-copy aria-label="Copy what you asked" title="Copy">${icon("copy")}</button>`;
+    meta.querySelector(".meta-text").textContent = `You · ${timeStr(m.time)}`;
     el.appendChild(meta);
   } else {
     el.innerHTML = `<details class="st-collapse think" hidden><summary>${icon("thinking", "st-icon st-icon--sm")}<span class="think-title"></span>` +
       `${icon("chevron", "st-icon st-icon--sm st-chev")}</summary><div class="st-collapse__body thinking"></div></details>` +
       `<div class="st-bubble"></div><div class="st-msg__meta"><span class="meta-text"></span>` +
-      `<button class="st-btn st-btn--icon" data-msg-copy aria-label="Copy the answer" title="Copy">${icon("copy")}</button></div>`;
+      `<button class="st-btn st-btn--icon" data-msg-copy aria-label="Copy the answer" title="Copy">${icon("copy")}</button>` +
+      `<button class="st-btn st-btn--secondary" data-continue title="Send the answer on further">Continue</button></div>`;
     updateAssistant(el, m, false);
   }
   return el;
@@ -1288,6 +1324,17 @@ async function answerApproval(m, t, how, el) {
                                 body: JSON.stringify({approval: token, allow: how !== "deny", always: how === "always"})});
   } catch (e) { /* the result event reports what happened */ }
 }
+// the wait before the first token is the part that feels broken: say what is happening and for how long
+let waiting = null;
+function waitNote() {
+  if (!waiting) return "";
+  const s = Math.floor((performance.now() - waiting.start) / 1000);
+  if (s < 2) return "";
+  const why = waiting.prompting ? " · reading your message into the context"
+    : s >= 25 ? " · the model may still be loading" : "";
+  return `<span class="muted wait-note">Waiting ${s} s${why}</span>`;
+}
+
 function updateAssistant(el, m, streaming) {
   const det = el.querySelector("details.think");
   if (m.reasoning) {
@@ -1304,17 +1351,21 @@ function updateAssistant(el, m, streaming) {
   }
   const bubble = el.querySelector(".st-bubble");
   if (m.error) {
-    bubble.innerHTML = `<div class="msg-error"></div>`;
+    bubble.innerHTML = `<div class="msg-error"></div><button type="button" class="st-btn st-btn--secondary" data-retry>` +
+      `Edit and resend</button>`;
     bubble.firstChild.textContent = m.error;
   } else if (!m.text && streaming && !(m.tools && m.tools.length)) {
-    bubble.innerHTML = m.compacting ? `<span class="muted cursor">Summarizing the earlier conversation to fit the context (up to a minute)</span>`
-      : m.reasoning ? `<span class="muted cursor">Writing</span>` : `<span class="cursor"></span>`;
+    const note = waitNote();
+    bubble.innerHTML = m.compacting ? `<span class="muted cursor">Summarizing the earlier conversation to fit the context (up to a minute)</span>${note}`
+      : m.reasoning ? `<span class="muted cursor">Writing</span>` : `<span class="cursor"></span>${note}`;
   } else {
     bubble.innerHTML = answerHtml(m);
     if (streaming) bubble.classList.add("cursor"); else bubble.classList.remove("cursor");
   }
   el.querySelector(".meta-text").textContent = m.meta || (streaming ? "" : m.stopped ? "Stopped" : "");
   el.querySelector("[data-msg-copy]").hidden = streaming || !m.text;
+  const cont = el.querySelector("[data-continue]");
+  if (cont) cont.hidden = streaming || !m.text;      // a stopped or cut-off answer can be carried on
 }
 function renderChat() {
   const chat = $("chat");
@@ -1336,10 +1387,18 @@ function toBottom() {
 function scrollDown(force) {
   if (force) pinned = true;
   if (pinned) toBottom();
+  showJump();
 }
+// an answer that outgrows the window while you are reading higher up needs a way back down that does not need the mouse
+function showJump() {
+  const b = $("jump-latest");
+  if (b) b.hidden = pinned || !messages.length;
+}
+$("jump-latest").onclick = () => { pinned = true; toBottom(); showJump(); $("chat-scroll").focus?.(); };
 $("chat-scroll").addEventListener("scroll", () => {
   if (ownScroll) { ownScroll = false; return; }
   pinned = nearBottom(40);                       // the user scrolled: up unpins, back to the bottom pins again
+  showJump();
 }, {passive: true});
 $("chat-scroll").addEventListener("wheel", (e) => { if (e.deltaY < 0) pinned = false; }, {passive: true});
 // growth from anything (images, a block opening, the markdown settling) keeps a pinned chat at the bottom
@@ -1348,6 +1407,10 @@ if (window.ResizeObserver) new ResizeObserver(() => { if (pinned) toBottom(); })
 $("chat").addEventListener("click", (e) => {
   const cc = e.target.closest("[data-code-copy]");
   if (cc) { copyText(cc.closest(".st-code").querySelector("pre").textContent, cc); return; }
+  const cn = e.target.closest("[data-continue]");
+  if (cn) { if (!busy) send({text: "Continue"}); return; }   // while an answer is still coming, the box queues instead
+  const rt = e.target.closest("[data-retry]");
+  if (rt) { retryFrom(+rt.closest(".st-msg").dataset.i); return; }
   const mc = e.target.closest("[data-msg-copy]");
   if (mc) { const i = +mc.closest(".st-msg").dataset.i; copyText(messages[i].text, mc); return; }
   const qo = e.target.closest("[data-answer-opt], [data-answer-send]");
@@ -1447,6 +1510,9 @@ function assistantMessages(m) {
 
 function setBusy(on) {
   $("stop-btn").hidden = !on;
+  $("composer").classList.toggle("is-busy", on);
+  // say what Enter does right now: it queues, it does not send, and it does not fail
+  $("input").placeholder = on ? "Type here and Enter queues it for the next turn\u2026" : "Ask anything\u2026";
   $("composer-hint").textContent = on ? "Enter: queue" : "Shift+Enter: new line";
 }
 
@@ -1515,6 +1581,10 @@ async function send(ready) {
   }
 
   let firstAt = null, thinkStart = null, usage = null, frame = 0;
+  const startAt = performance.now();
+  const markFirst = () => { if (!firstAt) { firstAt = performance.now(); waiting = null; } };
+  waiting = {start: startAt, prompting: false};
+  const tick = setInterval(() => { if (waiting) updateAssistant(el, m, true); }, 1000);   // the waiting clock
   const paint = () => { frame = 0; updateAssistant(el, m, true); scrollDown(); };
   try {
     const r = await fetch("v1/chat/completions", {method: "POST", headers: headers(true), body: JSON.stringify(body),
@@ -1535,7 +1605,10 @@ async function send(ready) {
       while ((nl = buf.indexOf("\n")) >= 0) {
         const line = buf.slice(0, nl).trim();
         buf = buf.slice(nl + 1);
-        if (!line.startsWith("data:")) continue;              // ": keep-alive" comments while a long prompt is read
+        if (!line.startsWith("data:")) {                       // ": keep-alive" comments while a long prompt is read
+          if (waiting && line.startsWith(":")) waiting.prompting = true;   // the engine is reading the prompt: say so
+          continue;
+        }
         const data = line.slice(5).trim();
         if (data === "[DONE]") continue;
         let j;
@@ -1546,13 +1619,13 @@ async function send(ready) {
         const d = (j.choices && j.choices[0] && j.choices[0].delta) || {};
         const lastTool = m.tools && m.tools.length ? m.tools[m.tools.length - 1] : null;   // a new round after a tool
         if (d.reasoning_content) {
-          if (!firstAt) firstAt = performance.now();
+          markFirst();
           if (!thinkStart) thinkStart = performance.now();
           if (lastTool && m.reasoning && lastTool.rat === m.reasoning.length) m.reasoning += "\n\n";
           m.reasoning += d.reasoning_content;
         }
         if (d.content) {
-          if (!firstAt) firstAt = performance.now();
+          markFirst();
           if (thinkStart && m.thinkSecs == null) m.thinkSecs = (performance.now() - thinkStart) / 1000;
           if (lastTool && m.text && lastTool.at === m.text.length) m.text += "\n\n";
           m.text += d.content;
@@ -1578,6 +1651,10 @@ async function send(ready) {
   if (ran) m.meta = `${m.meta ? `${m.meta} · ` : ""}${ran} tool call${ran > 1 ? "s" : ""}`;
   if (m.summarized) m.meta = `${m.meta || ""} · summarized ${m.summarized} earlier messages to stay inside the context`;
   if (m.limit) m.meta = `${m.meta || ""} · stopped at the limit of ${m.limit} tool rounds (mcp.max_rounds)`;
+  clearInterval(tick);
+  waiting = null;
+  const ttft = firstAt ? (firstAt - startAt) / 1000 : null;      // a long wait is worth remembering, a short one is noise
+  if (ttft > 5) m.meta = `first token in ${fmt(ttft, 1)} s${m.meta ? ` · ${m.meta}` : ""}`;
   clearInterval(autosave);
   delete m.partial;
   busy = null;
@@ -1594,10 +1671,30 @@ $("stop-btn").onclick = () => { if (busy) busy.controller.abort(); };
 $("queued-now").onclick = () => { if (busy) busy.controller.abort(); else sendQueued(); };   // the end of send() sends it
 $("queued-cancel").onclick = () => { queued = null; renderQueued(); };
 $("input").addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
+  if (e.key === "Enter" && !e.isComposing && (e.ctrlKey || e.metaKey || !e.shiftKey)) { e.preventDefault(); send(); }
+  // Escape is the fastest way to say "that is going wrong", and it keeps everything written so far
+  if (e.key === "Escape" && busy) { e.preventDefault(); busy.controller.abort(); }
 });
+// a failed request costs you nothing but the click: the question, its pictures and its files come back editable
+function retryFrom(i) {
+  const um = messages[i - 1];
+  if (!um || um.role !== "user") return;
+  messages.splice(i - 1, 2);
+  attachments = [...(um.images || []), ...(um.files || [])];
+  renderAttachments();
+  $("input").value = um.text; autosize(); $("input").focus();
+  renderChat();
+  saveChat();
+}
+
 function autosize() { const t = $("input"); t.style.height = "auto"; t.style.height = `${Math.min(t.scrollHeight, innerHeight * 0.4)}px`; }
 $("input").addEventListener("input", autosize);
+
+$("chat-empty-asks").addEventListener("click", (e) => {
+  const a = e.target.closest("[data-ask]");
+  if (!a) return;
+  $("input").value = a.dataset.ask; autosize(); $("input").focus();
+});
 
 $("new-btn").onclick = () => {
   if (sessionsOn) { newSession(); return; }                 // the old chat stays in the list on the left
@@ -1705,11 +1802,27 @@ $("input").addEventListener("paste", (e) => {
 });
 
 // ------------------------------------------------------------------ the sampling drawer
+let drawerReturn = null;                                     // where the focus was before the drawer opened
 function openDrawer(open) {
   $("drawer").dataset.open = String(open);
   $("drawer").setAttribute("aria-hidden", String(!open));
   $("scrim").hidden = !open;
-  if (open) { loadDrawer(); loadShared(); loadMcp(); }
+  if (open) {
+    drawerReturn = document.activeElement;
+    loadDrawer(); loadShared(); loadMcp();
+    requestAnimationFrame(() => $("drawer-close").focus());  // a keyboard or screen-reader user lands inside what they opened
+  } else if (drawerReturn && drawerReturn.isConnected) {
+    drawerReturn.focus(); drawerReturn = null;               // and goes back where they came from
+  }
+}
+// Tab stays inside the open drawer: it is a window of its own while it is up
+function trapTab(e, box) {
+  const f = [...box.querySelectorAll("button,[href],input,select,textarea,[tabindex]:not([tabindex='-1'])")]
+    .filter((el) => !el.disabled && !el.hidden && el.offsetParent !== null);
+  if (!f.length) return;
+  const first = f[0], last = f[f.length - 1];
+  if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
 }
 function loadDrawer(s = settings) {
   for (const b of $("s-thinking").children) b.setAttribute("aria-checked", String(b.dataset.v === s.thinking));
@@ -1796,7 +1909,11 @@ $("s-apply").onclick = async () => {
 $("sampling-btn").onclick = () => openDrawer(true);
 $("drawer-close").onclick = () => openDrawer(false);
 $("scrim").onclick = () => openDrawer(false);
-document.addEventListener("keydown", (e) => { if (e.key === "Escape" && $("drawer").dataset.open === "true") openDrawer(false); });
+document.addEventListener("keydown", (e) => {
+  if ($("drawer").dataset.open !== "true") return;
+  if (e.key === "Escape") { openDrawer(false); return; }      // close first, then hand the focus back
+  if (e.key === "Tab") trapTab(e, $("drawer"));
+});
 
 // ------------------------------------------------------------------ start
 setBusy(false);
@@ -1807,3 +1924,67 @@ const sessionsReady = initSessions();
 loadHealth().then(loadMcp).then(() => sessionsReady).then(() => { if (startQuestion) { $("input").value = startQuestion; send(); } });
 showTab(location.hash.slice(1) || "chat");
 poll();
+
+// ------------------------------------------------------------------ keyboard shortcuts
+// the shortcut sheet: a window like the drawer - focus goes in, comes back out
+let helpReturn = null;
+function openHelp(open) {
+  const d = $("help-dialog");
+  if (d.hidden === !open) return;
+  if (open) {
+    helpReturn = document.activeElement;
+    d.hidden = false;
+    requestAnimationFrame(() => $("help-close").focus());
+  } else {
+    d.hidden = true;
+    if (helpReturn && helpReturn.isConnected) helpReturn.focus();
+    helpReturn = null;
+  }
+}
+$("help-btn").onclick = () => openHelp(true);
+$("help-close").onclick = () => openHelp(false);
+$("help-dialog").addEventListener("mousedown", (e) => { if (e.target === $("help-dialog")) openHelp(false); });
+
+const isTyping = () => {
+  const a = document.activeElement || {};
+  return /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName || "") || !!a.isContentEditable;
+};
+
+document.addEventListener("keydown", (e) => {
+  if ($("help-dialog").hidden === false) {
+    if (e.key === "Escape") { e.preventDefault(); openHelp(false); return; }
+    if (e.key === "Tab") trapTab(e, $("help-dialog"));
+    return;
+  }
+  if ($("drawer").dataset.open === "true") return;   // the drawer is the window on top: its own keys (Esc, Tab) own the keyboard
+  const k = e.key || "";
+  if ((e.ctrlKey || e.metaKey) && !e.altKey && k.toLowerCase() === "k") {      // straight to the message box
+    e.preventDefault(); showTab("chat");
+    const i = $("input"); i.focus(); i.setSelectionRange(i.value.length, i.value.length); return;
+  }
+  if ((e.ctrlKey || e.metaKey) && e.shiftKey && k.toLowerCase() === "d") { e.preventDefault(); flipTheme(); return; }
+  // Alt+digit is a legacy menu mnemonic on Windows and needs a different key on some layouts, so the
+  // plain Alt pair is kept as a courtesy but Ctrl+Shift is what the sheet promises. Read the physical
+  // key: holding Shift turns e.key into '@' on a US board, and the digit sits elsewhere on others.
+  const digit = (((e.code || "").match(/^(?:Digit|Numpad)([123])$/) || [])[1] || "");
+  if ((e.ctrlKey || e.metaKey) && e.shiftKey && digit) { e.preventDefault(); showTab(["chat", "monitor", "about"][+digit - 1]); return; }
+  if (e.altKey && digit && !e.ctrlKey && !e.metaKey && !e.shiftKey) { e.preventDefault(); showTab(["chat", "monitor", "about"][+digit - 1]); return; }
+  if (isTyping() || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (k === "?") { e.preventDefault(); openHelp(true); }
+});
+
+// the view tabs behave like a tab strip: arrows move between them
+const tabBtns = [...document.querySelectorAll(".st-tab")];
+document.querySelector(".st-tabs").addEventListener("keydown", (e) => {
+  const at = tabBtns.findIndex((t) => t === document.activeElement);
+  if (at < 0 || ["ArrowLeft", "ArrowRight", "Home", "End"].indexOf(e.key) < 0) return;
+  e.preventDefault();
+  let to = at;
+  if (e.key === "ArrowLeft") to = (at - 1 + tabBtns.length) % tabBtns.length;
+  if (e.key === "ArrowRight") to = (at + 1) % tabBtns.length;
+  if (e.key === "Home") to = 0;
+  if (e.key === "End") to = tabBtns.length - 1;
+  showTab(tabBtns[to].dataset.tab);
+  const again = document.getElementById("tab-btn-" + tab);                    // showTab moves to the message box; a tab user stays on the tabs
+  if (again) again.focus();
+});
