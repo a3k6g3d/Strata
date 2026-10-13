@@ -578,11 +578,13 @@ function setPanel(open, tab) {
   if (open && panelState.tab === "gallery") renderGallery();
 }
 function panelUrl(raw) {
-  // only an http(s) page of the internet: not this server's own page (it would run with Strata's rights), not this PC
+  // an http(s) page, and not this server's own page: framed with allow-same-origin it would run inside Strata with Strata's
+  // rights.  A page of this PC on another port is fine (a development server, Strata's own monitor page); the server answers
+  // for the rest, so an address of another machine on the local network is refused there and said there, not here.
   let u;
   try { u = new URL(/^[a-z][a-z0-9+.-]*:/i.test(raw.trim()) ? raw.trim() : "https://" + raw.trim()); } catch (e) { return null; }
   if (u.protocol !== "http:" && u.protocol !== "https:") return null;
-  if (u.origin === location.origin || /^(localhost|.*\.localhost|127\..*|\[::1\]|0\.0\.0\.0)$/i.test(u.hostname)) return null;
+  if (u.username || u.password || u.origin === location.origin) return null;
   return u;
 }
 function openExternal(href) {
@@ -592,7 +594,7 @@ function openExternal(href) {
 }
 async function openInPanel(raw) {
   const u = panelUrl(raw);
-  if (!u) { toast("warn", "Not shown here", "Only web pages from the internet open in the side panel."); return; }
+  if (!u) { toast("warn", "Not shown here", "The side panel shows a web page (http or https) - not Strata's own page, and not an address with a password in it."); return; }
   setPanel(true, "browser");
   const frame = $("panel-frame"), note = $("panel-notice");
   panelState.url = u.href;
