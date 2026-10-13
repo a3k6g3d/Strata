@@ -4,9 +4,10 @@ Many sites forbid being put in a frame (X-Frame-Options, or a Content-Security-P
 The page cannot see those headers of another site, so the server asks: GET /panel/frameable?url=... answers whether the panel can
 show it, or should say so and offer the page in the user's own browser instead.  The request is made the way the web tool's fetch is:
 http(s) only, the usual ports, no user name in the address, every redirect checked again, and an address that leads to a private
-network is refused.  One exception, asked for by the caller (`allow_loopback`): a page of *this* PC may be shown, so that a page
-you are working on - the app itself on another port, a development server - can be looked at in the panel.  It is still held to
-the allowed ports, still only this PC and never another machine of the local network, and every redirect is checked again.
+network is refused.  One exception, asked for by the caller (`allow_loopback`): a page of *this* PC may be shown on any port,
+so that a page you are working on - the app itself on another port, a development server on 3000 or 5173 - can be looked at in the
+panel.  A page of the internet is still held to the four usual ports, and an address that leads to another machine of the local
+network is still refused; every redirect is checked again.
 """
 import http.client
 import ipaddress
@@ -38,31 +39,37 @@ def frameable_from_headers(headers, parent: str = "") -> tuple[bool, str]:
     return True, ""
 
 
-def is_loopback(ip_text: str) -> bool:
-    """Does this address lead to this very PC?  (::1 and a mapped ::ffff:127.0.0.1 count as 127.0.0.1.)"""
+def _address(ip_text: str):
+    """An address as an object; a mapped ::ffff:127.0.0.1 counts as the 127.0.0.1 it maps to."""
     ip = ipaddress.ip_address(ip_text.split("%")[0])
     if ip.version == 6 and ip.ipv4_mapped is not None:
         ip = ip.ipv4_mapped
-    return ip.is_loopback
+    return ip
+
+
+def is_loopback(ip_text: str) -> bool:
+    """Does this address lead to this very PC?  (::1 and a mapped ::ffff:127.0.0.1 count as 127.0.0.1.)"""
+    return _address(ip_text).is_loopback
 
 
 def validate(url: str, allow_private: bool = False, allow_loopback: bool = False):
-    """W.validate, with this PC let through when `allow_loopback`.  Everything else of the rule stays: the port must still be an
-    allowed one, and a private address that is not this PC (a printer, a neighbour's machine) is still refused - the panel is not a
-    way to probe the local network.  Raises W.WebError, like W.validate."""
-    try:
+    """W.validate, with this PC let through on any port when `allow_loopback`.  The rest of the rule stays: a private address that
+    is not this PC (a printer, a neighbour's machine) is still refused - the panel is not a way to probe the local network - and a
+    page of the internet is still held to the four usual ports.  Raises W.WebError, like W.validate.
+
+    The address is asked about before the port, which is the other way round from W.validate: a development server sits on
+    whatever port it likes, so 127.0.0.1:3000 has to be recognised as this PC before its port is found unusual."""
+    if not allow_loopback:
         return W.validate(url, allow_private)
+    try:
+        p, port, ip = W.validate(url, True)          # any address, any port: this asks only where the name leads
     except W.WebError as e:
-        # only the "leads to this PC or a private network" refusal is worth a second look; a bad scheme, a user name in the
-        # address or an odd port is the same refusal it always was
-        if not allow_loopback or "private network" not in str(e):
-            raise
-        p, port, ip = W.validate(url, True)          # allow_private lets any address through, and skips the port rule
-        if port not in W.PORTS:                      # ... so the port is checked again here
-            raise W.WebError(f"port {port} is not allowed (80, 443, 8080 and 8443 are)") from None
-        if not is_loopback(ip):
-            raise W.WebError(f"blocked: {p.hostname!r} is another machine on the local network, not this PC") from None
-        return p, port, ip
+        raise e from None                            # a bad scheme, a user name in the address, or a name that does not resolve
+    if _address(ip).is_loopback:
+        return p, port, ip                           # this PC: any port is fine
+    if _address(ip).is_global:
+        return W.validate(url, allow_private)        # the internet: the usual rule, which will mind the port
+    raise W.WebError(f"blocked: {p.hostname!r} is another machine on the local network, not this PC") from None
 
 
 def check(url: str, parent: str = "", allow_private: bool = False, allow_loopback: bool = False) -> dict:
