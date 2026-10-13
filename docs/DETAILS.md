@@ -1437,6 +1437,8 @@ no-read list; Full access trades the click for speed). List the server under
   you click "Always allow" on it (until Strata restarts); Read-only and No-tools refuse it. **A command that names a
   protected path (`"protected_paths"`, e.g. `C:\`) - written out, or through `%USERPROFILE%`, `$env:`, `~`, `Path.home()`
   and the like (best effort) - asks every time in every mode, Full access and "Always allow" included**;
+- in **Full access** a web search or fetch after a local tool no longer asks (the leak click is the one thing Full access drops; the
+  no-read list still refuses secrets in every mode); Allow edits, Ask before changes and Auto keep it;
 - the chat shows the exact command or program, whole, before the button ("Run it");
 - the text is also read, best effort, against the no-read list: a command that names a blocked place is refused before
   any click is asked for (it cannot see a path a program builds while it runs, so it is a seat belt, not the guard);

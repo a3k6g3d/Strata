@@ -7,6 +7,11 @@ dated, and the fork's releases follow [SemVer](https://semver.org) once it tags 
 
 ## Unreleased - 2026-10-10
 
+### Changed (2026-10-12, Full access no longer asks before a web call)
+- In Full access a web search or fetch after a local tool runs without the leak click, so Full access behaves like a bypass mode: commands, file
+  changes and web calls run by themselves. Still refused or asked in every mode: the no-read list (refused), the protected Windows folders (asked). Allow
+  edits, Ask before changes and Auto keep the leak guard. 1 test changed, 1 added.
+
 ### Fixed (2026-10-12, web_search returned unrelated pages)
 - `web_search` sent `setlang=en` to Bing, which made it answer a different query for uncommon terms ("SATAFIRM S11 fix" returned airline pages, a
   long MPTool query returned Instagram and news sites). The query now goes alone and returns the right pages.

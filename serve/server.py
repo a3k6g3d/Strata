@@ -4315,7 +4315,7 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
             # its text is also read for names on the no-read list (best effort: the click is the real guard).
             exec_call = kind_of_tool == "exec"
             no_read = hub.blocked(c.arguments) or (exec_call and hub.blocked_text(c.arguments))
-            leak = kind_of_tool == "net" and touched_local
+            leak = kind_of_tool == "net" and touched_local and mode != "full"      # Full access: the no-read list still refuses, the web does not ask
             protected = (kind_of_tool not in ("read", "net", "exec") and hub.protected(c.arguments)) or leak or \
                 (exec_call and hub.protected_text(c.arguments))
             verdict = decide(mode, kind_of_tool, c.name in hub.gate.always and not protected)
