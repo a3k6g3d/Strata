@@ -5226,13 +5226,17 @@ def make_handler(svc: Service):
                 self.wfile.write(body)
                 return
             if path.startswith("/web/"):
-                # the web app's own files (serve/web): styles, script, icon sprite - same origin, no CDN
+                # the web app's own files (serve/web): styles, script, icon sprite - same origin, no CDN.  The
+                # script is ES modules, and one module imports another by a path, so folders under web/ are
+                # normal now; a path that climbs out of web/ ("../") is still refused.
                 name = path[len("/web/"):]
                 types = {".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8",
                          ".svg": "image/svg+xml"}
-                f = ROOT / "serve" / "web" / name
+                web = ROOT / "serve" / "web"
+                f = web / name
                 ext = os.path.splitext(name)[1]
-                if "/" in name or "\\" in name or ext not in types or not f.is_file():
+                inside = os.path.normpath(str(f)).startswith(str(web) + os.sep)
+                if "\\" in name or ext not in types or not inside or not f.is_file():
                     self._json(404, {"error": {"message": "not found"}})
                     return
                 body = f.read_bytes()

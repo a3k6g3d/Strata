@@ -1,78 +1,12 @@
 // serve/web/app.js - the Strata web app: Chat, Monitor, About. No framework, no network beyond this server.
 // The Monitor tab rebuilds PR #22's dashboard idea (code-martin) on the server's own /metrics.
-"use strict";
 
-const $ = (id) => document.getElementById(id);
-const SPRITE = "web/sprite.svg";
-const icon = (name, cls = "st-icon") => `<svg class="${cls}" aria-hidden="true"><use href="${SPRITE}#i-${name}"/></svg>`;
-const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
-const fmt = (n, d = 0) => (n == null || Number.isNaN(n) ? "–" : Number(n).toLocaleString(undefined, {maximumFractionDigits: d, minimumFractionDigits: d}));
-const kfmt = (n) => (n == null ? "–" : n >= 1000 ? `${fmt(n / 1000, n >= 10000 ? 0 : 1)}k` : fmt(n));
-// a context size: 32768 -> "32K" (powers of two), else like kfmt
-const ctxfmt = (n) => (n && n % 1024 === 0 ? `${fmt(n / 1024)}K` : kfmt(n));
-const gb = (b, d = 1) => (b == null ? "–" : fmt(b / 1073741824, d));   // memory: binary GB, as Windows shows it
-
-const store = {
-  get(k, d) { try { const v = localStorage.getItem("strata." + k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } },
-  set(k, v) { try { localStorage.setItem("strata." + k, JSON.stringify(v)); } catch (e) { /* private mode: in memory only */ } },
-  remove(k) { try { localStorage.removeItem("strata." + k); } catch (e) { /* ignore */ } },
-};
-
-// the messages keep a scrollbar gutter on both sides (so they stay centred); the message box gets the same margin, so both are as wide
-function syncGutter() {
-  const sc = document.getElementById("chat-scroll");
-  if (sc) document.documentElement.style.setProperty("--sbw", Math.max(0, (sc.offsetWidth - sc.clientWidth) / 2) + "px");
-}
-addEventListener("resize", syncGutter);
-addEventListener("load", syncGutter);
-
-// ------------------------------------------------------------------ toasts
-function toast(kind, title, text = "", ms = 3500, action = null) {
-  const names = {info: "info", success: "check", warn: "warning", error: "error"};
-  const el = document.createElement("div");
-  el.className = `st-toast st-toast--${kind}`;
-  if (kind === "error") el.setAttribute("role", "alert");   // a failure must interrupt a screen reader, not wait its turn
-  else el.setAttribute("role", "status");                    // everything else waits its turn politely
-  el.innerHTML = `${icon(names[kind] || "info")}<div><div class="st-toast__title"></div><div class="t-text"></div></div>`;
-  el.querySelector(".st-toast__title").textContent = title;
-  el.querySelector(".t-text").textContent = text;
-  if (action) {
-    const b = document.createElement("button");
-    b.className = "st-btn st-btn--secondary";
-    b.style.height = "32px";
-    b.style.marginLeft = "auto";
-    b.textContent = action.label;
-    b.onclick = () => { action.run(); el.remove(); };
-    el.appendChild(b);
-  }
-  const x = document.createElement("button");            // a toast you did not read yet stays until you dismiss it
-  x.type = "button"; x.className = "st-toast__x"; x.innerHTML = "&times;";
-  x.setAttribute("aria-label", "Dismiss this notification");
-  x.onclick = () => el.remove();
-  el.appendChild(x);
-  const kill = () => el.remove();
-  let timer = setTimeout(kill, ms);
-  el.addEventListener("mouseenter", () => clearTimeout(timer));   // reading it, or tabbed into it: it does not vanish
-  el.addEventListener("focusin", () => clearTimeout(timer));
-  el.addEventListener("mouseleave", () => { timer = setTimeout(kill, 2500); });
-  el.addEventListener("focusout", () => { timer = setTimeout(kill, 2500); });
-  $("toasts").appendChild(el);
-}
-
-async function copyText(text, btn) {
-  try {
-    await navigator.clipboard.writeText(text);
-  } catch (e) {                                   // http on another host: no async clipboard
-    const ta = document.createElement("textarea");
-    ta.value = text; document.body.appendChild(ta); ta.select(); document.execCommand("copy"); ta.remove();
-  }
-  if (btn) {
-    const use = btn.querySelector("use");
-    use.setAttribute("href", `${SPRITE}#i-check`);
-    setTimeout(() => use.setAttribute("href", `${SPRITE}#i-copy`), 1500);
-  }
-  toast("success", "Copied to clipboard", "", 1800);
-}
+// The pieces with no knowledge of the chat or the server live beside it as ES modules (web/js/):
+// util (ids, icons, numbers, storage), toast (the notices), markdown (the answer as HTML).  The rest is
+// here because it shares the conversation state - messages, attachments, which chat is open - and cannot be cut.
+import {$, SPRITE, icon, esc, fmt, kfmt, ctxfmt, gb, store, syncGutter} from "./js/util.js";
+import {toast, copyText} from "./js/toast.js";
+import {markdown} from "./js/markdown.js";
 
 // ------------------------------------------------------------------ theme and tabs
 // the system's theme until the user picks one (only a click is saved)
@@ -697,72 +631,6 @@ document.addEventListener("click", (e) => {
     grip.addEventListener("pointerup", up);
   });
 })();
-
-// ------------------------------------------------------------------ Markdown (escaped first, then formatted)
-function inline(s) {
-  const codes = [];
-  s = s.replace(/`([^`\n]+)`/g, (_, c) => { codes.push(c); return `\u0000${codes.length - 1}\u0000`; });
-  s = esc(s)
-    .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
-    .replace(/(^|[^*\w])\*([^*\n]+)\*(?![*\w])/g, "$1<em>$2</em>")
-    .replace(/\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
-  return s.replace(/\u0000(\d+)\u0000/g, (_, i) => `<code class="inline">${esc(codes[+i])}</code>`);
-}
-function codeBlock(lang, code) {
-  return `<div class="st-code"><div class="st-code__head"><span>${esc(lang || "code")}</span>` +
-    `<button class="st-btn st-btn--icon" data-code-copy aria-label="Copy code">${icon("copy")}</button></div>` +
-    `<pre><code>${esc(code)}</code></pre></div>`;
-}
-function blocks(text) {
-  const out = [], lines = text.split("\n");
-  let para = [], list = null;
-  const flushPara = () => { if (para.length) out.push(`<p>${para.map(inline).join("<br>")}</p>`); para = []; };
-  const flushList = () => { if (list) out.push(`<${list.tag}>${list.items.map((i) => `<li>${inline(i)}</li>`).join("")}</${list.tag}>`); list = null; };
-  for (let i = 0; i < lines.length; i++) {
-    const l = lines[i];
-    let m;
-    if (!l.trim()) { flushPara(); flushList(); continue; }
-    if ((m = l.match(/^(#{1,6})\s+(.*)$/))) { flushPara(); flushList(); out.push(`<${m[1].length <= 2 ? "h3" : "h4"}>${inline(m[2])}</${m[1].length <= 2 ? "h3" : "h4"}>`); continue; }
-    if (/^\s*([-*_])\s*\1\s*\1[\s\1]*$/.test(l)) { flushPara(); flushList(); out.push("<hr>"); continue; }
-    if ((m = l.match(/^>\s?(.*)$/))) { flushPara(); flushList(); out.push(`<blockquote>${inline(m[1])}</blockquote>`); continue; }
-    if (/^\s*\|.*\|\s*$/.test(l) && i + 1 < lines.length && /^\s*\|?[\s:-]+\|[\s|:-]*$/.test(lines[i + 1])) {
-      flushPara(); flushList();
-      const cells = (row) => row.trim().replace(/^\||\|$/g, "").split("|").map((c) => inline(c.trim()));
-      let html = `<table><thead><tr>${cells(l).map((c) => `<th>${c}</th>`).join("")}</tr></thead><tbody>`;
-      i += 2;
-      while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) html += `<tr>${cells(lines[i++]).map((c) => `<td>${c}</td>`).join("")}</tr>`;
-      i--;
-      out.push(html + "</tbody></table>");
-      continue;
-    }
-    if ((m = l.match(/^\s*(?:[-*+]|(\d+)[.)])\s+(.*)$/))) {
-      flushPara();
-      const tag = m[1] ? "ol" : "ul";
-      if (!list || list.tag !== tag) { flushList(); list = {tag, items: []}; }
-      list.items.push(m[2]);
-      continue;
-    }
-    if (list && /^\s{2,}\S/.test(l)) { list.items[list.items.length - 1] += " " + l.trim(); continue; }
-    flushList();
-    para.push(l);
-  }
-  flushPara(); flushList();
-  return out.join("");
-}
-function markdown(text) {
-  let html = "", rest = text;
-  for (;;) {
-    const m = rest.match(/(^|\n)```([^\n`]*)\n/);
-    if (!m) { html += blocks(rest); break; }
-    html += blocks(rest.slice(0, m.index));
-    rest = rest.slice(m.index + m[0].length);
-    const end = rest.match(/(^|\n)```[ \t]*(\n|$)/);
-    if (!end) { html += codeBlock(m[2].trim(), rest); break; }         // still streaming
-    html += codeBlock(m[2].trim(), rest.slice(0, end.index));
-    rest = rest.slice(end.index + end[0].length);
-  }
-  return html;
-}
 
 // ------------------------------------------------------------------ Chat
 const DEFAULTS = {thinking: "high", temperature: 0.6, top_p: 0.95, top_k: 20, max: "", seed: "", show: true, esp: true, mcp: true};
