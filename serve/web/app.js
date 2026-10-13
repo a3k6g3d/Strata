@@ -1303,6 +1303,17 @@ async function answerApproval(m, t, how, el) {
                                 body: JSON.stringify({approval: token, allow: how !== "deny", always: how === "always"})});
   } catch (e) { /* the result event reports what happened */ }
 }
+// the wait before the first token is the part that feels broken: say what is happening and for how long
+let waiting = null;
+function waitNote() {
+  if (!waiting) return "";
+  const s = Math.floor((performance.now() - waiting.start) / 1000);
+  if (s < 2) return "";
+  const why = waiting.prompting ? " · reading your message into the context"
+    : s >= 25 ? " · the model may still be loading" : "";
+  return `<span class="muted wait-note">Waiting ${s} s${why}</span>`;
+}
+
 function updateAssistant(el, m, streaming) {
   const det = el.querySelector("details.think");
   if (m.reasoning) {
@@ -1323,8 +1334,9 @@ function updateAssistant(el, m, streaming) {
       `Edit and resend</button>`;
     bubble.firstChild.textContent = m.error;
   } else if (!m.text && streaming && !(m.tools && m.tools.length)) {
-    bubble.innerHTML = m.compacting ? `<span class="muted cursor">Summarizing the earlier conversation to fit the context (up to a minute)</span>`
-      : m.reasoning ? `<span class="muted cursor">Writing</span>` : `<span class="cursor"></span>`;
+    const note = waitNote();
+    bubble.innerHTML = m.compacting ? `<span class="muted cursor">Summarizing the earlier conversation to fit the context (up to a minute)</span>${note}`
+      : m.reasoning ? `<span class="muted cursor">Writing</span>` : `<span class="cursor"></span>${note}`;
   } else {
     bubble.innerHTML = answerHtml(m);
     if (streaming) bubble.classList.add("cursor"); else bubble.classList.remove("cursor");
@@ -1548,6 +1560,10 @@ async function send(ready) {
   }
 
   let firstAt = null, thinkStart = null, usage = null, frame = 0;
+  const startAt = performance.now();
+  const markFirst = () => { if (!firstAt) { firstAt = performance.now(); waiting = null; } };
+  waiting = {start: startAt, prompting: false};
+  const tick = setInterval(() => { if (waiting) updateAssistant(el, m, true); }, 1000);   // the waiting clock
   const paint = () => { frame = 0; updateAssistant(el, m, true); scrollDown(); };
   try {
     const r = await fetch("v1/chat/completions", {method: "POST", headers: headers(true), body: JSON.stringify(body),
@@ -1568,7 +1584,10 @@ async function send(ready) {
       while ((nl = buf.indexOf("\n")) >= 0) {
         const line = buf.slice(0, nl).trim();
         buf = buf.slice(nl + 1);
-        if (!line.startsWith("data:")) continue;              // ": keep-alive" comments while a long prompt is read
+        if (!line.startsWith("data:")) {                       // ": keep-alive" comments while a long prompt is read
+          if (waiting && line.startsWith(":")) waiting.prompting = true;   // the engine is reading the prompt: say so
+          continue;
+        }
         const data = line.slice(5).trim();
         if (data === "[DONE]") continue;
         let j;
@@ -1579,13 +1598,13 @@ async function send(ready) {
         const d = (j.choices && j.choices[0] && j.choices[0].delta) || {};
         const lastTool = m.tools && m.tools.length ? m.tools[m.tools.length - 1] : null;   // a new round after a tool
         if (d.reasoning_content) {
-          if (!firstAt) firstAt = performance.now();
+          markFirst();
           if (!thinkStart) thinkStart = performance.now();
           if (lastTool && m.reasoning && lastTool.rat === m.reasoning.length) m.reasoning += "\n\n";
           m.reasoning += d.reasoning_content;
         }
         if (d.content) {
-          if (!firstAt) firstAt = performance.now();
+          markFirst();
           if (thinkStart && m.thinkSecs == null) m.thinkSecs = (performance.now() - thinkStart) / 1000;
           if (lastTool && m.text && lastTool.at === m.text.length) m.text += "\n\n";
           m.text += d.content;
@@ -1611,6 +1630,10 @@ async function send(ready) {
   if (ran) m.meta = `${m.meta ? `${m.meta} · ` : ""}${ran} tool call${ran > 1 ? "s" : ""}`;
   if (m.summarized) m.meta = `${m.meta || ""} · summarized ${m.summarized} earlier messages to stay inside the context`;
   if (m.limit) m.meta = `${m.meta || ""} · stopped at the limit of ${m.limit} tool rounds (mcp.max_rounds)`;
+  clearInterval(tick);
+  waiting = null;
+  const ttft = firstAt ? (firstAt - startAt) / 1000 : null;      // a long wait is worth remembering, a short one is noise
+  if (ttft > 5) m.meta = `first token in ${fmt(ttft, 1)} s${m.meta ? ` · ${m.meta}` : ""}`;
   clearInterval(autosave);
   delete m.partial;
   busy = null;

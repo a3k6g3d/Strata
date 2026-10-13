@@ -53,6 +53,7 @@ main { flex: 1; min-height: 0; display: flex; }
 .st-collapse__body.thinking { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 420px; overflow-y: auto; }
 .st-msg__meta .st-btn--icon { width: 28px; height: 28px; }
 .st-msg__meta .st-btn--icon .st-icon { width: 16px; height: 16px; }
+.wait-note { margin-left: var(--st-s-3); font-size: var(--st-fs-sm); font-variant-numeric: tabular-nums; }
 .cursor::after { content: ""; display: inline-block; width: 8px; height: 1.1em; margin-left: 2px; vertical-align: -3px;
                  border-radius: 2px; background: var(--st-accent); animation: blink 1s steps(2) infinite; }
 @keyframes blink { 50% { opacity: 0; } }
