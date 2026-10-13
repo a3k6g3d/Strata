@@ -4265,13 +4265,16 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
             yield kind, x
         total += done["completion_tokens"]
         run_them = calls and not own_calls and done["finish"] == "stop" and not cancel.is_set()
+        why = ""                                         # why the calls below were not run, for the client to say
         if run_them and rounds >= max_rounds:
             yield "mcp", {"event": "limit", "max_rounds": max_rounds}
-            run_them = False
+            run_them, why = False, "limit"
         if not run_them:
+            if calls and not why:                        # stopped, or the answer was cut off before the call ended
+                why = "stop" if cancel.is_set() else done["finish"]
             for c in calls:                              # announced, never run: close them in the client's view
                 yield "mcp", {"event": "result", "id": c.id, "ok": False, "skipped": True, "text": "not run",
-                              "chars": 0, "truncated": False, "ms": 0}
+                              "reason": why, "chars": 0, "truncated": False, "ms": 0}
             break
         rounds += 1
         results = []
