@@ -898,8 +898,13 @@ function renderSessions() {
   let last = "";
   let shown = sessionList.some((s) => s.id === current.id) || !messages.length
     ? sessionList : [{id: current.id, title: autoTitle(), updated: Date.now() / 1000}, ...sessionList];
-  // a search box only earns its place once there are chats to find; it filters the list as you type
-  const q = ($("sessions-search") ? $("sessions-search").value : "").trim().toLowerCase();
+  // a search box only earns its place once there are chats to find; with three chats it is an empty box
+  // asking a question you do not have. It filters as you type, and vanishes when no longer wanted - so a
+  // query left in it while it is hidden must not silently hide chats.
+  const search = $("sessions-search");
+  const enough = sessionList.length > 4;
+  if (search) { search.hidden = !enough; if (!enough) search.value = ""; }
+  const q = (enough && search ? search.value : "").trim().toLowerCase();
   if (q) shown = shown.filter((s) => (s.title || "").toLowerCase().includes(q));
   for (const s of shown) {
     const label = sessionOrdered ? "Your order" : dayLabel(s.updated);
@@ -1956,7 +1961,10 @@ document.addEventListener("keydown", (e) => {
     const i = $("input"); i.focus(); i.setSelectionRange(i.value.length, i.value.length); return;
   }
   if ((e.ctrlKey || e.metaKey) && e.shiftKey && k.toLowerCase() === "d") { e.preventDefault(); flipTheme(); return; }
-  if (e.altKey && !e.ctrlKey && !e.metaKey && "123".includes(k)) { e.preventDefault(); showTab(["chat", "monitor", "about"][+k - 1]); return; }
+  // Alt+digit is a legacy menu mnemonic on Windows and needs a different key on some layouts, so the
+  // plain Alt pair is kept as a courtesy but Ctrl+Shift is what the sheet promises.
+  if ((e.ctrlKey || e.metaKey) && e.shiftKey && "123".includes(k)) { e.preventDefault(); showTab(["chat", "monitor", "about"][+k - 1]); return; }
+  if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && "123".includes(k)) { e.preventDefault(); showTab(["chat", "monitor", "about"][+k - 1]); return; }
   if (isTyping() || e.ctrlKey || e.metaKey || e.altKey) return;
   if (k === "?") { e.preventDefault(); openHelp(true); }
 });
