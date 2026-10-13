@@ -370,6 +370,8 @@ class ToolLoop(unittest.TestCase):
         self.assertEqual(sum(m["event"] == "call" for m in mcp), 2)
         self.assertIn({"event": "limit", "max_rounds": 2}, mcp)
         self.assertTrue(mcp[-1].get("skipped"))
+        # the client has to say why a call did not run: "not run" alone reads like the tool failing
+        self.assertEqual(mcp[-1].get("reason"), "limit")
         self.assertEqual(self.chunks(text)[-1]["choices"][0]["finish_reason"], "stop")
 
     def test_stop_during_a_tool(self):
