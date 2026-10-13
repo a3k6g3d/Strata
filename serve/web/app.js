@@ -637,7 +637,8 @@ const DEFAULTS = {thinking: "high", temperature: 0.6, top_p: 0.95, top_k: 20, ma
 let settings = {...DEFAULTS, ...store.get("sampling", {})};
 let messages = store.get("chat", []);
 let attachments = [];                 // {name, url}
-let busy = null;                      // {controller, msg}
+let busy = null;   // the answer in flight: {id, controller, msg, list, el} - id/list are the chat it belongs to,
+                   // el is its row on screen, or null while that chat is not the one being read
 
 function timeStr(t) { return new Date(t).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}); }
 
@@ -650,6 +651,7 @@ let sessionList = [];                     // [{id, title, updated, messages, cus
 let sessionOrdered = false;               // the user dragged the chats into their own order (the server keeps it): no day groups
 let current = {id: null, title: "New chat", custom: false};
 let saveTimer = null, saving = Promise.resolve();
+let drafts = new Map();            // half-typed questions, one per chat: switching chats must not carry one along
 
 // An answer that was still being written when the page, the app or the model stopped: its text and the tool calls it had
 // finished were saved on the way; it is marked, and 'continue' carries on from what it did.
@@ -665,14 +667,17 @@ function fixLoaded(list) {
   return out;
 }
 function newSessionId() { return `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`; }
-function autoTitle() {
-  const first = messages.find((m) => m.role === "user" && (m.text || "").trim());
+function autoTitle() { return autoTitleOf(messages); }
+// the same for a chat that is not the one on screen: an answer arriving in the background still needs a title
+function autoTitleOf(list) {
+  const first = list.find((m) => m.role === "user" && (m.text || "").trim());
   const t = first ? first.text.replace(/\s+/g, " ").trim() : "";
   return t ? (t.length > 60 ? t.slice(0, 57) + "…" : t) : "New chat";
 }
-function chatPayload() {
-  return messages.map((m) => ({...m, images: (m.images || []).map((i) => ({name: i.name})),
-                                files: (m.files || []).map((f) => ({name: f.name}))}));
+function chatPayload() { return chatPayloadOf(messages); }
+function chatPayloadOf(list) {
+  return list.map((m) => ({...m, images: (m.images || []).map((i) => ({name: i.name})),
+                            files: (m.files || []).map((f) => ({name: f.name}))}));
 }
 async function sessionApi(path, body) {
   const r = await fetch(path, body === undefined ? {headers: headers(false)}
@@ -680,12 +685,14 @@ async function sessionApi(path, body) {
   if (!r.ok) { let msg = `HTTP ${r.status}`; try { msg = (await r.json()).error.message || msg; } catch (e) { /* not json */ } throw new Error(msg); }
   return r.json();
 }
-function saveNow() {
+// any chat, by id, from the list that holds it - the list is not always `messages`, because an answer can be
+// arriving in a chat nobody is looking at
+function saveSession(id, list, custom, title) {
   clearTimeout(saveTimer);
   saveTimer = null;
-  if (!sessionsOn || !current.id || !messages.length) return saving;      // an empty chat is not kept
-  if (!current.custom) current.title = autoTitle();
-  const id = current.id, body = {title: current.title, custom_title: current.custom, messages: chatPayload()};
+  if (!sessionsOn || !id || !list.length) return saving;                   // an empty chat is not kept
+  if (!custom) title = autoTitleOf(list);
+  const body = {title, custom_title: custom, messages: chatPayloadOf(list)};
   savesRunning++;
   saving = saving.then(() => sessionApi(`sessions/${id}`, body)).then((meta) => {
     if (current.id === id) current.syncedAt = meta.updated;                  // this window is in step with the server up to here
@@ -695,6 +702,11 @@ function saveNow() {
     renderSessions();
   }).catch((e) => { toast("error", "The chat was not saved", e.message, 6000); }).finally(() => { savesRunning--; });
   return saving;
+}
+function saveNow() {
+  if (!sessionsOn || !current.id) return saving;
+  if (!current.custom) current.title = autoTitle();
+  return saveSession(current.id, messages, current.custom, current.title);
 }
 function saveChat() {
   updateGalleryCount();
@@ -795,7 +807,7 @@ function renderSessions() {
       last = label;
     }
     const row = document.createElement("div");
-    row.className = "sess" + (s.id === current.id ? " sess--current" : "");
+    row.className = "sess" + (s.id === current.id ? " sess--current" : "") + (busy && busy.id === s.id ? " sess--writing" : "");
     row.dataset.id = s.id;
     row.setAttribute("role", "listitem");
     if (sessionList.some((x) => x.id === s.id)) wireDrag(row, s.id);
@@ -820,7 +832,7 @@ function renderSessions() {
     del.title = "Delete this chat";
     del.setAttribute("aria-label", "Delete this chat");
     del.textContent = "×";
-    row.append(title, del);
+    row.append(title, writingMark(s.id), del);
     box.appendChild(row);
   }
   if (!shown.length) {
@@ -835,9 +847,45 @@ function renderSessions() {
   }
   $("chat-title").textContent = current.custom ? current.title : autoTitle();
 }
-// An answer being written holds the chat: switching or clearing it now would drop what the model is writing.  The guard used to
-// say "stop first" and leave you to work out the clicks; now the toast offers them as one button, and does what you asked once
-// the answer has really stopped (the stream ends a moment after the abort, so the wait is on the page, not on you).
+// An answer being written holds its own chat, and only its own chat.  It keeps arriving when you go elsewhere -
+// the stream writes into the chat that asked for it, not into whatever happens to be on screen - so browsing the
+// list, starting a new chat or asking a second question are all allowed while another chat is busy.  What still
+// cannot happen is two answers at once: a question typed while another chat writes waits, and the notice says
+// which chat is writing and offers one button that stops that answer and sends this question (the stream ends a
+// moment after the abort, so the wait is on the page, not on you).
+function writingHere() { return !!busy && busy.id === current.id; }
+function writingTitle() {
+  if (!busy) return "";
+  const at = sessionList.findIndex((s) => s.id === busy.id);
+  if (at >= 0 && sessionList[at].title) return sessionList[at].title;
+  return busy.list.some((m) => m.role === "user") ? autoTitleOf(busy.list) : "a chat";
+}
+// the mark on the row in the list: an answer is arriving there, so that chat is not "just sitting there"
+function writingMark(id) {
+  const w = document.createElement("span");
+  w.className = "sess__writing";
+  w.hidden = !(busy && busy.id === id);
+  w.textContent = "writing";
+  w.title = "An answer is being written here; open this chat to watch it";
+  return w;
+}
+// the answer on screen: painted only while its own chat is the one being read, and re-found after a tool round
+// has rebuilt the rows underneath it
+function paintStream(streaming) {
+  if (!busy || !writingHere()) return;
+  if (!busy.el || !busy.el.isConnected) busy.el = $("chat").querySelector(`[data-i="${busy.list.indexOf(busy.msg)}"]`);
+  if (busy.el) updateAssistant(busy.el, busy.msg, streaming);
+  if (streaming) scrollDown();
+}
+// the chat an answer is going into, whether or not it is the one on screen
+function saveWriting() {
+  if (!busy) return saving;
+  if (busy.id === current.id && busy.list === messages) return saveNow();
+  const at = sessionList.findIndex((s) => s.id === busy.id);
+  const entry = at >= 0 ? sessionList[at] : {};
+  return saveSession(busy.id, busy.list, !!entry.custom_title, entry.title);
+}
+
 function stillWriting(then) {
   if (!busy) return false;
   const run = () => {
@@ -845,23 +893,67 @@ function stillWriting(then) {
     const wait = setInterval(() => { if (busy) return; clearInterval(wait); then(); }, 50);
     setTimeout(() => { clearInterval(wait); }, 5000);           // never leave the click hanging if the stream stalls
   };
-  toast("warn", "Still writing", "Stop the answer first, or wait for it to finish.", 9000,
-        {label: "Stop and do it", run});
+  const here = writingHere();
+  toast("warn", here ? "Still writing" : `Still writing in “${writingTitle()}”`,
+        here ? "Stop the answer first, or wait for it to finish."
+             : "It keeps arriving in the background - open it in the list to watch it. One button stops it and asks here instead.",
+        9000, {label: "Stop and do it", run});
   return true;
 }
+// the half-typed question belongs to the chat it was typed in: switching away keeps it there, and switching back
+// hands it over again (attachments are in-memory data URLs, so they travel with it)
+function stashDraft() {
+  if (!current.id) return;
+  const text = $("input").value;
+  if (text.trim() || attachments.length || drafts.has(current.id)) drafts.set(current.id, {text, attachments});
+  attachments = [];
+  renderAttachments();
+}
+function takeDraft() {
+  const d = drafts.get(current.id);
+  $("input").value = d ? d.text : "";
+  attachments = d ? d.attachments : [];
+  renderAttachments();
+  autosize();
+}
 async function newSession() {
-  if (stillWriting(newSession)) return;
-  await saveNow();
+  stashDraft();
+  await saveNow();                                             // the chat being left keeps its own edits
+  if (busy) busy.el = null;                                    // its answer keeps arriving, only off screen now
   current = {id: newSessionId(), title: "New chat", custom: false};
   messages = [];
   store.set("session", current.id);
   renderChat();
   renderSessions();
+  setBusy(!!busy);                                             // another chat may still be writing: it says which
+  renderQueued();
+  takeDraft();
+  maybeSendQueued();
   $("input").focus();
 }
+// opening the chat whose answer is arriving: the live text is ahead of the copy on the server, so it is shown
+// from the stream instead of fetched, and the stream is pointed back at the rows just drawn
+function adoptStream(id) {
+  const at = sessionList.findIndex((s) => s.id === id);
+  const entry = at >= 0 ? sessionList[at] : {};
+  current = {id, title: entry.title || "Chat", custom: !!entry.custom_title, syncedAt: entry.updated || 0};
+  messages = busy.list;
+  store.set("session", id);
+  renderChat();
+  busy.el = $("chat").querySelector(`[data-i="${messages.indexOf(busy.msg)}"]`);
+  if (busy.el) updateAssistant(busy.el, busy.msg, true);
+  renderSessions();
+  setBusy(true);
+  renderQueued();
+  takeDraft();
+  maybeSendQueued();
+}
 async function openSession(id) {
-  if (id === current.id || stillWriting(() => openSession(id))) return;
-  await saveNow();
+  if (id === current.id) return;
+  stashDraft();
+  await saveNow();                                             // the chat being left keeps its own edits
+  if (busy) busy.el = null;                                    // its answer keeps arriving, only off screen now
+  if (busy && busy.id === id) { adoptStream(id); return; }
   try {
     const data = await sessionApi(`sessions/${id}`);
     current = {id, title: data.title || "Chat", custom: !!data.custom_title, syncedAt: data.updated || 0};
@@ -872,9 +964,12 @@ async function openSession(id) {
   } catch (e) {
     toast("error", "That chat could not be opened", e.message, 6000);
   }
+  renderQueued();
+  takeDraft();
+  maybeSendQueued();
 }
 async function deleteSession(id) {
-  if (id === current.id && stillWriting(() => deleteSession(id))) return;
+  if (busy && busy.id === id && stillWriting(() => deleteSession(id))) return;
   if (!confirm("Delete this chat? It cannot be brought back.")) return;
   try {
     await sessionApi(`sessions/${id}/delete`, {});
@@ -933,12 +1028,13 @@ if ($("sessions-search")) {
 $("session-new").onclick = newSession;
 $("sessions-toggle").onclick = () => showSessions($("sessions").hidden);
 // leaving the page: what is waiting to be saved goes out now
-addEventListener("pagehide", () => { if (saveTimer || busy) saveNow(); });
+addEventListener("pagehide", () => { if (saveTimer || busy) saveWriting(); });
 // Chats can change behind this window's back - the Discord bot saves its conversations as chats here and continues the ones it is
 // given.  Every few seconds, while the window is idle: refresh the list, and reload the open chat when the server has a newer copy.
 let listSig = "";
 async function pollSessions() {
-  if (!sessionsOn || document.hidden || busy || savesRunning || saveTimer) return;
+  // a background answer does not stop this window from refreshing: only the chat being written into is off limits
+  if (!sessionsOn || document.hidden || (busy && writingHere()) || savesRunning || saveTimer) return;
   let listing;
   try { listing = await sessionApi("sessions"); } catch (e) { return; }
   const list = listing.sessions || [];
@@ -948,10 +1044,11 @@ async function pollSessions() {
   sessionList = list;
   sessionOrdered = !!listing.ordered;
   const mine = list.find((x) => x.id === current.id);
-  if (mine && mine.updated > (current.syncedAt || 0) + 0.001 && !busy && !savesRunning && !saveTimer) {
+  const idleHere = !writingHere();                             // reloading the screen is safe while another chat writes
+  if (mine && mine.updated > (current.syncedAt || 0) + 0.001 && idleHere && !savesRunning && !saveTimer) {
     try {
       const data = await sessionApi(`sessions/${current.id}`);
-      if (!busy && !savesRunning && !saveTimer) {
+      if (idleHere && !savesRunning && !saveTimer) {
         messages = fixLoaded(data.messages);
         current.syncedAt = data.updated || mine.updated;
         current.title = data.title || current.title;
@@ -1290,7 +1387,7 @@ $("chat").addEventListener("click", (e) => {
   const cc = e.target.closest("[data-code-copy]");
   if (cc) { copyText(cc.closest(".st-code").querySelector("pre").textContent, cc); return; }
   const cn = e.target.closest("[data-continue]");
-  if (cn) { if (!busy) send({text: "Continue"}); return; }   // while an answer is still coming, the box queues instead
+  if (cn) { if (!(busy && writingHere())) send({text: "Continue"}); return; }   // another chat's answer: the notice offers to stop it
   const rt = e.target.closest("[data-retry]");
   if (rt) { retryFrom(+rt.closest(".st-msg").dataset.i); return; }
   const mc = e.target.closest("[data-msg-copy]");
@@ -1393,21 +1490,28 @@ function assistantMessages(m) {
 function setBusy(on) {
   $("stop-btn").hidden = !on;
   $("composer").classList.toggle("is-busy", on);
-  // say what Enter does right now: it queues, it does not send, and it does not fail
-  $("input").placeholder = on ? "Type here and Enter queues it for the next turn\u2026" : "Ask anything\u2026";
-  $("composer-hint").textContent = on ? "Enter: queue" : "Shift+Enter: new line";
+  // say what Enter does right now, and which chat is holding the line: it queues when the answer being written is
+  // this chat's own, and it waits when the answer in flight belongs to another chat (the red button and Esc stop
+  // that one, so the name has to be on show, not left to be guessed)
+  const other = on && !writingHere() ? writingTitle() : "";
+  $("stop-btn").title = on ? (other ? `Stop the answer writing in “${other}”` : "Stop this answer (Esc)") : "";
+  $("input").placeholder = on ? (other ? `“${other}” is still writing\u2026` : "Type here and Enter queues it for the next turn\u2026") : "Ask anything\u2026";
+  $("composer-hint").textContent = on ? (other ? "Enter: waits for the other chat" : "Enter: queue") : "Shift+Enter: new line";
 }
 
 // A message typed while the model is still answering waits here and goes out when the answer ends (or at once with
-// "Send now", which stops the answer where it is).  One message waits; a second one is added to it.
+// "Send now", which stops the answer where it is).  One message waits; a second one is added to it.  It waits in
+// the chat it was typed in: another chat's answer must not pick it up, and it is not sent while you are reading a
+// different chat - it goes out when you come back to that chat and nothing is writing there.
 let queued = null;
 function renderQueued() {
-  $("queued").hidden = !queued;
-  if (queued) $("queued-text").textContent = queued.text || `${queued.images.length + queued.files.length} attachment(s)`;
+  const mine = queued && queued.id === current.id;
+  $("queued").hidden = !mine;
+  if (mine) $("queued-text").textContent = queued.text || `${queued.images.length + queued.files.length} attachment(s)`;
 }
 function queueMessage(text) {
-  const add = {text, images: attachments.filter((a) => a.kind !== "file"), files: attachments.filter((a) => a.kind === "file")};
-  queued = queued ? {text: [queued.text, text].filter(Boolean).join(" "), images: [...queued.images, ...add.images],
+  const add = {id: current.id, text, images: attachments.filter((a) => a.kind !== "file"), files: attachments.filter((a) => a.kind === "file")};
+  queued = queued ? {id: queued.id, text: [queued.text, text].filter(Boolean).join(" "), images: [...queued.images, ...add.images],
                      files: [...queued.files, ...add.files]} : add;
   attachments = [];
   renderAttachments();
@@ -1416,20 +1520,34 @@ function queueMessage(text) {
   renderQueued();
 }
 function sendQueued() {
-  if (!queued || busy) return;
+  if (!queued || busy || queued.id !== current.id) return;
   const q = queued;
   queued = null;
   renderQueued();
   send(q);
 }
 
+// a held message waits even across a change of chat: it is sent in the chat it was held in, once nothing writes
+// there (coming back to that chat is what releases it)
+function maybeSendQueued() {
+  if (queued && !busy && queued.id === current.id) setTimeout(sendQueued, 0);
+}
+
 async function send(ready) {
   const typed = $("input").value.trim();
+  // one answer at a time, but it belongs to the chat that asked for it: a question here while another chat is
+  // writing is not refused, it is held - and the notice names that chat, with one button that stops it and asks
+  if (busy && !writingHere()) {
+    if (!ready && !typed && !attachments.length) return;
+    stillWriting(() => send(ready));
+    return;
+  }
   if (!ready && (typed || attachments.length) && busy) { queueMessage(typed); return; }
   if ((!ready && !typed && !attachments.length) || busy) return;
   const text = ready ? ready.text : typed;
-  messages.push({role: "user", text, images: ready ? ready.images : attachments.filter((a) => a.kind !== "file"),
-                 files: ready ? ready.files : attachments.filter((a) => a.kind === "file"), time: Date.now()});
+  const list = messages;                                       // this chat's own list: the answer goes into it, not
+  list.push({role: "user", text, images: ready ? ready.images : attachments.filter((a) => a.kind !== "file"),     // into whatever
+                 files: ready ? ready.files : attachments.filter((a) => a.kind === "file"), time: Date.now()});   // is on screen
   if (!ready) {
     attachments = [];
     renderAttachments();
@@ -1437,14 +1555,14 @@ async function send(ready) {
     autosize();
   }
   const m = {role: "assistant", text: "", reasoning: "", time: Date.now()};
-  messages.push(m);
+  list.push(m);
   renderChat();
   const el = $("chat").lastElementChild;
   const controller = new AbortController();
-  busy = {controller, msg: m};
+  busy = {id: current.id, controller, msg: m, list, el};
   setBusy(true);
   m.partial = true;                                   // in progress: saved every few seconds, so a stop mid-way loses little
-  const autosave = setInterval(() => { if (sessionsOn && !savesRunning) saveNow(); }, 4000);
+  const autosave = setInterval(() => { if (sessionsOn && !savesRunning) saveWriting(); }, 4000);
   saveChat();                                         // the question is kept at once
 
   const body = {model: health.model, messages: apiMessages(), stream: true,
@@ -1466,8 +1584,8 @@ async function send(ready) {
   const startAt = performance.now();
   const markFirst = () => { if (!firstAt) { firstAt = performance.now(); waiting = null; } };
   waiting = {start: startAt, prompting: false};
-  const tick = setInterval(() => { if (waiting) updateAssistant(el, m, true); }, 1000);   // the waiting clock
-  const paint = () => { frame = 0; updateAssistant(el, m, true); scrollDown(); };
+  const tick = setInterval(() => { if (waiting) paintStream(true); }, 1000);              // the waiting clock
+  const paint = () => { frame = 0; paintStream(true); };
   try {
     const r = await fetch("v1/chat/completions", {method: "POST", headers: headers(true), body: JSON.stringify(body),
                                                    signal: controller.signal});
@@ -1548,13 +1666,13 @@ async function send(ready) {
   if (ttft > 5) m.meta = `first token in ${fmt(ttft, 1)} s${m.meta ? ` · ${m.meta}` : ""}`;
   clearInterval(autosave);
   delete m.partial;
+  const here = writingHere();
+  if (here) { updateAssistant(el, m, false); scrollDown(); }   // a background answer lands without touching the screen
+  if (here) saveChat(); else saveWriting();                    // its own chat, its own title, from the stream's list
   busy = null;
   setBusy(false);
   if (frame) cancelAnimationFrame(frame);
-  updateAssistant(el, m, false);
-  saveChat();
-  scrollDown();
-  if (queued) setTimeout(sendQueued, 0);              // the message typed meanwhile goes out now
+  if (queued && here) setTimeout(sendQueued, 0);              // the message typed meanwhile goes out now
 }
 
 $("composer").onsubmit = (e) => { e.preventDefault(); send(); };

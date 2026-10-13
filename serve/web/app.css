@@ -305,6 +305,13 @@ main { flex: 1; min-height: 0; display: flex; }
 .sess__del { flex: none; width: 28px; height: 28px; margin-right: 4px; border: 0; border-radius: var(--st-r-sm, 6px); background: none; color: var(--st-ink-muted);
              font-size: 18px; line-height: 1; cursor: pointer; opacity: 0; }
 .sess:hover .sess__del, .sess--current .sess__del, .sess__del:focus-visible { opacity: 1; }
+/* an answer is arriving in this chat while you read another one: say so, quietly, and keep it out of the way of
+   the title (the row is flex, so the mark sits between the name and the delete button) */
+.sess__writing { flex: none; margin-right: 4px; padding: 1px 7px; border-radius: 999px; font-size: 10px; line-height: 1.6;
+                 letter-spacing: .04em; text-transform: lowercase; color: var(--st-accent);
+                 background: color-mix(in srgb, var(--st-accent) 16%, transparent); animation: blink 1.6s steps(2, start) infinite; }
+.sess__writing[hidden] { display: none; }
+.sess--writing .sess__title { color: var(--st-accent); }
 .sess__del:hover { color: var(--st-danger); background: var(--st-danger-tint); }
 @media (max-width: 900px) {
   .sessions { position: absolute; z-index: 20; top: 0; bottom: 0; left: 0; background: var(--st-bg, #111); box-shadow: 0 0 40px rgba(0, 0, 0, .35); }
