@@ -42,16 +42,30 @@ class ThisPc(unittest.TestCase):
     (No connection is made here: validate only reads the address and resolves a literal, so these are deterministic.)"""
 
     def test_this_pc_is_let_through(self):
-        for url in ("http://127.0.0.1:8443/", "http://127.0.0.1:8080/x", "http://[::1]:8080/"):
+        for url in ("http://127.0.0.1:8443/", "http://127.0.0.1:8080/x", "http://[::1]:8080/", "http://127.0.0.1:3000/"):
             p, port, ip = panel.validate(url, allow_loopback=True)
             self.assertTrue(panel.is_loopback(ip), url)
             self.assertEqual(port, int(url.split("://", 1)[1].split("/", 1)[0].rsplit(":", 1)[-1]), url)
 
-    def test_the_port_rule_still_applies_to_this_pc(self):
-        # allow_private in the web tool skips the port rule as well; the panel must not
-        with self.assertRaises(panel.W.WebError) as e:
-            panel.validate("http://127.0.0.1:9999/", allow_loopback=True)
-        self.assertIn("port 9999", str(e.exception))
+    def test_any_port_of_this_pc(self):
+        # a development server sits on whatever port it likes; the panel may show it on any of them
+        for port in (3000, 5173, 8081, 9999):
+            p, got, ip = panel.validate(f"http://127.0.0.1:{port}/", allow_loopback=True)
+            self.assertEqual(got, port, port)
+
+    def test_the_port_rule_still_applies_to_the_internet(self):
+        # the exception is for this PC, not a general loosening of the web rule.  A literal address: with allow_loopback the
+        # address is resolved before the port is judged, so a name here would make the test depend on DNS.
+        for url in ("http://93.184.216.34:9999/", "http://93.184.216.34:22/"):
+            with self.assertRaises(panel.W.WebError) as e:
+                panel.validate(url, allow_loopback=True)
+            self.assertIn("is not allowed", str(e.exception), url)
+
+    def test_a_public_address_on_a_usual_port_is_still_shown(self):
+        # nothing of the old behaviour lost for a page of the internet: literal address, so no DNS either
+        p, port, ip = panel.validate("http://93.184.216.34:8080/", allow_loopback=True)
+        self.assertEqual(port, 8080)
+        self.assertTrue(panel._address(ip).is_global)
 
     def test_another_machine_of_the_local_network_is_still_refused(self):
         for url in ("http://192.168.1.1/", "http://10.0.0.5:8080/", "http://169.254.1.1/"):
