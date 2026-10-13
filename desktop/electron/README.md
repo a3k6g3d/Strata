@@ -1,5 +1,9 @@
 # Strata desktop (Electron)
 
+Not the app in daily use - [`../tauri`](../tauri) is, and it says so too. This one is kept as source only: same window, same
+tray, same launcher, in JavaScript on a bundled Chromium (369 MB installed against Tauri's 1.2 MB). Fix behaviour in Tauri;
+change this one only if you mean to switch back.
+
 Strata's chat page in its own window. Strata is [Niko1221/Strata](https://github.com/Niko1221/Strata) (MIT, see `LICENSE`); this app only holds a window around it. It is a thin shell: the page, the sessions and the model all stay in the server.
 
 - Opens `http://127.0.0.1:8080`. If the model is not running it starts it (`launcher`), shows how the loading goes
