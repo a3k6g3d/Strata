@@ -896,8 +896,11 @@ function renderSessions() {
   const box = $("sessions-list");
   box.textContent = "";
   let last = "";
-  const shown = sessionList.some((s) => s.id === current.id) || !messages.length
+  let shown = sessionList.some((s) => s.id === current.id) || !messages.length
     ? sessionList : [{id: current.id, title: autoTitle(), updated: Date.now() / 1000}, ...sessionList];
+  // a search box only earns its place once there are chats to find; it filters the list as you type
+  const q = ($("sessions-search") ? $("sessions-search").value : "").trim().toLowerCase();
+  if (q) shown = shown.filter((s) => (s.title || "").toLowerCase().includes(q));
   for (const s of shown) {
     const label = sessionOrdered ? "Your order" : dayLabel(s.updated);
     if (label !== last) {
@@ -925,8 +928,9 @@ function renderSessions() {
     title.type = "button";
     title.className = "sess__title";
     title.textContent = s.id === current.id ? (current.custom ? current.title : autoTitle()) : s.title;
-    title.title = "Open this chat. Double-click to rename. Drag to reorder (or Alt+Up / Alt+Down).";
+    title.title = "Open this chat. F2 (or double-click) renames it. Drag to reorder (or Alt+Up / Alt+Down).";
     title.onkeydown = (e) => {
+      if (e.key === "F2") { e.preventDefault(); renameSession(s.id); return; }   // double-click is invisible to a keyboard
       if (!e.altKey || (e.key !== "ArrowUp" && e.key !== "ArrowDown")) return;
       e.preventDefault();
       const at = sessionList.findIndex((x) => x.id === s.id), to = at + (e.key === "ArrowUp" ? -1 : 1);
@@ -947,8 +951,12 @@ function renderSessions() {
   if (!shown.length) {
     const e = document.createElement("div");
     e.className = "sessions__empty muted small";
-    e.textContent = "Your chats appear here.";
+    e.textContent = q ? `Nothing matches “${($("sessions-search").value || "").trim()}”.` : "Your chats appear here.";
     box.appendChild(e);
+    if (q) { const c = document.createElement("button"); c.type = "button"; c.className = "sessions__reset";
+      c.textContent = "Clear the search"; c.style.marginTop = "8px";
+      c.onclick = () => { $("sessions-search").value = ""; $("sessions-search").focus(); renderSessions(); };
+      box.appendChild(c); }
   }
   $("chat-title").textContent = current.custom ? current.title : autoTitle();
 }
@@ -1032,6 +1040,12 @@ $("sessions-list").addEventListener("dblclick", (e) => {
   if (row && !e.target.closest(".sess__del")) renameSession(row.dataset.id);
 });
 $("chat-title").addEventListener("dblclick", () => { if (current.id) renameSession(current.id); });
+if ($("sessions-search")) {
+  $("sessions-search").addEventListener("input", renderSessions);
+  $("sessions-search").addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { e.preventDefault(); e.target.value = ""; renderSessions(); }   // Esc here empties the box, it does not close the list
+  });
+}
 $("session-new").onclick = newSession;
 $("sessions-toggle").onclick = () => showSessions($("sessions").hidden);
 // leaving the page: what is waiting to be saved goes out now
@@ -1650,7 +1664,7 @@ $("stop-btn").onclick = () => { if (busy) busy.controller.abort(); };
 $("queued-now").onclick = () => { if (busy) busy.controller.abort(); else sendQueued(); };   // the end of send() sends it
 $("queued-cancel").onclick = () => { queued = null; renderQueued(); };
 $("input").addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
+  if (e.key === "Enter" && !e.isComposing && (e.ctrlKey || e.metaKey || !e.shiftKey)) { e.preventDefault(); send(); }
   // Escape is the fastest way to say "that is going wrong", and it keeps everything written so far
   if (e.key === "Escape" && busy) { e.preventDefault(); busy.controller.abort(); }
 });
@@ -1903,3 +1917,62 @@ const sessionsReady = initSessions();
 loadHealth().then(loadMcp).then(() => sessionsReady).then(() => { if (startQuestion) { $("input").value = startQuestion; send(); } });
 showTab(location.hash.slice(1) || "chat");
 poll();
+
+// ------------------------------------------------------------------ keyboard shortcuts
+// the shortcut sheet: a window like the drawer - focus goes in, comes back out
+let helpReturn = null;
+function openHelp(open) {
+  const d = $("help-dialog");
+  if (d.hidden === !open) return;
+  if (open) {
+    helpReturn = document.activeElement;
+    d.hidden = false;
+    requestAnimationFrame(() => $("help-close").focus());
+  } else {
+    d.hidden = true;
+    if (helpReturn && helpReturn.isConnected) helpReturn.focus();
+    helpReturn = null;
+  }
+}
+$("help-btn").onclick = () => openHelp(true);
+$("help-close").onclick = () => openHelp(false);
+$("help-dialog").addEventListener("mousedown", (e) => { if (e.target === $("help-dialog")) openHelp(false); });
+
+const isTyping = () => {
+  const a = document.activeElement || {};
+  return /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName || "") || !!a.isContentEditable;
+};
+
+document.addEventListener("keydown", (e) => {
+  if ($("help-dialog").hidden === false) {
+    if (e.key === "Escape") { e.preventDefault(); openHelp(false); return; }
+    if (e.key === "Tab") trapTab(e, $("help-dialog"));
+    return;
+  }
+  if ($("drawer").dataset.open === "true") return;   // the drawer is the window on top: its own keys (Esc, Tab) own the keyboard
+  const k = e.key || "";
+  if ((e.ctrlKey || e.metaKey) && !e.altKey && k.toLowerCase() === "k") {      // straight to the message box
+    e.preventDefault(); showTab("chat");
+    const i = $("input"); i.focus(); i.setSelectionRange(i.value.length, i.value.length); return;
+  }
+  if ((e.ctrlKey || e.metaKey) && e.shiftKey && k.toLowerCase() === "d") { e.preventDefault(); flipTheme(); return; }
+  if (e.altKey && !e.ctrlKey && !e.metaKey && "123".includes(k)) { e.preventDefault(); showTab(["chat", "monitor", "about"][+k - 1]); return; }
+  if (isTyping() || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (k === "?") { e.preventDefault(); openHelp(true); }
+});
+
+// the view tabs behave like a tab strip: arrows move between them
+const tabBtns = [...document.querySelectorAll(".st-tab")];
+document.querySelector(".st-tabs").addEventListener("keydown", (e) => {
+  const at = tabBtns.findIndex((t) => t === document.activeElement);
+  if (at < 0 || ["ArrowLeft", "ArrowRight", "Home", "End"].indexOf(e.key) < 0) return;
+  e.preventDefault();
+  let to = at;
+  if (e.key === "ArrowLeft") to = (at - 1 + tabBtns.length) % tabBtns.length;
+  if (e.key === "ArrowRight") to = (at + 1) % tabBtns.length;
+  if (e.key === "Home") to = 0;
+  if (e.key === "End") to = tabBtns.length - 1;
+  showTab(tabBtns[to].dataset.tab);
+  const again = document.getElementById("tab-btn-" + tab);                    // showTab moves to the message box; a tab user stays on the tabs
+  if (again) again.focus();
+});
