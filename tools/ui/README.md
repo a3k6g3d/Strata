@@ -14,6 +14,10 @@ server, and a few seconds each. `py -I tools/ui/<file>.py` (selenium is not in t
 | `ui-phone.py` | who is making the page wider than a phone: at 390px it lists every element whose right edge is past the viewport. Sideways overflow is a computed width, not something you can see in the source. Give it more than one URL to compare two builds. |
 | `ui-drawer-probe.py` | one control, measured: is the sampling drawer on screen, does it move the page's scroll width, where does focus go, and what does the screen reader get from `aria-hidden`. |
 | `ui-panel-check.py` | the side panel's network rule: drives the live app's own Browser pane with four addresses and reports which it showed and which it refused, with the reason it gave. |
+| `ui-console-check.py` | does the page come up clean: any JavaScript error on load, and whether every tab still draws its parts (chat boxes, session rows, metric cards, the tab row itself). |
+| `ui-guard-check.py` | the "Still writing" notice: asking a second question while another chat's answer writes has to be held and named, not swallowed - and one button has to stop that answer and ask here instead. |
+| `ui-stream-check.py` | an answer arriving in the background: it stays in the chat that asked for it, the list marks that chat, opening it shows the live answer rather than the older copy on the server, and a half-typed question stays in the chat it was typed in. |
+| `ui-tabs-check.py` | the header tabs: centred at wide widths, and still not overlapping the brand or the controls down to phone width. |
 
 `STRATA_UI_URL` says which page to look at (default the review server on 8081, or the live app on 8080 for the
 panel check); `STRATA_UI_SHOTS` where the pictures go (default `tools/ui/shots/`, which is not tracked).
