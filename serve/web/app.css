@@ -273,6 +273,7 @@ main { flex: 1; min-height: 0; display: flex; }
 .sessions__top { flex: none; padding: var(--st-s-3); }
 .sessions__new { width: 100%; justify-content: center; }
 .sessions__search { width: 100%; box-sizing: border-box; margin-top: var(--st-s-2); }
+.sessions__search[hidden] { display: none; }   /* the box appears only once there are chats to find */
 .sessions__list { flex: 1; min-height: 0; overflow-y: auto; padding: 0 var(--st-s-2) var(--st-s-3); }
 .sessions__day { padding: var(--st-s-3) var(--st-s-2) var(--st-s-1); font-size: var(--st-fs-xs); color: var(--st-ink-muted); text-transform: uppercase; letter-spacing: .04em; }
 .sessions__empty { padding: var(--st-s-3); }
