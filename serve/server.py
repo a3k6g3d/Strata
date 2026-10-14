@@ -4277,7 +4277,10 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
             run_them, why = False, "limit"
         if not run_them:
             if calls and not why:                        # stopped, or the answer was cut off before the call ended
-                why = "stop" if cancel.is_set() else done["finish"]
+                # The engine's finish_reason "stop" means the model ended the answer on its own.  Passing that through
+                # as "stop" made the page read it as the user pressing Stop, and blamed the user for the model's own
+                # last sentence; only a closed connection is the user's doing.
+                why = "stop" if cancel.is_set() else ("finished" if done["finish"] == "stop" else done["finish"])
             for c in calls:                              # announced, never run: close them in the client's view
                 yield "mcp", {"event": "result", "id": c.id, "ok": False, "skipped": True, "text": "not run",
                               "reason": why, "chars": 0, "truncated": False, "ms": 0}

@@ -374,6 +374,20 @@ class ToolLoop(unittest.TestCase):
         self.assertEqual(mcp[-1].get("reason"), "limit")
         self.assertEqual(self.chunks(text)[-1]["choices"][0]["finish_reason"], "stop")
 
+    def test_call_left_queued_when_the_model_ends_the_answer(self):
+        """A call that never ran because the model ended its own answer must not be blamed on the user stopping."""
+        # the model writes an MCP call and its own native call in the same round: the MCP loop leaves the round to the
+        # engine, so the announced call is closed unrun - with finish_reason "stop", which is the model's doing
+        self.start(call_script("fake__echo", text="again")
+                   + "\n\n<tool_call>\n<function=read_file>\n</function>\n</tool_call>", "</think>\n\nDone.")
+        code, text = self.post({"strata_mcp": True})
+        mcp = [c["strata_mcp"] for c in self.chunks(text) if "strata_mcp" in c]
+        skipped = [m for m in mcp if m.get("skipped")]
+        self.assertTrue(skipped)                                 # the call was announced and closed unrun
+        # "stop" here is the engine's finish_reason, not the user: the page reads it as "you stopped the answer"
+        self.assertEqual(skipped[-1]["reason"], "finished")
+        self.assertEqual(len(self.engine.prompts), 1)            # no second round
+
     def test_stop_during_a_tool(self):
         """Closing the connection while a slow tool runs stops the tool (notifications/cancelled) and the loop."""
         self.start(call_script("fake__sleep", seconds=8), "</think>\n\nnever")
