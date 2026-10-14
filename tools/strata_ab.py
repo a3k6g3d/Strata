@@ -72,6 +72,7 @@ def main(argv=None) -> int:
     ap.add_argument("--arm-name", default=None, help="run only this arm (by its label), and stop")
     ap.add_argument("--ready-timeout", type=int, default=600, help="seconds to wait for the model to load per arm")
     ap.add_argument("--yes", action="store_true", help="start even if something already answers on the port")
+    ap.add_argument("--dry-run", action="store_true", help="print the arms and stop: check the recipe before spending an hour")
     a = ap.parse_args(argv)
 
     if not BENCH.exists():
@@ -85,7 +86,7 @@ def main(argv=None) -> int:
         print(f"No arm called {a.arm_name!r}: it is one of " + ", ".join(f"{n!r}" for n, _ in ARMS), file=sys.stderr)
         return 2
 
-    if port_busy(a.port) and not a.yes:
+    if port_busy(a.port) and not (a.yes or a.dry_run):
         print(f"Something already answers on port {a.port}.  An arm has to load the model itself, on an otherwise empty "
               f"GPU - and while a Strata is serving a chat, its requests land inside the arm's own seconds and are "
               f"counted as the arm's.  Stop that server (Ctrl-C in its window, or the desktop's Stop), then run this "
@@ -98,7 +99,16 @@ def main(argv=None) -> int:
               "folder is not necessarily the one you want measured (it is the one the install last used).", file=sys.stderr)
         return 2
 
-    base = [BENCH, *cfg, "--port", str(a.port), "--tests", a.tests, "--runs", str(a.runs),
+    # name the interpreter, not the .py: Windows cannot CreateProcess a script by itself (WinError 193, "%1 is not a
+    # valid Win32 application"), which is how the first attempt at this died in three seconds without loading a model.
+    if a.dry_run:
+        for i, (name, extra) in enumerate(arms):
+            print(f"arm {i + 1}/{len(arms)}: {name}\n  " + " ".join(cmd for cmd in [*cfg, *("--engine-arg " + x for x in extra)])
+                  + f"\n  runs {a.runs} x {a.tests} on port {a.port}, out: {parent}")
+        print("\nNothing has run yet.  Drop --dry-run when the GPU is free.")
+        return 0
+
+    base = [sys.executable, "-u", str(BENCH), *cfg, "--port", str(a.port), "--tests", a.tests, "--runs", str(a.runs),
             "--out", str(parent), "--ready-timeout", str(a.ready_timeout), "--note", NOTE]
     done, failed = [], []
     for i, (name, extra) in enumerate(arms):
