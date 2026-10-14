@@ -18,6 +18,7 @@ server, and a few seconds each. `py -I tools/ui/<file>.py` (selenium is not in t
 | `ui-guard-check.py` | the "Still writing" notice: asking a second question while another chat's answer writes has to be held and named, not swallowed - and one button has to stop that answer and ask here instead. |
 | `ui-stream-check.py` | an answer arriving in the background: it stays in the chat that asked for it, the list marks that chat, opening it shows the live answer rather than the older copy on the server, and a half-typed question stays in the chat it was typed in. |
 | `ui-tabs-check.py` | the header tabs: centred at wide widths, and still not overlapping the brand or the controls down to phone width. |
+| `ui-monitor-check.py` | the request monitor page: a request's card still shows the figures it had, and the expert cache's hit rate is among them. It starts its own mock server with the monitor on, because the live app is usually started without `--api-monitor` and the page answers 404. |
 
 `STRATA_UI_URL` says which page to look at (default the review server on 8081, or the live app on 8080 for the
 panel check); `STRATA_UI_SHOTS` where the pictures go (default `tools/ui/shots/`, which is not tracked).
