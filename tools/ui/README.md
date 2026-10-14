@@ -19,6 +19,7 @@ server, and a few seconds each. `py -I tools/ui/<file>.py` (selenium is not in t
 | `ui-stream-check.py` | an answer arriving in the background: it stays in the chat that asked for it, the list marks that chat, opening it shows the live answer rather than the older copy on the server, and a half-typed question stays in the chat it was typed in. |
 | `ui-tabs-check.py` | the header tabs: centred at wide widths, and still not overlapping the brand or the controls down to phone width. |
 | `ui-monitor-check.py` | the request monitor page: a request's card still shows the figures it had, and the expert cache's hit rate is among them. It starts its own mock server with the monitor on, because the live app is usually started without `--api-monitor` and the page answers 404. |
+| `ui-webconsole-check.py` | the web console page (`/console`): a line the server prints while the page is open arrives, a line already shown is never shown twice, Pause holds the view and Resume catches up, and nothing hangs off the side at phone width. It starts its own mock server and installs the stdout tee `main()` installs, since that is what fills the buffer. |
 | `ui-run-check.py` | the clock on a running command: while a tool call is out, the page has to say how long it has been taking and against which limit - and go quiet once the result lands. The answer is a stubbed stream, so it runs in seconds and needs no model. |
 
 `STRATA_UI_URL` says which page to look at (default the review server on 8081, or the live app on 8080 for the

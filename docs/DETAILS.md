@@ -686,6 +686,7 @@ The server listens on `http://127.0.0.1:8080` (change with `--port` in setup, or
 | The same for Prometheus, with vLLM's metric names (asked with `Accept: text/plain` or `?format=prometheus`) | `GET /metrics` |
 | Request totals and what is running in Prometheus' text format, under llama-server's metric names | `GET /metrics/prometheus` |
 | The MCP servers, their state and tools ([below](#tools-from-mcp-servers)) | `GET /mcp` |
+| The console the server's own window shows, in a browser tab (page and lines, below) | `GET /console`, `GET /api/log?after=N` |
 
 `GET /metrics` answers a Prometheus scrape (`Accept: text/plain` or `application/openmetrics-text`) in the text
 format with vLLM's names - `vllm:num_requests_running` / `_waiting`, `vllm:kv_cache_usage_perc`, the token and
@@ -2117,7 +2118,36 @@ has to know which quantity it printed - the first version of `tools/strata_bench
 key the server never writes, while the real figure sat unused in the same records at 40-61%.  Both are fixed and both
 are written up in [CACHE_VS_DRAFTS.md](CACHE_VS_DRAFTS.md).
 
-### Prompt buffers: `bo` shares `emb` (#1454)
+### Web console
+
+`GET /console` is the server's own window in a browser tab: the lines it prints while a model loads, on every
+request, and whenever something needs attention. It needs **no opt-in** (unlike the Monitor above), because the
+lines it exists for are the ones a user who started the server without a window - `strata-gui`, a scheduled task,
+a machine reached from a laptop - has nowhere else to read. The engine's stderr has gone to a log file since 0.1.42,
+and the lines that explain a slow request (`[strata] answering: 386 of max 131072 tokens`, `[strata] compact:
+2673 messages -> 136`, `[strata] request prompt ... cached ... prefill ...`) were never in that file: they are the
+server's own `print()` calls, in about sixty places in `serve/server.py`.
+
+The capture is one tee on `sys.stdout` (`ConsoleTee`, installed in `main()` and nowhere else), so no call site had to
+change and a future `print()` is on the page the moment it is written. It writes through to the real stdout first -
+the window, or the file stdout was redirected to, still sees every byte - and keeps each **complete** line: a write
+without a newline waits for the newline that finishes it, so a line is never shown twice and never shown cut in two.
+`GET /api/log?after=N` returns the lines numbered above `N` and the number to ask with next; a viewer that fell
+behind gets the newest 300 of what is kept. What is kept is the last **500 lines in memory** - no disk, nothing
+survives a restart, and "Clear view" empties the browser page only. The lines are shown as text, never as markup:
+the server prints model names, commands and paths, and an angle bracket in one of those must not eat the page.
+
+The page polls every 1.2 s. **Pause** holds the view while a long answer is printing lines faster than they can be
+read, and **Resume** catches up on everything that arrived; scrolling up by hand stops the view from being pulled
+back to the bottom. Warning lines are coloured, so one stands out in a screen of plain text. Like the Monitor, it
+sends the API key when the server has one, keeps it in the tab's session storage, and uses relative URLs so it
+works behind a path-prefixed proxy.
+
+`py -I tools/ui/ui-webconsole-check.py` drives the page in a real Chrome against a mock server it starts itself, and
+is what checks the part that is easy to break by accident: that a line printed while the page is open arrives, and
+that a line already shown is never shown twice.
+
+
 
 The prompt path's half-output buffer `bo` reuses the embedding buffer `emb`, which is dead after the first hyper-connection broadcast: T x 2560 floats less VRAM per chunk (320 MiB at 32768 rows). The planner still counts those bytes by default, so the auto chunk and the cache slots the prompt path borrows are exactly those of 0.1.40.3 and the output bits are unchanged. `STRATA_EMB_REUSE_ACCOUNT=1` lets the planner use the saved bytes: where VRAM limits the chunk it grows (RTX 3060, IQ3_XXS: 6400 to 6656 tokens, 1652 to 1670 borrowed slots, prompt about +3.9%). A different chunk changes the prompt path's rounding, so prompt residuals are not byte-identical to the default; greedy output matched in our runs. Opt-in until it has a KL measurement.
 

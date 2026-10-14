@@ -162,6 +162,73 @@ LOOP_HISTORY_WORDS = 30000       # how far back the passages are counted (bounds
 LOOP_TAIL_CHARS = 2048           # chars at the end of the reasoning also checked for a short period (#1753)
 LOOP_TAIL_PERIOD = 64            # a period at most this long in that tail reads as a fully repeated window
 
+# The web console (GET /api/log): every line the server prints, kept in memory for the browser to read.  The lines
+# the user watches - "[strata] answering: 386 of max ...", "[strata] compact: 2673 messages", "[strata] request
+# prompt ... cached ... prefill ..." - are the SERVER's own print() calls, spread over sixty places in this file,
+# not the engine's stderr (which since 0.1.42 goes to a log file at Engine.start, stderr=self.log).  So the capture
+# is a tee on sys.stdout: one place, every print, no call site changed.  Installed in main() only, so importing
+# this module in a test does not move the interpreter's stdout out from under whoever replaces it (several tests
+# patch sys.stdout themselves; redirect_stdout still works, it simply replaces the tee for its own block).
+CONSOLE_MAX = 500                     # the last N lines; older ones fall off, like the deque behind /metrics
+CONSOLE_LIMIT = 300                   # what one GET returns at most, when asked for everything it has not seen
+_console = collections.deque(maxlen=CONSOLE_MAX)   # (seq, text), oldest first
+_console_lock = threading.Lock()
+_console_seq = 0                        # lines handed out since the server started; a poller remembers the last one
+
+
+class ConsoleTee:
+    """Write through to the real stdout, and keep every complete line for GET /api/log.  print(..., flush=True)
+    arrives in one piece; a write without a newline is held back until its newline comes, so a line already shown
+    is never shown twice and a line is never cut in two."""
+
+    def __init__(self, out):
+        self.out, self._tail = out, ""
+
+    def write(self, s):
+        s = str(s)
+        n = self.out.write(s)
+        global _console_seq
+        self._tail += s
+        if "\n" not in self._tail:
+            return n
+        head, self._tail = self._tail.rsplit("\n", 1)
+        with _console_lock:
+            for line in head.split("\n"):
+                _console_seq += 1
+                _console.append((_console_seq, line))
+        try:
+            self.out.flush()          # line by line: a redirected stdout would otherwise hold them back for a while
+        except (ValueError, OSError):
+            pass                      # the console closed (the window was shut); the buffer still has them
+        return n
+
+    def writelines(self, lines):
+        for line in lines:
+            self.write(line)
+
+    def flush(self):
+        self.out.flush()
+
+    def isatty(self):
+        return getattr(self.out, "isatty", lambda: False)()
+
+    def fileno(self):
+        return self.out.fileno()      # whoever redirects a child's output to us wants the real descriptor
+
+    def __getattr__(self, name):      # .buffer, .encoding, .errors: whatever the real stdout answers
+        return getattr(self.out, name)
+
+
+def console_tail(after=0):
+    """The console lines a viewer has not seen yet: those numbered above `after`, and the number to ask with next.
+    A viewer that fell behind CONSOLE_MAX lines simply gets the newest CONSOLE_LIMIT of what is still kept."""
+    with _console_lock:
+        lines = [t for n, t in _console if n > after]
+        top = _console[-1][0] if _console else after
+    if len(lines) > CONSOLE_LIMIT:
+        lines = lines[-CONSOLE_LIMIT:]
+    return {"lines": lines, "after": top, "max": CONSOLE_MAX}
+
 
 def reasoning_repeat_coverage(text):
     """Coverage of recent words by 12-word passages seen at least three times.
@@ -5280,6 +5347,11 @@ def make_handler(svc: Service):
                     # the last 12 requests; `?requests=all` every one kept (the Monitor's "Show all", issue #35)
                     self._json(200, svc.metrics(all_requests="requests=all" in self.path))
                 return
+            if path == "/api/log":
+                if self._authorized():
+                    # the console the server's own window shows: the lines printed since `?after=N` (see console_tail)
+                    self._json(200, console_tail(int(parse_qs(urlsplit(self.path).query).get("after", [0])[0] or 0)))
+                return
             if path == "/api/requests" and svc.api_monitor:
                 if self._authorized():
                     request_id = parse_qs(urlsplit(self.path).query).get("id", [None])[0]
@@ -5302,8 +5374,15 @@ def make_handler(svc: Service):
                 if self._authorized():
                     self._json(200, svc.mcp.status() if svc.mcp else {"servers": [], "tools": 0})
                 return
-            if path == "" or (path == "/api-monitor" and svc.api_monitor):
-                body = (ROOT / "serve" / "web" / ("monitor.html" if path else "index.html")).read_bytes()
+            if path == "" or path == "/api-monitor" or path == "/console":
+                # the web app, the Monitor (opt-in), and the web console: the window the server would open, in a tab.
+                # The console needs no opt-in - it is what the server's own window says, and a user who started the
+                # server without a window (strata-gui, a service) has nowhere else to read it.
+                if path == "/api-monitor" and not svc.api_monitor:
+                    self._json(404, {"error": {"message": "the Monitor is off; run with --api-monitor"}})
+                    return
+                page = "console.html" if path == "/console" else "monitor.html" if path == "/api-monitor" else "index.html"
+                body = (ROOT / "serve" / "web" / page).read_bytes()
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
@@ -6717,6 +6796,8 @@ def main() -> int:
                          "each, requests spread over them (also \"replicas\" in the config: a number, or "
                          "[{\"gpus\": [0, 1]}, {\"gpus\": [2, 3]}])")
     a = ap.parse_args()
+    if sys.stdout is not None:                       # run with no console (pythonw) there is nothing to keep
+        sys.stdout = ConsoleTee(sys.stdout)          # GET /api/log: the web console shows what this window shows
     cfg = json.loads(Path(a.config).read_text(encoding="utf-8-sig")) if a.config else {}   # Notepad adds a BOM
     lift_reasoning_effort_arg(cfg)
     if a.replicas is not None:
