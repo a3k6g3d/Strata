@@ -1194,7 +1194,10 @@ function toolHtml(t, k) {
     `<summary>${icon("tool", "st-icon st-icon--sm")}<span class="tool-call__name" title="${esc(t.name || "")}">${esc(t.tool || t.name || "tool")}</span>` +
     (t.server ? `<span class="muted small">${esc(t.server)}</span>` : "") +
     `<span class="tool-call__preview muted">${esc(preview.slice(0, 200))}</span>` +
-    `<span class="st-badge ${cls}"${t.state === "skipped" && t.reason ? ` title="It was ${esc(t.reason)}."` : ""}>${esc(label)}</span>${t.ms != null && t.state !== "skipped" ? `<span class="muted small">${fmt(t.ms / 1000, 1)} s</span>` : ""}` +
+    `<span class="st-badge ${cls}"${t.state === "skipped" && t.reason ? ` title="It was ${esc(t.reason)}."` : ""}>${esc(label)}</span>` +
+    // while it runs: the ticking clock; once it is back: the time the server measured
+    (t.state === "running" || t.state === "writing" ? runNote(t)
+     : t.ms != null && t.state !== "skipped" ? `<span class="muted small">${fmt(t.ms / 1000, 1)} s</span>` : "") +
     `${icon("chevron", "st-icon st-icon--sm st-chev")}</summary><div class="st-collapse__body">${body}</div></details>`;
 }
 // Tool calls that follow each other (no text between them) sit in ONE collapsible group, like the tool lines in Claude
@@ -1238,7 +1241,8 @@ function groupHtml(m, items) {
   const total = items.reduce((s, [t]) => s + (t.ms || 0), 0);
   return `<details class="st-collapse tool-group" data-group="${first}" data-state="${esc(state)}"${open ? " open" : ""}>` +
     `<summary>${icon("tool", "st-icon st-icon--sm")}<span class="tool-group__label">${esc(groupLabel(items))}</span>` +
-    (badge ? `<span class="tool-group__now muted small">${esc(doing)}</span><span class="st-badge ${cls}">${esc(badge)}</span>` : "") +
+    (badge ? `<span class="tool-group__now muted small">${esc(doing)}</span><span class="st-badge ${cls}">${esc(badge)}</span>` +
+            (needsYou ? "" : runNote(live && live[0])) : "") +
     (!badge && total ? `<span class="muted small">${fmt(total / 1000, 1)} s</span>` : "") +
     `${icon("chevron", "st-icon st-icon--sm st-chev")}</summary><div class="st-collapse__body">` +
     items.map(([t, k]) => toolHtml(t, k)).join("") + `</div></details>`;
@@ -1266,8 +1270,9 @@ function onTool(m, x) {
   let t = m.tools.find((y) => y.id === x.id);
   if (!t) { t = {id: x.id, name: x.name, at: m.text.length, rat: m.reasoning.length, state: "writing"}; m.tools.push(t); }
   if (x.event === "call") {
+    // t0 is the clock the running call shows; a call event that arrives twice must not restart it
     Object.assign(t, {name: x.name, server: x.server, tool: x.tool, arguments: x.arguments, round: x.round, state: "running",
-                      kind: x.kind});
+                      kind: x.kind, t0: t.t0 || Date.now()});
   } else if (x.event === "question") {
     // ask_user: the model waits for the user's typed or clicked answer (POST /mcp/answer)
     Object.assign(t, {state: "asking", approval: x.approval, question: x.question, options: x.options || [], open: true});
@@ -1286,6 +1291,7 @@ async function answerQuestion(m, t, text, el) {
   if (!token) return;
   t.approval = null;
   t.state = "running";
+  t.t0 = Date.now();                                        // the clock starts when it runs, not when it was announced
   updateAssistant(el, m, !!busy && busy.msg === m);
   try {
     await fetch("mcp/answer", {method: "POST", headers: headers(true), body: JSON.stringify({approval: token, text})});
@@ -1297,12 +1303,30 @@ async function answerApproval(m, t, how, el) {
   if (!token) return;
   t.approval = null;
   t.state = "running";
+  t.t0 = Date.now();                                        // the clock starts when it runs, not when it was announced
   updateAssistant(el, m, !!busy && busy.msg === m);
   try {
     await fetch("mcp/approve", {method: "POST", headers: headers(true),
                                 body: JSON.stringify({approval: token, allow: how !== "deny", always: how === "always"})});
   } catch (e) { /* the result event reports what happened */ }
 }
+// A long command is the other place the page can look broken: the stream sends nothing at all while the server waits
+// for it, so a call that is running has to say how long it has taken, and against which limit.  Without that number a
+// 10-second git command and a hung one look identical - a blinking badge and a blank pause.
+function runningTool(m) {
+  return ((m && m.tools) || []).find((t) => t.state === "running" || t.state === "writing") || null;
+}
+function runNote(t) {
+  if (!t || !t.t0) return "";
+  const s = Math.floor((Date.now() - t.t0) / 1000);
+  if (s < 1) return "";
+  const lim = Number(t.arguments && t.arguments.timeout_s) > 0 ? Number(t.arguments.timeout_s) : null;
+  // the limit is what separates "slow" from "stuck": past it the call is past the time it was given
+  return `<span class="muted small run-clock${lim != null && s > lim ? " is-over" : ""}` +
+         ` title="${lim != null ? `it was given ${lim} s before it is cut off` : "no time limit was given"}">` +
+         `${s} s${lim != null ? ` of ${lim} s` : ""}</span>`;
+}
+
 // the wait before the first token is the part that feels broken: say what is happening and for how long
 let waiting = null;
 function waitNote() {
@@ -1584,7 +1608,8 @@ async function send(ready) {
   const startAt = performance.now();
   const markFirst = () => { if (!firstAt) { firstAt = performance.now(); waiting = null; } };
   waiting = {start: startAt, prompting: false};
-  const tick = setInterval(() => { if (waiting) paintStream(true); }, 1000);              // the waiting clock
+  // the waiting clock: the seconds before the first token, and the seconds a running command has been taking
+  const tick = setInterval(() => { if (waiting || runningTool(m)) paintStream(true); }, 1000);
   const paint = () => { frame = 0; paintStream(true); };
   try {
     const r = await fetch("v1/chat/completions", {method: "POST", headers: headers(true), body: JSON.stringify(body),
