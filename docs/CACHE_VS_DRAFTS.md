@@ -73,13 +73,56 @@ between arms.  The drafts, which cost 18.9% on the fresh-prompt suite, cost 4.7%
 drafts-off.  On the agent session none of these deltas mean anything; the fresh-prompt result stands because its
 spread was far narrower, and that is the one to quote.
 
-## What to run next
+## Where the 0.0% comes from: the cache's own admission policy, which is off by default
 
-More runs, not more arms: `--runs 8` on `--tests agent` if the agent session matters, and the counters above first, since
-a 0.0% hit rate makes every speed comparison on this axis uninterpretable.
+Reading the engine after that run answered the question the counters were supposed to answer, without waiting for them.
+
+The expert cache hands out slots from **one counter shared by all 48 layers, in the order pairs arrive, and it never
+evicts** (`Options::expert_cache`, `src/program/generate.cpp` ~466).  So the first `n_slots` distinct (layer, position)
+pairs take every slot - the engine's own comment calls that "about 26 LAYERS OF POSITION 0" - and a hit can then only
+ever happen in those layers.  In-tree, on one run's real routing (`Memory/cache_allocation.py`), that policy is measured
+at **1,781 of 60,000 = 2.97%** with 256 slots, against **21.4%** at 8 slots per layer and **70.4%** at 64.
+
+The fix is already in the engine and is **off by default**: `--expert-cache-per-layer` (R4.2g, parsed at
+`generate.cpp` ~2098, applied at ~5119), which gives each layer a range of its own so no layer can be starved by
+another.  Round 328 measured it: the CPU pool drain fell **19.076 -> 10.312 ms/token** at 4,096 per-layer slots, worth
+**-2.7 ms/token** end to end, and the engine's help text quotes **54.4% hits** with it.  The same comment says plainly
+that what an earlier measurement had called "the GPU hit path saves nothing" was really *"the ADMISSION POLICY gave
+every slot to the first position"*.
+
+That is a complete explanation of a 0.0% that does not depend on the workload at all.  A fresh prompt spends the whole
+1,951-slot pool on the positions of its own warm-up; a turn whose prefix returns from the **conversation** cache is
+never re-routed, so it cannot add to the pool either; and the tokens that are genuinely new arrive too late to get a
+slot.  Both suites could report 0.0% forever and the cache would still be doing exactly what it was configured to do.
+
+What is not yet known, and is the reason this is written as a cause rather than as a win: those in-tree numbers are
+2.97% and 54.4% at sizes (256 slots, 4,096 per-layer slots) that are **not** this configuration's 1,951 slots on this
+model, and the per-layer *sizing* path at ~4943 is gated on `native_pack`, which this pack may or may not be.  The
+engine prints the truth on stderr - `R4.2g PER-LAYER: each layer owns N slots (lo..hi)` - and 1,951 over 48 layers is
+only ~40 each if they divide evenly, which is between the 21.4% and 70.4% rows and not close to either.
+
+## What to run next: a fifth arm, added
+
+`tools/strata_ab.py` now has a fifth arm, `expert cache, per-layer slots`, which adds that one flag to the baseline and
+nothing else.  It tests the cache's own policy instead of the workload, and it is the only arm here that can move the
+hit line off 0.0%:
 
 ```
-py -3.11 tools/strata_ab.py --config <strata.json> --tests agent --runs 8 --dry-run
-py -3.11 tools/strata_ab.py --config <strata.json> --tests agent --runs 8
+py -3.11 tools/strata_ab.py --config J:/Strata-work/strata.json --tests agent --dry-run   # 5 arms, prints the recipes
+py -3.11 tools/strata_ab.py --config J:/Strata-work/strata.json --tests agent --runs 8 \
+    --out bench/results/ab-cache-vs-drafts-agent-perlayer --yes
 ```
+
+Read the arm in this order, because the speed is not the first thing it can tell us:
+
+1. the engine's `R4.2g PER-LAYER: each layer owns N slots` line - if it is missing, the flag did not take and the arm
+   is measuring the baseline again;
+2. the hit line.  Anything above 0.0% means the 0.0% was the policy, and the whole cache-vs-drafts question has to be
+   re-asked with the cache actually retaining experts;
+3. only then the tok/s, and only from `--runs 8` or more: this suite's within-arm spread (20.2-31.1 tok/s) is wider
+   than every difference it produced at three runs.
+
+If the hit rate stays at 0.0% with per-layer slots on, then the policy was not the cause, and the counters
+(`STRATA_LOOKAHEAD_STATS`, the engine's hit/miss/evicted/loaded lines) become the next thing to run rather than a
+sixth arm.
 
