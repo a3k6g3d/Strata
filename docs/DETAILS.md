@@ -639,9 +639,9 @@ a 4090 and a 5090, and what else is worth taking from it and from LMCache, is in
 the drafts are usually on together, so it is not obvious which one is doing the work.  On an RTX 5070 12 GiB with this
 model, four arms that each remove one thing found the drafts accepted 68.8% of the time and worth 18.9% of the decode,
 while removing the cache cost 1.7% - inside the run-to-run spread, because the suite's prompts are fresh by
-construction and the engine reported a 0.0% expert hit rate in every arm.  Read that as "the cache does nothing for
-work that never repeats itself", not as a verdict on the cache: the agent session, where it is supposed to matter, was
-not part of that run.
+construction and the engine reported a 0.0% expert hit rate in every arm.  The agent session, where the cache is
+supposed to matter, was measured too: the conversation cache reused 69.2% of the prompt there and the expert hit rate
+was still 0.0%, because a turn that comes back from the conversation cache never re-routes its tokens.
 
 **Checking it on Windows.** `\GPU Process Memory(<pid>)\Shared Usage` and `Dedicated Usage` (Performance Monitor, or
 `Get-Counter`) look like the right instrument, but on this machine they did **not** separate a 13.7 tok/s run from a
