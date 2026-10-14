@@ -7,6 +7,12 @@ dated, and the fork's releases follow [SemVer](https://semver.org) once it tags 
 
 ## Unreleased - 2026-10-10
 
+### Added (2026-10-13, Monitor shows the expert cache hit rate)
+- The Monitor page now shows the expert cache as a line of its own: hit rate since start, hits of looked-up layers over the layers that ask for
+  them, hit/miss/evicted/loaded counts, offloaded experts, pinned layers, a layer resident in VRAM and the budget it spends. The numbers come from
+  the engine over `/metrics`, and need `--api-monitor` (they read "not exposed" without it). The same numbers go into each recorded request as
+  `cache`, so the request table can be added up by hand. A note in the docs says what to look for and what budget to give.
+
 ### Changed (2026-10-12, Full access no longer asks before a web call)
 - In Full access a web search or fetch after a local tool runs without the leak click, so Full access behaves like a bypass mode: commands, file
   changes and web calls run by themselves. Still refused or asked in every mode: the no-read list (refused), the protected Windows folders (asked). Allow

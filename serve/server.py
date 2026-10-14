@@ -4061,6 +4061,12 @@ class Service:
                                 # #457: the speculative drafts from the DONE line (None: the engine did not say)
                                 "drafts_offered": last.get("drafts_offered"),
                                 "drafts_accepted": last.get("drafts_accepted")})
+                            # The Monitor's own record of this request: the hit rate is the one number that says whether
+                            # the expert cache is helping or costing (llama.cpp tells its users to read it out of the log
+                            # at -lv 4; here it belongs on the request, beside the speed it explains).  The API response
+                            # carries llama.cpp's `timings` and does not gain a field it never had.
+                            if trace is not None:
+                                trace["hit_rate"], trace["pcie_share"] = hit_rate, pcie_share
                             t = self.totals
                             t["requests"] += 1
                             t["prompt_tokens"] += seen

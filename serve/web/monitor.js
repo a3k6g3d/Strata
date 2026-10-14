@@ -6,6 +6,11 @@ document.documentElement.dataset.theme = localStorage.getItem("strata.theme") ||
 const seconds = n => typeof n === "number" ? `${n.toFixed(2)} s` : "—";
 const speed = n => typeof n === "number" ? n.toFixed(1) : "—";
 const active = r => !["completed", "error", "disconnected"].includes(r.state);
+// The expert cache's two figures for this request, as the server log says them.  The hit rate is the VRAM share of the
+// routed experts; the PCIe share is the rest of what was routed, and a bigger one is not a better run (docs/DETAILS.md:
+// a run at 94.7% hit decoded at 13.7 tok/s while one at 93.9% did 102).  Null until the engine reports them.
+const cache = r => r.hit_rate == null ? "—" : `${(r.hit_rate * 100).toFixed(1)}%` +
+                   (r.pcie_share ? ` · +${(r.pcie_share * 100).toFixed(1)}% over PCIe` : "");
 function text(id, value) { const el = $(id); if (el.textContent !== String(value)) el.textContent = value; }
 async function api(path, body) {
   const response = await fetch(path, {cache:"no-store", headers:{...(apiKey ? {Authorization:`Bearer ${apiKey}`} : {}), ...(body !== undefined ? {"Content-Type":"application/json"} : {})}, ...(body !== undefined ? {method:"POST", body:JSON.stringify(body)} : {})});
@@ -67,7 +72,7 @@ async function showDetail() {
   text("detail-load", seconds(value.load_s)); text("detail-queue", seconds(value.queue_s)); text("detail-first", seconds(value.first_token_s));
   text("detail-prompt", value.usage?.prompt_tokens ?? value.usage?.input_tokens ?? "—");
   text("detail-tokens", value.usage?.completion_tokens ?? value.usage?.output_tokens ?? "—");
-  text("detail-speed", speed(value.timings?.predicted_per_second)); text("detail-format", value.response_format || "text");
+  text("detail-speed", speed(value.timings?.predicted_per_second)); text("detail-hit", cache(value)); text("detail-format", value.response_format || "text");
   $("detail-error").hidden = !value.error; text("detail-error", value.error?.message || ""); content();
 }
 async function refresh() {
