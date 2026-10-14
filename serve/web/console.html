@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Strata Console</title>
+<link rel="icon" href="/web/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/web/tokens.css">
+<style>
+*{box-sizing:border-box}body{margin:0;background:var(--st-bg);color:var(--st-ink);font:15px/1.5 var(--st-font);display:flex;flex-direction:column;height:100vh}
+button,input{font:inherit}button{cursor:pointer;color:inherit;background:var(--st-surface-2);border:1px solid var(--st-line);border-radius:9px;padding:8px 13px}button:hover{border-color:var(--st-accent)}button:disabled{opacity:.4;cursor:default}button:focus-visible,input:focus-visible{outline:2px solid var(--st-focus);outline-offset:3px}[hidden]{display:none!important}
+header{height:70px;flex:none;padding:0 32px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--st-line);background:var(--st-surface)}.brand{font-size:23px;font-weight:700;letter-spacing:-.5px}.brand span{font-size:13px;font-weight:400;margin-left:14px;color:var(--st-ink-muted)}nav{display:flex;gap:8px}nav a{color:var(--st-ink-muted);text-decoration:none;font-size:13px;padding:8px 12px;border:1px solid transparent;border-radius:9px}nav a:hover{color:var(--st-ink);border-color:var(--st-line)}
+main{flex:1;min-height:0;max-width:1560px;width:100%;margin:auto;padding:24px 32px;display:flex;flex-direction:column;gap:14px}.top{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;flex-wrap:wrap}h1{margin:0;font-size:29px;letter-spacing:-.7px}.sub,.muted{color:var(--st-ink-muted)}.sub{margin:4px 0 0}.controls{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.primary{background:var(--st-accent);color:var(--st-accent-ink);border-color:transparent}.notice{padding:10px 14px;background:var(--st-danger-tint);color:var(--st-danger-text);border-radius:9px}.status{display:flex;align-items:center;gap:9px;font-size:13px;color:var(--st-ink-muted)}.dot{width:9px;height:9px;border-radius:100%;background:var(--st-ink-muted)}.dot.on{background:var(--st-accent)}.dot.off{background:var(--st-danger)}
+.panel{flex:1;min-height:0;border:1px solid var(--st-line);border-radius:14px;background:var(--st-surface);display:flex;flex-direction:column;overflow:hidden}.panel-bar{flex:none;padding:13px 20px;border-bottom:1px solid var(--st-line);display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}h2{font-size:15px;margin:0;font:13px var(--st-font-mono)}#log{flex:1;min-height:0;overflow:auto;margin:0;padding:14px 20px;background:var(--st-bg);font:12.5px/1.65 var(--st-font-mono);white-space:pre-wrap;overflow-wrap:anywhere}.line{padding:1px 0}.line.bad{color:var(--st-danger-text)}.line.wait{color:var(--st-warn-text)}.empty{padding:60px 20px;text-align:center;color:var(--st-ink-muted)}.empty strong{display:block;color:var(--st-ink);font-size:17px;margin-bottom:6px}
+#auth{padding:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;border:1px solid var(--st-line);border-radius:12px;background:var(--st-surface)}#auth input{flex:1;max-width:400px;color:inherit;border:1px solid var(--st-line);background:var(--st-bg);padding:7px 10px;border-radius:8px}footer{flex:none;font-size:12px;color:var(--st-ink-muted);display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap}
+@media(max-width:700px){header,main{padding-left:14px;padding-right:14px}.brand span{display:none}.top{align-items:flex-start;flex-direction:column;gap:12px}#auth input{max-width:none}}
+</style>
+<script defer src="/web/console.js"></script>
+</head>
+<body>
+<header><div class="brand">Strata <span>Local inference</span></div><nav><a href="/">Chat</a><a href="/api-monitor">Monitor</a></nav><div class="controls"><button id="key">API key</button><button id="theme" aria-label="Switch color theme">Light / dark</button></div></header>
+<main>
+<div class="top"><div><h1>Console</h1><p class="sub">What the server's own window prints &mdash; loading, cache, compaction and warnings, live.</p></div>
+<div class="controls"><button id="follow" aria-pressed="true">Following</button><button id="pause" aria-pressed="false">Pause</button><button id="copy">Copy</button><button id="clear">Clear view</button></div></div>
+<div id="error" class="notice" role="status" hidden></div>
+<form id="auth" hidden><label for="api-key">API key</label><input id="api-key" type="password" autocomplete="off" placeholder="Only needed if the server has a key"><button class="primary">Connect</button></form>
+<section class="panel"><div class="panel-bar"><h2>strata serve</h2><div class="status"><span id="dot" class="dot"></span><span id="state">connecting</span> &middot; <span id="count">none yet</span> lines &middot; <span id="since"></span></div></div>
+<div id="log" role="log" aria-live="polite" tabindex="0"><div class="empty"><strong>Waiting for the server</strong>Lines appear here as the server prints them &mdash; while a model loads, on every request, whenever something needs your attention.</div></div></section>
+<footer><span>The last 500 lines are kept in memory, not on disk. Clear view empties this page only.</span><span>Older lines are dropped by the server, not by the browser.</span></footer>
+</main>
+</body>
+</html>

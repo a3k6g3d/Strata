@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import collections
 import contextlib
 import io
 import json
@@ -22,6 +23,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from serve.frontend import ChatTemplate, literal_tags, mark_think_literals, unmark_think_literals  # noqa: E402
+from serve import server                                                                        # the module, for its console buffer  # noqa: E402
 from serve.server import (CTX_SLACK, ByteTokenizer, EngineDied, EngineNonFinite, GpuBusy, MockEngine,  # noqa: E402
                           PP_DONE_TAIL, Service,
                           StrataEngine, api_key_of, engine_args, key_matches, layer_split_value, prompt_progress,
@@ -5494,6 +5496,127 @@ class UntimedReads(unittest.TestCase):
         v = server.Vision.__new__(server.Vision)
         v.proc = SimpleNamespace(stdout=SimpleNamespace(readline=lambda: "OK 7 1 1 1\n"))
         self.assertEqual(v._readline(5.0, "x"), "OK 7 1 1 1\n")
+
+
+class WebConsole(unittest.TestCase):
+    """The web console (GET /api/log, /console): the lines the server prints, in memory, for a browser to read.
+
+    The lines are the server's own print() calls, so the capture is a tee on sys.stdout installed in main().  These
+    tests drive the tee directly (a test that replaced sys.stdout itself would otherwise be bypassed) and then check
+    the two routes over a real server."""
+
+    def setUp(self):
+        # the buffer is module state (a running server has one); swap in a fresh, small one so the assertions are about
+        # this test and not about whatever another test printed
+        self.saved = (server._console, server._console_seq, server.CONSOLE_MAX, server.CONSOLE_LIMIT)
+        server._console = collections.deque(maxlen=8)
+        server._console_seq = 0
+
+    def tearDown(self):
+        server._console, server._console_seq, server.CONSOLE_MAX, server.CONSOLE_LIMIT = self.saved
+
+    def feed(self, *texts):
+        """Run texts through a tee writing to a throwaway stream, as print() would on a real server."""
+        sink = io.StringIO()
+        tee = server.ConsoleTee(sink)
+        for t in texts:
+            tee.write(t)
+        return sink.getvalue(), tee
+
+    def test_the_window_still_gets_everything_and_the_buffer_keeps_the_lines(self):
+        """The tee is transparent: the console (or the log file stdout was pointed at) sees the same bytes."""
+        passed, _ = self.feed("[strata] answering: 10 of max 6400 tokens\n", "ready: http://127.0.0.1:8095/v1\n")
+        self.assertEqual(passed, "[strata] answering: 10 of max 6400 tokens\nready: http://127.0.0.1:8095/v1\n")
+        got = server.console_tail()
+        self.assertEqual(got["lines"], ["[strata] answering: 10 of max 6400 tokens",
+                                        "ready: http://127.0.0.1:8095/v1"])
+        self.assertEqual(got["after"], 2)          # the number a poller sends back next time
+
+    def test_a_line_is_shown_once_even_when_it_arrives_in_pieces(self):
+        """A write with no newline is a partial line (a progress bar, a split flush); it must not be shown twice or
+        cut in two, so it waits for the newline that completes it."""
+        sink = io.StringIO()
+        tee = server.ConsoleTee(sink)
+        tee.write("[strata] loading the model")
+        self.assertEqual(server.console_tail()["lines"], [])   # not a line yet: nothing shown, nothing half shown
+        tee.write(" ...\n")                                    # the newline that completes it
+        self.assertEqual(server.console_tail()["lines"], ["[strata] loading the model ..."])   # once, and whole
+        tee.write("tail with no newline")                      # still open when the process ends: never shown
+        self.assertEqual(server.console_tail()["lines"], ["[strata] loading the model ..."])
+        self.assertEqual(sink.getvalue(), "[strata] loading the model ...\ntail with no newline")
+
+    def test_a_poller_gets_only_the_lines_it_has_not_seen(self):
+        self.feed("one\n", "two\n", "three\n")
+        self.assertEqual(server.console_tail(1)["lines"], ["two", "three"])
+        self.assertEqual(server.console_tail(3)["lines"], [])   # caught up: an empty answer, not a repeat
+        self.assertEqual(server.console_tail(999)["after"], 3)  # a viewer far ahead of us is not dragged backwards
+
+    def test_only_the_last_lines_are_kept(self):
+        """A server that prints 500 lines a request does not grow the page forever: old lines fall off."""
+        self.feed(*[f"line {i}\n" for i in range(20)])
+        kept = server.console_tail()
+        self.assertEqual(len(kept["lines"]), 8)                 # this test's small cap, not the real 500
+        self.assertEqual(kept["lines"][-1], "line 19")
+        self.assertEqual(kept["after"], 20)                     # numbering keeps counting even though lines fell off
+        self.assertEqual(server.console_tail(15)["lines"], ["line 15", "line 16", "line 17", "line 18", "line 19"])
+
+    def test_a_viewer_that_fell_behind_gets_the_newest_of_what_is_left(self):
+        """A poller whose cursor is older than everything kept cannot be sent 500 lines every poll; it gets the tail."""
+        server.CONSOLE_LIMIT = 2
+        self.feed("a\n", "b\n", "c\n")
+        self.assertEqual(server.console_tail(0)["lines"], ["b", "c"])
+
+
+class ConsoleRoutes(unittest.TestCase):
+    """The two routes: /console serves the page, /api/log hands out what was printed through the tee."""
+
+    @classmethod
+    def setUpClass(cls):
+        tok = ByteTokenizer()
+        cls.svc = Service(RecordingEngine(tok, "</think>\n\nhello", max_context=CTX), tok,
+                          ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        cls.httpd = serve(cls.svc, port=0)
+        cls.base = f"http://127.0.0.1:{cls.httpd.server_address[1]}"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+
+    def get(self, path):
+        try:
+            with urllib.request.urlopen(self.base + path, timeout=10) as r:
+                return r.status, r.headers.get("Content-Type", ""), r.read()
+        except urllib.error.HTTPError as e:
+            return e.code, e.headers.get("Content-Type", ""), e.read()
+
+    def test_the_console_page_is_served_without_the_monitor_being_on(self):
+        """The Monitor is opt-in (--api-monitor); the console is not, because a server started without a window has
+        nowhere else to read its own lines - which is exactly when you need this page."""
+        code, ctype, body = self.get("/console")
+        self.assertEqual(code, 200)
+        self.assertIn("text/html", ctype)
+        self.assertIn(b"/web/console.js", body)
+        self.assertIn(b"<title>Strata Console</title>", body)
+        self.assertEqual(self.get("/api-monitor")[0], 404)      # still opt-in, and it says how to turn it on
+
+    def test_api_log_gives_the_lines_a_poller_has_not_seen(self):
+        saved = (server._console, server._console_seq)
+        server._console = collections.deque(maxlen=server.CONSOLE_MAX)
+        server._console_seq = 0
+        out, sys.stdout = sys.stdout, server.ConsoleTee(io.StringIO())   # what main() does, on this throwaway stream
+        try:
+            print("[strata] answering: 4 of max 6400 tokens", flush=True)
+            code, ctype, body = self.get("/api/log")
+            first = json.loads(body)
+            self.assertEqual((code, "application/json" in ctype), (200, True))
+            self.assertEqual(first["lines"], ["[strata] answering: 4 of max 6400 tokens"])
+            print("[strata] done: 4 tokens in 0 s (stop)", flush=True)
+            again = json.loads(self.get(f"/api/log?after={first['after']}")[2])
+            self.assertEqual(again["lines"], ["[strata] done: 4 tokens in 0 s (stop)"])
+            self.assertEqual(json.loads(self.get(f"/api/log?after={again['after']}")[2])["lines"], [])
+        finally:
+            sys.stdout = out
+            server._console, server._console_seq = saved
 
 
 if __name__ == "__main__":
