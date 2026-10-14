@@ -40,16 +40,46 @@ Two secondary readings worth keeping: the drafts-off arm put **fewer** experts o
 a rejected draft wastes a pass over the experts it routed through; and both-off is worse than drafts-off alone
 (-25.9% against -18.9%), so with no drafts the cache still earns something even on fresh prompts.
 
-## The next arm
+## The next arm, run: the agent session changes nothing, and says why
 
-The honest follow-up is the same four arms on `--tests agent`, where the conversation is resent and the hit rate should
-be well above zero.  If the cache still shows nothing there, the claim that the expert cache carries work on this class
-of model needs revisiting; if it shows a large gain, then this suite simply never asked the question.
+The same four arms on `--tests agent` (five turns that each add about 1,500 words of a file and continue from the
+model's own earlier replies; 14,759 prompt tokens by the last turn; 3 sessions; `bench/results/ab-cache-vs-drafts-agent/`):
 
-Run it with `Run-AB.cmd` (which stops the server the chat is served through, runs the arms on an empty GPU and starts
-it again), or directly:
+| arm | agent decode tok/s | turn first token | expert hit | over PCIe | drafts accepted | conversation cache hit |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| as configured | 25.8 (20.2-31.1) | 8.13 s | 0.0% | 6.4% | 60.4% | 69.2% |
+| `--expert-cache 0` | 25.0 (20.8-32.6) | 8.10 s | 0.0% | 6.0% | 60.7% | 69.1% |
+| `--mtp-max-t 1 --suffix-draft 0` | 24.6 (19.8-27.2) | 8.12 s | 0.0% | 2.6% | - | 69.2% |
+| both off | 25.7 (20.4-28.2) | 8.10 s | 0.0% | 2.6% | - | 69.2% |
+
+Three things came out of this, and only one of them is about speed.
+
+**The conversation cache did its job and the expert cache still found nothing to hit.** The agent session reused 69.2%
+of the prompt (3 tokens re-read per session against 73 with the expert cache off), and the expert hit rate is still
+0.0% in every arm.  That is not the readout failing - the PCIe share is non-zero and drops from 6.4% to 2.6% when the
+drafts go, so the cache is consulted and the numbers move.  It is structural: a turn whose prefix comes back from the
+conversation cache never re-routes those tokens at all, so there are no experts to find for them, and the tokens that
+are new are new.  Reusing a conversation and reusing experts are two different reuse events, and only the second one
+puts anything in this cache.  Any claim that an agent session lifts the expert hit rate has to be measured, not assumed.
+
+**The 0.0% is still worth a look.** Experts are loaded over PCIe in every arm, and never once found already resident -
+not across the 64 decoded tokens of a turn, not across five turns of the same session.  With 1,951 slots (3,840 MiB)
+against this model's expert count that may simply be too little to retain anything between tokens, but "loads every
+time, hits never" is also what a retention or accounting path that never credits a hit would look like.  Check it with
+`STRATA_LOOKAHEAD_STATS` and the engine's own hit/miss/evicted/loaded counters before repeating the claim in public.
+
+**Three runs cannot resolve this suite.** The spread inside one arm was 20.2-31.1 tok/s - wider than every difference
+between arms.  The drafts, which cost 18.9% on the fresh-prompt suite, cost 4.7% here, and both-off came out ahead of
+drafts-off.  On the agent session none of these deltas mean anything; the fresh-prompt result stands because its
+spread was far narrower, and that is the one to quote.
+
+## What to run next
+
+More runs, not more arms: `--runs 8` on `--tests agent` if the agent session matters, and the counters above first, since
+a 0.0% hit rate makes every speed comparison on this axis uninterpretable.
 
 ```
-py -3.11 tools/strata_ab.py --config <strata.json> --tests agent --dry-run   # see the arms first
-py -3.11 tools/strata_ab.py --config <strata.json> --tests agent             # needs a free GPU
+py -3.11 tools/strata_ab.py --config <strata.json> --tests agent --runs 8 --dry-run
+py -3.11 tools/strata_ab.py --config <strata.json> --tests agent --runs 8
 ```
+
