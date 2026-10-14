@@ -111,7 +111,7 @@ def main(argv=None) -> int:
     # valid Win32 application"), which is how the first attempt at this died in three seconds without loading a model.
     if a.dry_run:
         for i, (name, extra) in enumerate(arms):
-            print(f"arm {i + 1}/{len(arms)}: {name}\n  " + " ".join(cmd for cmd in [*cfg, *("--engine-arg " + x for x in extra)])
+            print(f"arm {i + 1}/{len(arms)}: {name}\n  " + " ".join(cmd for cmd in [*cfg, *(f"--engine-arg={x}" for x in extra)])
                   + f"\n  runs {a.runs} x {a.tests} on port {a.port}, out: {parent}")
         print("\nNothing has run yet.  Drop --dry-run when the GPU is free.")
         return 0
@@ -120,7 +120,10 @@ def main(argv=None) -> int:
             "--out", str(parent), "--ready-timeout", str(a.ready_timeout), "--note", NOTE]
     done, failed = [], []
     for i, (name, extra) in enumerate(arms):
-        cmd = [*base, "--arm", name] + sum([["--engine-arg", x] for x in extra], [])
+        # `--engine-arg VALUE` would not survive an argument that starts with a dash: argparse reads the next token as a
+        # flag rather than as the value, so the per-layer arm (--expert-cache-per-layer) died at its argument line while
+        # the others, whose values start with a letter, ran fine.  The `=` form always takes the value as written.
+        cmd = [*base, "--arm", name] + sum([[f"--engine-arg={x}"] for x in extra], [])
         print(f"\n=== arm {i + 1}/{len(arms)}: {name} ===")
         print("  " + " ".join(cmd[1:]) + "\n", flush=True)
         since = time.time() - 1
