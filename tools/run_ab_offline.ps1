@@ -9,7 +9,12 @@ $cfg  = "<work>/strata.json"
 $py   = "<home>/AppData\Local\Programs\Python\Python311\python.exe"
 $srv  = "C:\Program Files\Python311\python.exe"
 $port = 8080
-$log  = "<work>/ab-offline.log"
+# the agent session, not the fresh prompts: the first run of this found a 0.0% cache hit rate, because a prompt that
+# never repeats gives the cache nothing to hit.  This suite resends the conversation turn after turn, which is the one
+# case the cache is built for - and the only one that can say whether the first run's conclusion holds.
+$tests = "agent"
+$out   = "bench\results\ab-cache-vs-drafts-agent"
+$log  = "<work>/ab-offline-agent.log"
 
 function Say($m) {
     $line = "[{0}] {1}" -f (Get-Date -Format "HH:mm:ss"), $m
@@ -53,8 +58,8 @@ Say "waiting 15 s more for the driver to give the VRAM back"
 Start-Sleep -Seconds 15
 
 # 4. the arms.  --yes because we freed the port ourselves; the check would otherwise read a race as a refusal.
-Say "running the arms: as configured, expert-cache off, drafts off, both off (about an hour)"
-& $py -u tools\strata_ab.py --config $cfg --port $port --yes 2>&1 | ForEach-Object {
+Say "running the arms on '$tests': as configured, expert-cache off, drafts off, both off"
+& $py -u tools\strata_ab.py --config $cfg --port $port --tests $tests --out $out --yes 2>&1 | ForEach-Object {
     $t = "$_"
     Write-Host $t
     Add-Content -Path $log -Value $t -Encoding UTF8
@@ -66,7 +71,7 @@ Say "the arms finished with exit $rc"
 Say "starting the server again"
 Start-Process -FilePath $srv -ArgumentList "-u","-m","serve.server","--engine","strata","--config",$cfg,"--port",$port `
     -WorkingDirectory $repo -WindowStyle Minimized
-Say "done - results in bench\results\ab-cache-vs-drafts, log at $log"
+Say "done - results in $out, log at $log"
 Write-Host ""
 Write-Host "Finished.  Close this window, or read the log:"
 Write-Host "  notepad $log"
