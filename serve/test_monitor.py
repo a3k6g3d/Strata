@@ -121,6 +121,26 @@ class Monitor(unittest.TestCase):
                     self.assertEqual(record["output"], "")
                     self.assertNotIn("timings", record)
 
+    def test_the_record_carries_the_expert_cache_figures(self):
+        """The Monitor shows each request's expert cache hit rate beside the speed it explains (llama.cpp makes its
+        users read it out of the log at -lv 4), and the API response's `timings` keeps llama.cpp's field set."""
+        from serve import server
+        self.chat()
+        self.assertIsNone(self.latest()["hit_rate"])      # the mock engine says nothing about its cache
+        real = server.request_stats
+
+        def with_counters(segments):                      # an engine that reports one: hits 300 of 400 lookups,
+            return dict(real(segments), hits=300, lookups=400, offloaded=100, generated=8,
+                        prompt_ms=20.0, decode_ms=40.0)  # 100 more routed elsewhere (+20% over PCIe)
+        with mock.patch.object(server, "request_stats", with_counters):
+            code, reply = self.chat()
+        self.assertEqual(code, 200)
+        record = self.latest()
+        self.assertEqual(record["hit_rate"], 0.75)
+        self.assertEqual(record["pcie_share"], 0.2)       # offloaded / (lookups + offloaded), as /metrics says it
+        self.assertNotIn("hit_rate", record.get("timings") or {})
+        self.assertNotIn("hit_rate", json.loads(record["response"]) if "response" in record else {})
+
     def test_history_is_authorized_and_does_not_capture_headers(self):
         self.svc.api_key = "secret"
         auth = {"Authorization": "Bearer secret"}

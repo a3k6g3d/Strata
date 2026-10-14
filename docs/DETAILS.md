@@ -293,8 +293,8 @@ engine 0.1.31 or newer). It also lists each request's speculative drafts, `draft
 (`null` when the engine did not report them), and their sums since the server started in `totals` (#457).
 Its `hit_rate` is the VRAM share of the experts looked up while answering: experts the GPU reads over PCIe
 (`--pcie-frac`) are not in it, so a higher `--pcie-frac` raises it even when decoding gets slower. `pcie_share`
-(engine 0.1.39 or newer, #588) is their share of all routed experts, and the server log and the Monitor tab show it
-beside the hit rate.
+(engine 0.1.39 or newer, #588) is their share of all routed experts, and the server log, the Monitor tab and the
+request card on the request monitor page (`/api-monitor`, opt-in with `--api-monitor`) show it beside the hit rate.
 
 **Where a decode window's time goes (profiling, #610):** start the server with `STRATA_DECODE_TIMING=1` (and
 `STRATA_VERIFY_PROFILE=1` for the GPU's side) in the environment. After each request the engine log then has one
@@ -623,6 +623,15 @@ configuration is the one in `bench/results/2026-10-04-community-rtx-4080s-iq3s`)
 against 90.4 / 93.9%), so this is not misses: being at 0 MiB free is what costs 7x. Two ways to stay out of it: leave
 the cache on `auto`, or keep an explicit size and raise `--vram-reserve-mib`, which the engine deducts **before** it
 sizes the cache (700 -> 1000 -> 1500 took the free figure from 217 to 575 to 1,075 MiB and cost about 400 slots).
+
+**A sizing rule of thumb from the other engine does not carry over.** llama.cpp merged its own expert cache on
+2026-10-07 (`--moe-cache-mib N`, off unless set, first release b11480), and its advice is to start near 10% of the
+model's total expert size and read the hit rate in the log at `-lv 4`. The starting point is not transferable: it
+sizes a cache whose misses are copied over PCIe and computed on the GPU, while Strata keeps the experts that miss in
+system RAM and computes them there, so the bus the other engine is measuring is not the one being tuned here. And
+the row above is this project's own case of a **larger** cache and a **higher** hit rate decoding 7x slower. What
+was measured here is `auto` - sized from the free VRAM and checked again after the slots are written - at
+102.1 / 122.3 tok/s on the same card that collapsed to 13.7 at 11,631 slots.
 
 **Checking it on Windows.** `\GPU Process Memory(<pid>)\Shared Usage` and `Dedicated Usage` (Performance Monitor, or
 `Get-Counter`) look like the right instrument, but on this machine they did **not** separate a 13.7 tok/s run from a
@@ -2070,6 +2079,21 @@ with **262,144 characters per input/output/reasoning/response field** and visibl
 responses are unaffected. Headers are not recorded, and the monitor key is kept in this tab's session storage.
 Treat request history as sensitive input/output when exposing Strata on a network: set an API key as above.
 The page uses relative URLs and works through the existing host binding or a reverse proxy.
+
+**The expert cache has a line of its own** (engine 0.1.43 or newer): the hit rate since the engine started, hits over
+the layers that ask for their experts, the hit/miss/evicted/loaded counts, offloaded experts, pinned layers, one
+layer resident in VRAM and the budget it spends in MiB. The numbers are read from the engine's `/metrics` on each
+refresh, and the same figures go into every recorded request as `cache`, so a table of requests can be added up by
+hand. A model that routes no experts, or an engine older than this, leaves the line reading `not exposed`.
+
+**Reading it, and what budget to give.** Do not read the hit rate on its own: read it beside tok/s. A bigger cache
+lifts the hit rate and can still decode several times slower, because the extra MiB come out of the VRAM the KV cache
+and the slots need; the measured case here was a full cache and a higher hit rate at 13.7 tok/s against `auto` at
+102.1. llama.cpp's rule of thumb (start near 10% of the model's total expert size, `--moe-cache-mib`, merged
+2026-10-07, first release b11480) does not carry over to Strata: it sizes a cache whose misses are copied over PCIe
+and computed on the GPU, while Strata keeps the experts that miss in system RAM and computes them there, so it is
+tuning a different bus. Strata sizes the cache from the free VRAM (`auto`) and checks it again after the slots are
+written; the lever is `--vram-reserve-mib`, not a MiB figure taken from the other engine.
 
 ### Prompt buffers: `bo` shares `emb` (#1454)
 
