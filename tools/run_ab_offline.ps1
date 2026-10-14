@@ -4,6 +4,13 @@
 # the card.  So this script stops that server (and the engine and vision worker it spawned), runs the four arms, and
 # starts the server again when it is done.  Double-click Run-AB.cmd, or run this file from a PowerShell window.
 
+# 2026-07-30: the fifth arm (per-layer cache slots) asks a question the first four cannot, and re-running all five at
+# 8 runs each costs hours to learn something arms 2-4 already answered.  These three parameters let one call name the
+# arms and the run count; with none of them this script does exactly what it did before.  $armName takes a SEMICOLON-
+# separated list (not commas: the arm labels contain them) because the model load costs minutes per arm and the server
+# must only be stopped once for them all.
+param([string]$armName = "", [int]$runs = 3, [string]$outOverride = "")
+
 $repo = "J:\Strata-work\Strata-0140"
 $cfg  = "J:/Strata-work/strata.json"
 $py   = "C:\Users\a3k6g\AppData\Local\Programs\Python\Python311\python.exe"
@@ -13,7 +20,7 @@ $port = 8080
 # never repeats gives the cache nothing to hit.  This suite resends the conversation turn after turn, which is the one
 # case the cache is built for - and the only one that can say whether the first run's conclusion holds.
 $tests = "agent"
-$out   = "bench\results\ab-cache-vs-drafts-agent"
+$out   = if ($outOverride) { $outOverride } else { "bench\results\ab-cache-vs-drafts-agent" }
 $log  = "J:\Strata-work\ab-offline-agent.log"
 
 function Say($m) {
@@ -58,13 +65,32 @@ Say "waiting 15 s more for the driver to give the VRAM back"
 Start-Sleep -Seconds 15
 
 # 4. the arms.  --yes because we freed the port ourselves; the check would otherwise read a race as a refusal.
-Say "running the arms on '$tests': as configured, expert-cache off, drafts off, both off"
-& $py -u tools\strata_ab.py --config $cfg --port $port --tests $tests --out $out --yes 2>&1 | ForEach-Object {
-    $t = "$_"
-    Write-Host $t
-    Add-Content -Path $log -Value $t -Encoding UTF8
+$armList = @()
+if ($armName) { $armList = @($armName -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
+$armArgs = @()
+if ($runs -ne 3) { $armArgs += @("--runs", "$runs") }
+Say ("running on '$tests' (runs $runs, out $out)" + $(if ($armList) { ", arms: " + ($armList -join ' | ') } else { ": all arms" }))
+if (-not $armList) {
+    & $py -u tools\strata_ab.py --config $cfg --port $port --tests $tests --out $out --yes @armArgs 2>&1 | ForEach-Object {
+        $t = "$_"
+        Write-Host $t
+        Add-Content -Path $log -Value $t -Encoding UTF8
+    }
+    $rc = $LASTEXITCODE
+} else {
+    # one process per arm, inside the same window where the server is stopped: strata_ab.py takes one --arm-name
+    $rc = 0
+    foreach ($arm in $armList) {
+        Say ("arm: $arm")
+        & $py -u tools\strata_ab.py --config $cfg --port $port --tests $tests --out $out --yes `
+            --arm-name $arm @armArgs 2>&1 | ForEach-Object {
+            $t = "$_"
+            Write-Host $t
+            Add-Content -Path $log -Value $t -Encoding UTF8
+        }
+        if ($LASTEXITCODE -ne 0) { $rc = $LASTEXITCODE }
+    }
 }
-$rc = $LASTEXITCODE
 Say "the arms finished with exit $rc"
 
 # 5. bring the chat back up, in its own window so it survives this script
