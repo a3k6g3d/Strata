@@ -28,6 +28,7 @@ IP addresses and API keys are replaced by placeholders before anything is writte
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime
 import getpass
 import json
@@ -209,6 +210,12 @@ def stat(values) -> dict | None:
     return {"median": round(statistics.median(v), 3), "min": round(min(v), 3), "max": round(max(v), 3), "n": len(v)}
 
 
+def med(values):
+    """The middle number of a list, or None when there is nothing to take a median of."""
+    v = [x for x in values if isinstance(x, (int, float))]
+    return round(statistics.median(v), 3) if v else None
+
+
 def fmt(s, digits=1, unit="") -> str:
     if not s:
         return "not measured"
@@ -222,13 +229,26 @@ def pctl(values, p):
 
 # ---------------------------------------------------------------------------------------------------- the suite
 class Suite:
-    def __init__(self, base, key, ctx, runs, think, log=print, want_clients=0, want_long=False, quick=False):
+    def __init__(self, base, key, ctx, runs, think, log=print, want_clients=0, want_long=False, quick=False, tests=None):
         self.base, self.key, self.ctx, self.runs, self.think, self.log = base, key, ctx, runs, think, log
         self.clients, self.want_long = want_clients, want_long
         self.quick = quick
         self.nonce = str(int(time.time()))
         self.tokens_per_word, self.overhead = 1.1, 40
-        self.out: dict = {"chat": {}, "prompts": {}, "agent": {}, "clients": {}, "skipped": {}, "failures": []}
+        self.tests = tests or {"chat", "4k", "16k", "agent"}
+        self.out: dict = {"chat": {}, "prompts": {}, "agent": {}, "clients": {}, "skipped": {}, "failures": [],
+                          "phases": []}
+
+    @contextlib.contextmanager
+    def phase(self, name: str):
+        """Mark the seconds one test occupies, so the engine's own per-request cache and draft figures (which carry no
+        bench tag) can be put back against this test afterwards by their own timestamp."""
+        span = {"name": name, "from_s": time.time()}
+        try:
+            yield span
+        finally:
+            span["to_s"] = time.time()
+            self.out["phases"].append(span)
 
     def tag(self, *parts) -> str:
         return "-".join([*map(str, parts), self.nonce])
@@ -262,17 +282,18 @@ class Suite:
     def run_chat(self):
         self.log(f"chat: {len(PROMPTS)} short questions x {self.runs} runs, up to {CHAT_MAX_TOKENS} new tokens")
         rows = []
-        for run in range(self.runs):
-            for i, p in enumerate(PROMPTS):
-                d = digest(chat(self.base, self.key, [{"role": "user", "content": f"[{self.tag(run, i, 'c')}] {p}"}],
-                                CHAT_MAX_TOKENS, self.think))
-                d.update(run=run, prompt=i)
-                rows.append(d)
-                if not d["ok"]:
-                    self.fail("chat", d)
-                else:
-                    self.log(f"  run {run + 1} q{i + 1}: decode {d['decode_tps']} tok/s, first token {d['ttft_s']} s, "
-                             f"{d['generated_tokens']} tokens")
+        with self.phase("short chat"):
+            for run in range(self.runs):
+                for i, p in enumerate(PROMPTS):
+                    d = digest(chat(self.base, self.key, [{"role": "user", "content": f"[{self.tag(run, i, 'c')}] {p}"}],
+                                    CHAT_MAX_TOKENS, self.think))
+                    d.update(run=run, prompt=i)
+                    rows.append(d)
+                    if not d["ok"]:
+                        self.fail("chat", d)
+                    else:
+                        self.log(f"  run {run + 1} q{i + 1}: decode {d['decode_tps']} tok/s, first token {d['ttft_s']} s, "
+                                 f"{d['generated_tokens']} tokens")
         good = [r for r in rows if r["ok"]]
         self.out["chat"] = {"requests": rows, "decode_tps": stat(r["decode_tps"] for r in good),
                             "ttft_s": stat(r["ttft_s"] for r in good), "generated_tokens": stat(r["generated_tokens"] for r in good),
@@ -285,15 +306,16 @@ class Suite:
             return
         self.log(f"{label} prompt: {self.runs} fresh prompts of about {tokens} tokens, {LONG_MAX_TOKENS} new tokens")
         rows = []
-        for run in range(self.runs):
-            d = digest(chat(self.base, self.key, self.prompt_for(tokens, run), LONG_MAX_TOKENS, self.think))
-            d["run"] = run
-            rows.append(d)
-            if not d["ok"]:
-                self.fail(label, d)
-            else:
-                self.log(f"  run {run + 1}: {d['prompt_tokens']} tokens, prompt {d['prompt_tps']} tok/s "
-                         f"({d['reused_tokens'] or 0} reused), first token {d['ttft_s']} s")
+        with self.phase(f"{label} prompt"):
+            for run in range(self.runs):
+                d = digest(chat(self.base, self.key, self.prompt_for(tokens, run), LONG_MAX_TOKENS, self.think))
+                d["run"] = run
+                rows.append(d)
+                if not d["ok"]:
+                    self.fail(label, d)
+                else:
+                    self.log(f"  run {run + 1}: {d['prompt_tokens']} tokens, prompt {d['prompt_tps']} tok/s "
+                             f"({d['reused_tokens'] or 0} reused), first token {d['ttft_s']} s")
         good = [r for r in rows if r["ok"]]
         self.out["prompts"][label] = {"target_tokens": tokens, "requests": rows,
                                       "prompt_tps": stat(r["prompt_tps"] for r in good),
@@ -344,13 +366,14 @@ class Suite:
             return
         self.log(f"agent: a session of {AGENT_TURNS + 1} turns with four tools, x {self.runs} runs")
         sessions = []
-        for run in range(self.runs):
-            turns = self.agent_session(run)
-            sessions.append(turns)
-            for d in turns:
-                if d["ok"]:
-                    self.log(f"  run {run + 1} turn {d['turn']}: prompt {d['prompt_tokens']}, reused {d['reused_tokens']}, "
-                             f"read {d['read_tokens']}, first token {d['ttft_s']} s")
+        with self.phase("agent session"):
+            for run in range(self.runs):
+                turns = self.agent_session(run)
+                sessions.append(turns)
+                for d in turns:
+                    if d["ok"]:
+                        self.log(f"  run {run + 1} turn {d['turn']}: prompt {d['prompt_tokens']}, reused {d['reused_tokens']}, "
+                                 f"read {d['read_tokens']}, first token {d['ttft_s']} s")
         follow = [[d for d in s if d["ok"] and d["turn"] > 0] for s in sessions]
         hit = [sum(d["reused_tokens"] or 0 for d in s) / max(1, sum(d["prompt_tokens"] or 0 for d in s)) * 100
                for s in follow if s]
@@ -370,25 +393,26 @@ class Suite:
     def run_clients(self, n: int):
         self.log(f"concurrency: {n} requests at once x {self.runs} rounds, {BURST_MAX_TOKENS} new tokens each")
         rows = []
-        for rd in range(self.runs):
-            res: dict = {}
-            th = []
-            t0 = time.perf_counter()
-            for i in range(n):
-                t = threading.Thread(target=serve_load.one, args=(self.base, self.key, "strata", i, 400, BURST_MAX_TOKENS, res, {},
-                                                                 self.think, f" {self.tag('b', n, rd)}"))
-                t.start()
-                th.append(t)
-            for t in th:
-                t.join()
-            wall = time.perf_counter() - t0
-            toks = sum(r["tokens"] for r in res.values())
-            errs = [r["err"] for r in res.values() if r["err"]]
-            rows.append({"round": rd, "wall_s": round(wall, 2), "tokens": toks, "total_tps": round(toks / wall, 2),
-                         "first_s": [r["first"] for r in res.values() if r["first"] is not None],
-                         "latency_s": [r["total"] for r in res.values()], "errors": errs[:3], "error_count": len(errs)})
-            self.log(f"  round {rd + 1}: {toks} tokens in {wall:.1f} s = {toks / wall:.1f} tok/s total"
-                     + (f"  ERRORS {errs[:1]}" if errs else ""))
+        with self.phase(f"{self.clients} clients at once"):
+            for rd in range(self.runs):
+                res: dict = {}
+                th = []
+                t0 = time.perf_counter()
+                for i in range(n):
+                    t = threading.Thread(target=serve_load.one, args=(self.base, self.key, "strata", i, 400, BURST_MAX_TOKENS, res, {},
+                                                                     self.think, f" {self.tag('b', n, rd)}"))
+                    t.start()
+                    th.append(t)
+                for t in th:
+                    t.join()
+                wall = time.perf_counter() - t0
+                toks = sum(r["tokens"] for r in res.values())
+                errs = [r["err"] for r in res.values() if r["err"]]
+                rows.append({"round": rd, "wall_s": round(wall, 2), "tokens": toks, "total_tps": round(toks / wall, 2),
+                             "first_s": [r["first"] for r in res.values() if r["first"] is not None],
+                             "latency_s": [r["total"] for r in res.values()], "errors": errs[:3], "error_count": len(errs)})
+                self.log(f"  round {rd + 1}: {toks} tokens in {wall:.1f} s = {toks / wall:.1f} tok/s total"
+                         + (f"  ERRORS {errs[:1]}" if errs else ""))
         firsts = [x for r in rows for x in r["first_s"]]
         lats = [x for r in rows for x in r["latency_s"]]
         self.out["clients"] = {"clients": n, "rounds": rows, "total_tps": stat(r["total_tps"] for r in rows),
@@ -400,15 +424,63 @@ class Suite:
 
     def run(self):
         self.warm_up()
-        self.run_chat()
-        self.run_prompt(4096, "4K")
-        self.run_prompt(16384, "16K")
-        self.run_agent()
+        if "chat" in self.tests:
+            self.run_chat()
+        if "4k" in self.tests:
+            self.run_prompt(4096, "4K")
+        if "16k" in self.tests:
+            self.run_prompt(16384, "16K")
+        if "agent" in self.tests:
+            self.run_agent()
         if self.clients:
             self.run_clients(self.clients)
         if self.want_long:
             self.run_prompt(32768, "32K")
         return self.out
+
+
+def engine_attribution(base: str, key: str, out: dict, before: dict) -> dict:
+    """The expert cache and the drafts, per test, from the engine's OWN per-request records.
+
+    The speed tests carry a unique tag, but the cache's hit rate and the draft acceptance are not in the answer's usage -
+    they are only in the server's request history.  So each test records the seconds it ran (its "phase") and the records
+    are put back against it by their own timestamp; the whole-suite figures come from the difference of the engine's
+    cumulative counters, which is exact whatever else the server was doing before.
+    """
+    m = try_json(base, "/metrics", key, 30) or {}
+    recs, after = m.get("requests") or [], m.get("totals") or {}
+    def delta(k: str) -> int:
+        return max(0, int(after.get(k) or 0) - int(before.get(k) or 0))
+    offered, accepted, reqs = delta("drafts_offered"), delta("drafts_accepted"), delta("requests")
+    # The counters are exact for the whole suite.  Hit rate and PCIe share are only in the per-request records, and the
+    # server keeps records from before the bench too, so those two come from the records whose own timestamp falls inside
+    # one of our phases; the hit rate there is token-weighted (reused over prompt), which is what a hit rate should mean.
+    def span_of(ph: dict) -> list:
+        t0, t1 = ph.get("from_s") or 0, ph.get("to_s", 0)
+        return [r for r in recs if t0 and t0 <= float(r.get("time") or 0) <= t1]
+    ours = [r for r in recs if any(ph.get("from_s") and ph["from_s"] <= float(r.get("time") or 0) <= ph.get("to_s", 0)
+                                   for ph in out.get("phases") or [])]
+    tok, reuse = sum(r.get("prompt_tokens") or 0 for r in ours), sum(r.get("prompt_cache_reused_tokens") or 0 for r in ours)
+    off, acc = sum(r.get("drafts_offered") or 0 for r in ours), sum(r.get("drafts_accepted") or 0 for r in ours)
+    whole = {"requests": reqs, "prompt_tokens": delta("prompt_tokens"), "reused_tokens": delta("reused"),
+             "drafts_offered": offered, "drafts_accepted": accepted, "matched_requests": len(ours),
+             "cache_hit_pct": round(100.0 * reuse / tok, 1) if tok else None,
+             "pcie_share_pct": round(100.0 * sum(r.get("pcie_share") or 0 for r in ours) / len(ours), 1) if ours else None,
+             "draft_accept_pct": round(100.0 * accepted / offered, 1) if offered else None}
+    per_test = {}
+    for ph in out.get("phases") or []:
+        span = span_of(ph)
+        if not span:
+            continue
+        stok, sreuse = sum(r.get("prompt_tokens") or 0 for r in span), sum(r.get("prompt_cache_reused_tokens") or 0 for r in span)
+        soff, sacc = sum(r.get("drafts_offered") or 0 for r in span), sum(r.get("drafts_accepted") or 0 for r in span)
+        per_test[ph["name"]] = {"requests": len(span),
+                                "cache_hit_pct": round(100.0 * sreuse / stok, 1) if stok else None,
+                                "pcie_share_pct": round(100.0 * sum(r.get("pcie_share") or 0 for r in span) / len(span), 1)
+                                                 if any(r.get("pcie_share") is not None for r in span) else None,
+                                "draft_accept_pct": round(100.0 * sacc / soff, 1) if soff else None,
+                                "decode_tok_s_median": med([r.get("decode_tok_s") for r in span if r.get("decode_tok_s")])}
+    return {"whole_suite": whole, "per_test": per_test}
 
 
 def summary_metrics(out: dict) -> dict:
@@ -426,6 +498,14 @@ def summary_metrics(out: dict) -> dict:
     c = out["clients"]
     if c:
         m[f"{c['clients']} clients total tok/s"] = c.get("total_tps")
+    eng = out.get("engine") or {}
+    w = eng.get("whole_suite") or {}
+    if w.get("cache_hit_pct") is not None:
+        m["expert cache hit %"] = w["cache_hit_pct"]
+    if w.get("pcie_share_pct") is not None:
+        m["experts over PCIe %"] = w["pcie_share_pct"]
+    if w.get("draft_accept_pct") is not None:
+        m["draft accepted %"] = w["draft_accept_pct"]
     return m
 
 
@@ -595,6 +675,11 @@ def collect_machine(base: str, key: str, cfg: dict | None) -> dict:
         "config": view, "launch": launch_line(view) if view else None,
         "engine_info": {k: v for k, v in eng.items() if isinstance(v, (str, int, float, bool, dict)) and k not in ("model_path",)},
         "vram_after": (status.get("vram") or {}),
+        # The engine's own counters since it started, and the request records it still holds (every request since start,
+        # each with hit_rate / pcie_share / drafts).  The bench takes the DIFFERENCE of two readings, or the records whose
+        # timestamp falls inside one of its own tests, so a server that was already doing other work cannot skew it.
+        "totals": metrics.get("totals") or {}, "requests_kept": metrics.get("requests_kept") or 0,
+        "requests": metrics.get("requests") or [],
     }
 
 
@@ -681,8 +766,11 @@ def model_label(machine: dict) -> str:
     return model if not q or slug(q) in slug(model, 200) else f"{model}-{q}"
 
 
-def results_dir_name(machine: dict, date: str) -> str:
-    return f"{date}-community-{gpu_slug(machine)}-{slug(model_label(machine), 40)}"
+def results_dir_name(machine: dict, date: str, arm: str = "") -> str:
+    """A community run is named after the hardware and model; an A/B arm adds what was changed, so the arms of one
+    experiment sit next to each other in the folder listing and cannot be mistaken for each other."""
+    base = f"{date}-community-{gpu_slug(machine)}-{slug(model_label(machine), 40)}"
+    return f"{base}-{slug(arm, 28)}" if arm else base
 
 
 def unique_dir(parent: Path, name: str) -> Path:
@@ -695,6 +783,11 @@ def unique_dir(parent: Path, name: str) -> Path:
 
 def row(label, prompt_tokens, reused, gen, runs, pp, dec, ttft):
     return f"| {label} | {prompt_tokens} | {reused} | {gen} | {runs} | {pp} | {dec} | {ttft} |"
+
+
+def fmt_pct(v) -> str:
+    """A percentage the engine measured, or a dash when it reported nothing (a dense model routes no experts)."""
+    return "-" if v is None else f"{v:.1f}"
 
 
 def results_table(out: dict) -> list[str]:
@@ -722,10 +815,17 @@ def render_readme(res: dict) -> str:
     gpu = " + ".join(mc.get("gpu") or []) or "CPU only"
     vram = f"{mc['gpu_vram_mib'] / 1024:.0f} GiB VRAM" if mc.get("gpu_vram_mib") else "VRAM not read"
     model = (model_label(mc) if mc.get("model") else mc.get("quant")) or "model not read"
-    L = [f"# Community benchmark on {gpu}", "",
+    L = [f"# Community benchmark on {gpu}" + (f" \u2014 {p['arm']}" if p.get("arm") else ""), "",
          f"Measured on {res['date']} with `tools/strata_bench.py` (suite {SCHEMA}, {p['runs']} runs per test, medians with ranges). "
          f"Speeds are the engine's own timings; first-token times are measured by the client over HTTP. Speed only: no "
-         f"correctness check was run.", "",
+         f"correctness check was run.", ""]
+    if p.get("arm") or p.get("note"):
+        L += ["**This run changed one thing on purpose**: " + (f"`{p['arm']}`" if p.get("arm") else "see below") + ".", ""] \
+             + ([p["note"], ""] if p.get("note") else []) + [
+                 "Everything else - model, quantization, prompts, number of runs - is the same as the other arms, which is what "
+                 "makes the comparison mean something. Put two arms beside each other with "
+                 "`python tools/strata_bench.py --compare-only <this folder> --compare <the other folder>`.", ""]
+    L += [
          "## Hardware and software", "",
          f"- GPU and VRAM: {gpu}, {vram}",
          f"- CPU: {mc.get('cpu') or 'not read'} ({mc.get('cpu_cores') or '?'} cores, {mc.get('cpu_threads') or '?'} threads); "
@@ -749,6 +849,10 @@ def render_readme(res: dict) -> str:
           f"({'started by the benchmark from the install configuration' if p['started_server'] else 'already running'}); model loading is not "
           f"timed. One warm-up chat and a 1K prompt are discarded first. Every prompt starts with a unique tag, so the conversation "
           f"cache cannot help the fresh-prompt tests.", "",
+          "The tests run in a fixed order (short chat, fresh prompts, agent session) and the model is **deliberately not reset** "
+          "between them: this is how a working machine looks, warm and with its caches filled, which is what Strata is built for. "
+          "A later test can therefore be helped by an earlier one, so compare one result with another only test by test, and never "
+          "read the first tests as cold-start figures.", "",
           f"- short chat: the three questions of `tools/ab_engine.py`, up to {CHAT_MAX_TOKENS} new tokens, {p['runs']} runs",
           f"- 4K / 16K{' / 32K' if 'prompt' in res['results'] and '32K' in res['results']['prompts'] else ''} prompts: generated word lists sized by a calibration request, "
           f"{LONG_MAX_TOKENS} new tokens, {p['runs']} fresh prompts each",
@@ -769,6 +873,24 @@ def render_readme(res: dict) -> str:
         for d in ag["sessions"][0]:
             if d["ok"]:
                 L.append(f"| {d['turn']} | {d['prompt_tokens']} | {d['reused_tokens']} | {d['read_tokens']} | {d['prompt_tps'] or '-'} | {d['ttft_s']} | {d['decode_tps'] or '-'} |")
+    eng = out.get("engine") or {}
+    if eng.get("per_test"):
+        w = eng.get("whole_suite") or {}
+        L += ["", "### The expert cache and the drafts (the engine's own figures, not measured by this client)", "",
+              f"Over the whole run: {w.get('requests', 0)} requests, the expert cache found "
+              f"{fmt_pct(w.get('cache_hit_pct'))}% of the routed experts already in VRAM and sent "
+              f"{fmt_pct(w.get('pcie_share_pct'))}% of them over PCIe; the drafts were accepted "
+              f"{fmt_pct(w.get('draft_accept_pct'))}% of the time offered "
+              f"({w.get('drafts_accepted', 0)} of {w.get('drafts_offered', 0)}).", "",
+              "A larger PCIe share is NOT a better run: it is the share of the routed experts that had to be fetched over the bus.",
+              "", "| Test | Requests | Cache hit % | Over PCIe % | Drafts accepted % | Decode tok/s (engine) |",
+              "| --- | ---: | ---: | ---: | ---: | ---: |"]
+        for name, v in eng["per_test"].items():
+            L.append(f"| {name} | {v['requests']} | {fmt_pct(v.get('cache_hit_pct'))} | {fmt_pct(v.get('pcie_share_pct'))} | "
+                     f"{fmt_pct(v.get('draft_accept_pct'))} | {v.get('decode_tok_s_median') if v.get('decode_tok_s_median') is not None else '-'} |")
+        L += ["", "These come from the server's own per-request history, matched to each test by the seconds that test ran; the "
+              "whole-run line is the difference of the engine's cumulative counters, so work the server did before this run cannot "
+              "enter it. A dense model, or an engine too old to report them, leaves these columns empty."]
     cl = out["clients"]
     if cl:
         L += ["", f"### Concurrency: {cl['clients']} clients", "",
@@ -787,11 +909,17 @@ def render_readme(res: dict) -> str:
     return "\n".join(L)
 
 
+def _num(v):
+    """A summary figure is either a {median,min,max,n} block (the speed tests) or a plain number (the engine's own
+    counters, which are one aggregate over the run, not a set of runs)."""
+    return (v.get("median") if isinstance(v, dict) else v)
+
+
 def compare_table(old: dict, new: dict) -> str:
     a, b = summary_metrics(old["results"]), summary_metrics(new["results"])
     rows = [f"{'':32s} {'old':>12s} {'new':>12s} {'change':>9s}"]
     for k in dict.fromkeys([*a, *b]):
-        x, y = (a.get(k) or {}).get("median"), (b.get(k) or {}).get("median")
+        x, y = _num(a.get(k)), _num(b.get(k))
         if x is None and y is None:
             continue
         ch = f"{(y - x) / x * 100:+.1f}%" if x and y is not None else ""
@@ -799,6 +927,17 @@ def compare_table(old: dict, new: dict) -> str:
     ho, hn = old["machine"], new["machine"]
     notes = [f"  {n}: {ho.get(f)} -> {hn.get(f)}" for n, f in (("GPU", "gpu"), ("engine", "engine_version"), ("model", "model"), ("quant", "quant"),
                                                               ("context", "context")) if ho.get(f) != hn.get(f)]
+    # An A/B arm differs ONLY in the launch arguments, and the two arms otherwise look identical; without this line the
+    # table says "no differences" about the one thing that was changed on purpose.
+    arms = [((old.get("params") or {}).get("arm"), (new.get("params") or {}).get("arm"))]
+    if arms[0][0] or arms[0][1]:
+        notes.append(f"  arm: {arms[0][0] or 'unchanged'} -> {arms[0][1] or 'unchanged'}")
+    for n, f in (("launch", "launch"), ("expert slots", "expert_slots"), ("cache MiB", "expert_cache_mib"),
+                 ("spec drafts", "spec"), ("mtp", "mtp_max")):
+        x = (ho.get("engine_info") or {}).get(f if f != "launch" else "") or ho.get(f)
+        y = (hn.get("engine_info") or {}).get(f if f != "launch" else "") or hn.get(f)
+        if x != y:
+            notes.append(f"  {n}: {x} -> {y}")
     return "\n".join(rows + (["", "differences:"] + notes if notes else []))
 
 
@@ -813,13 +952,15 @@ def short_table(res: dict) -> str:
     m = summary_metrics(res["results"])
     lines = []
     for k, v in m.items():
-        if v:
+        if isinstance(v, dict) and v:
             lines.append(f"  {k:32s} {v['median']:>10.2f}   ({v['min']:.2f} - {v['max']:.2f}, n={v['n']})")
+        elif isinstance(v, (int, float)):
+            lines.append(f"  {k:32s} {v:>10.2f}   (the engine's own figures for the whole run)")
     return "\n".join(lines)
 
 
 def write_results(res: dict, parent: Path, red, log_lines: list[str]) -> Path:
-    d = unique_dir(parent, results_dir_name(res["machine"], res["date"]))
+    d = unique_dir(parent, results_dir_name(res["machine"], res["date"], (res.get("params") or {}).get("arm", "")))
     d.mkdir(parents=True)
     clean = redact_obj(res, red)
     (d / "results.json").write_text(json.dumps(clean, indent=1, ensure_ascii=False), encoding="utf-8")
@@ -830,6 +971,109 @@ def write_results(res: dict, parent: Path, red, log_lines: list[str]) -> Path:
 
 
 # --------------------------------------------------------------------------------------------------------- main
+def selftest() -> int:
+    """Check the arithmetic on numbers we made up, so a run's report cannot be wrong in a way the machine cannot see.
+
+    No server and no model: the HTTP calls are replaced by a fabricated /metrics, the same shape the engine sends.
+    """
+    bad = 0
+    def check(name: str, ok: bool, got="") -> None:
+        nonlocal bad
+        print(f"  {'ok  ' if ok else 'FAIL'} {name}" + ("" if ok else f"   got {got}"))
+        bad += 0 if ok else 1
+
+    # 1. per-request records matched to the test that ran them, by the test's own seconds
+    out = {"phases": [{"name": "chat", "from_s": 100.0, "to_s": 120.0}, {"name": "agent", "from_s": 200.0, "to_s": 260.0}]}
+    recs = [{"time": 90.0, "prompt_tokens": 5000, "prompt_cache_reused_tokens": 0, "pcie_share": 0.9, "drafts_offered": 40,
+             "drafts_accepted": 4, "decode_tok_s": 11.0, "hit_rate": 0.0},          # before the bench: must be ignored
+            {"time": 110.0, "prompt_tokens": 1000, "prompt_cache_reused_tokens": 100, "pcie_share": 0.30, "drafts_offered": 10,
+             "drafts_accepted": 2, "decode_tok_s": 14.0, "hit_rate": 0.1},
+            {"time": 210.0, "prompt_tokens": 4000, "prompt_cache_reused_tokens": 3200, "pcie_share": 0.10, "drafts_offered": 40,
+             "drafts_accepted": 20, "decode_tok_s": 20.0, "hit_rate": 0.8},
+            {"time": 250.0, "prompt_tokens": 6000, "prompt_cache_reused_tokens": 4700, "pcie_share": 0.20, "drafts_offered": 60,
+             "drafts_accepted": 30, "decode_tok_s": 22.0, "hit_rate": 0.78}]
+    global try_json
+    keep, try_json = try_json, lambda base, path, key="", timeout=10: {"requests": recs,
+                                                                       "totals": {"requests": 4, "prompt_tokens": 16000,
+                                                                                  "reused": 8000, "drafts_offered": 110,
+                                                                                  "drafts_accepted": 52}}
+    try:
+        eng = engine_attribution("http://x", "", out, {"requests": 1, "prompt_tokens": 5000, "reused": 0,
+                                                       "drafts_offered": 40, "drafts_accepted": 4})
+    finally:
+        try_json = keep
+    w, pt = eng["whole_suite"], eng["per_test"]
+    check("records from before the bench are ignored", w["matched_requests"] == 3, w)
+    check("whole-suite hit rate is token-weighted over our tests only", w["cache_hit_pct"] == 72.7, w["cache_hit_pct"])
+    check("whole-suite PCIe share averages our three requests", w["pcie_share_pct"] == 20.0, w["pcie_share_pct"])
+    check("whole-suite drafts come from the engine's counters, not the records",
+          (w["drafts_accepted"], w["drafts_offered"], w["draft_accept_pct"]) == (48, 70, 68.6), w)
+    check("the agent test gets its own two requests", (pt["agent"]["requests"], pt["agent"]["cache_hit_pct"]) == (2, 79.0), pt["agent"])
+    check("the chat test gets its own one", (pt["chat"]["requests"], pt["chat"]["pcie_share_pct"], pt["chat"]["decode_tok_s_median"])
+          == (1, 30.0, 14.0), pt["chat"])
+
+    # 2. the comparison table: what changed, in the direction the reader expects
+    def stats(v: float) -> dict:                        # what the suite stores for a repeated timing
+        return {"median": v, "min": v, "max": v, "n": 3}
+    def fake(hit, pcie, acc, dec, ttft, pp):
+        return {"machine": {"gpu": ["Test GPU"], "cpu": "Test CPU", "ram_gib": 32.0, "model": "Test Model",
+                            "quant": "Q4_K_M", "context": 8192, "config": {}, "launch": "strata --test"},
+                "params": {"runs": 3, "think": False, "clients": 0, "long": False, "started_server": True, "tests": ["agent", "chat"],
+                           "arm": "", "note": "", "command": "python tools/strata_bench.py"},
+                "results": {"chat": {"prompt_tokens": stats(100), "generated_tokens": stats(100), "decode_tps": stats(dec),
+                                     "ttft_s": stats(ttft)},
+                            "prompts": {"4k": {"prompt_tokens": stats(4000), "reused_tokens": stats(0), "prompt_tps": stats(pp),
+                                               "ttft_s": stats(ttft)}},
+                            "agent": {"sessions": [[{"ok": True, "turn": t, "prompt_tokens": 4000, "reused_tokens": 2000,
+                                                       "read_tokens": 2000, "prompt_tps": 400.0, "ttft_s": ttft,
+                                                       "decode_tps": dec, "generated_tokens": 40} for t in (0, 1)]],
+                                      "turns": 2, "hit_pct": stats(hit), "reread_tokens": stats(1000), "new_tokens": stats(2000),
+                                      "first_turn_ttft_s": stats(ttft), "turn_ttft_s": stats(ttft), "turn_decode_tps": stats(dec),
+                                      "last_turn_prompt_tokens": stats(4000)},
+                            "clients": None, "engine": {"whole_suite": {"requests": 4, "cache_hit_pct": hit,
+                                                                        "pcie_share_pct": pcie, "draft_accept_pct": acc,
+                                                                        "drafts_accepted": 10, "drafts_offered": 20},
+                                                        "per_test": {"agent session": {"requests": 6, "cache_hit_pct": hit,
+                                                                                        "pcie_share_pct": pcie,
+                                                                                        "draft_accept_pct": acc,
+                                                                                        "decode_tok_s_median": dec}}},
+                            "failures": [], "skipped": []}}
+    before, after = fake(40.0, 30.0, 50.0, 20.0, 1.0, 400.0), fake(60.0, 12.0, 70.0, 30.0, 0.5, 600.0)
+    after["params"]["arm"] = "cache bigger"
+    table = compare_table(before, after)
+    def change_of(label: str) -> str:
+        line = next((x for x in table.splitlines() if x.startswith(label)), "")
+        return line.split()[-1] if line else ""
+    check("the comparison names the arm", "cache bigger" in table, table[:80])
+    check("the expert cache hit going up is shown as up", change_of("expert cache hit %") == "+50.0%", table)
+    check("less over PCIe is shown as down", change_of("experts over PCIe %") == "-60.0%", table)
+    check("faster decode is shown as up", change_of("chat decode tok/s") == "+50.0%", table)
+    check("a shorter first token is shown as down", change_of("chat first token (s)") == "-50.0%", table)
+    check("a dense model's missing figures do not crash the table",
+          "-" in compare_table(fake(None, None, None, 20.0, 1.0, 400.0), fake(None, None, None, 21.0, 1.0, 400.0)))
+
+    # 3. the report itself
+    res = dict(after, date="2026-01-01", elapsed_s=100.0)
+    doc = render_readme(res)
+    check("the report says what the arm changed", "This run changed one thing on purpose" in doc, doc[:120])
+    check("the report carries the engine's own attribution", "routed experts already in VRAM" in doc, doc[:200])
+    check("the report warns that PCIe share is not a score", "NOT a better run" in doc)
+    check("the report says the model was not reset between tests", "deliberately not reset" in doc)
+    check("the speed table has a row per test", all(s in doc for s in ("short chat", "4k prompt, fresh", "agent session")), doc[:400])
+
+    # 4. privacy: a stranger's paths, key and addresses must not survive
+    red = redactor(key="sk-secret-1234567890")
+    line = red("launch C:\\Users\\a3k6g\\AppData\\Local\\strata.exe --model D:\\models\\m.gguf key sk-secret-1234567890 at 192.168.4.22")
+    check("the API key is gone", "sk-secret-1234567890" not in line, line)
+    check("the home folder is gone", "a3k6g" not in line, line)
+    check("the IP address is gone", "192.168.4.22" not in line, line)
+    check("the model path is kept, only its folder is hidden", "m.gguf" in line, line)
+    deep = json.dumps(redact_obj({"a": {"b": ["C:\\Users\\a3k6g\\x"]}}, red), ensure_ascii=False)
+    check("a results tree is redacted all the way down", "a3k6g" not in deep, deep)
+    print("SELFTEST", "passed" if bad == 0 else f"FAILED: {bad}")
+    return 0 if bad == 0 else 1
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Measure this Strata install and write a shareable report (see the top of this file).")
     ap.add_argument("--config", help="the model config to run (default: the newest strata-*.json of this folder)")
@@ -841,12 +1085,24 @@ def main(argv=None) -> int:
     ap.add_argument("--clients", type=int, default=0, metavar="N", help="also send N requests at once")
     ap.add_argument("--long", action="store_true", help="also a prompt of about 32,768 tokens")
     ap.add_argument("--think", action="store_true", help="leave thinking on (the default suite turns it off)")
+    ap.add_argument("--tests", metavar="LIST",
+                    help="only these tests, comma separated (chat,4k,16k,agent); default all four. "
+                         "An A/B arm runs the same subset in every arm")
+    ap.add_argument("--engine-arg", metavar="ARGS", action="append", default=[],
+                    help="arguments to ADD to the engine when the benchmark starts the server, repeatable and applied in order, "
+                         "eg --engine-arg " + '"--expert-cache 0"' + " to measure one change (needs --config, no --url)")
+    ap.add_argument("--arm", metavar="LABEL", help="what this arm changed: written into the report title, the results.json and "
+                                                  "the results folder name, so the arms of one experiment cannot be mixed up")
+    ap.add_argument("--note", help="a sentence or two for the report: the question this experiment answers, or what to read in it")
     ap.add_argument("--out", help="where to write the results folder (default: bench/results)")
     ap.add_argument("--compare", metavar="DIR", help="a results folder (or its results.json) to put beside this run")
     ap.add_argument("--compare-only", metavar="NEW", help="print --compare of two existing results folders and stop")
     ap.add_argument("--ready-timeout", type=float, default=1800, help="seconds to wait for the model to load")
+    ap.add_argument("--selftest", action="store_true", help="check this tool's own arithmetic on numbers we made up, and stop")
     ap.add_argument("--quiet", action="store_true")
     a = ap.parse_args(argv)
+    if a.selftest:
+        return selftest()
     say = (lambda *x, **k: None) if a.quiet else (lambda *x, **k: print(*x, **k, flush=True))
 
     if a.compare_only:
@@ -856,6 +1112,10 @@ def main(argv=None) -> int:
         return 0
 
     cfg_path, cfg, proc, log_path = None, None, None, None
+    if a.engine_arg and (a.url or not a.config):
+        print("--engine-arg needs the benchmark to start the server itself from a configuration you name: give --config FILE and "
+              "drop --url (the extra arguments are added to that configuration, which is written aside unchanged).", file=sys.stderr)
+        return 2
     if a.config or not a.url:
         if a.config:
             cfg_path = Path(a.config)
@@ -872,6 +1132,14 @@ def main(argv=None) -> int:
                   "or give --url of a running server.", file=sys.stderr)
             return 2
         cfg = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
+        if a.engine_arg:
+            # One arm of an A/B: the SAME configuration plus the arguments under test, written to a sibling file so the install's
+            # own config is never touched and the launch line in the report shows exactly what ran.  A later arm with the same
+            # arguments overwrites this file, which is what you want: one file per arm, named after the arm.
+            cfg["args"] = list(cfg.get("args") or []) + [x for args in a.engine_arg for x in args.split()]
+            cfg_path = cfg_path.with_name("bench-arm" + ("-" + slug(a.arm, 24) if a.arm else "") + ".json")
+            cfg_path.write_text(json.dumps(cfg, indent=1), encoding="utf-8")
+            say(f"Engine arguments added for this run: {' '.join(x for args in a.engine_arg for x in args.split())}")
     key = a.api_key or ((cfg or {}).get("api_key") or "")
     if a.url:
         base = a.url.rstrip("/")
@@ -900,20 +1168,38 @@ def main(argv=None) -> int:
                 return 1
         t0 = time.time()
         pre = collect_machine(base, key, cfg)
-        suite = Suite(base, key, pre.get("context"), max(1, a.runs), a.think, log=say, want_clients=a.clients, want_long=a.long)
+        suite = Suite(base, key, pre.get("context"), max(1, a.runs), a.think, log=say, want_clients=a.clients, want_long=a.long,
+                      tests=set(x.strip() for x in a.tests.split(",")) if a.tests else None)
         slots = pre.get("parallel_slots") or 1
         if a.clients and a.clients > slots:
             say(f"Note: the server runs {slots} request(s) at a time (--batch), so {a.clients} clients will partly wait their turn.")
         say("Running the suite (about 3-10 minutes) ...")
         out = suite.run()
+        # The engine's own cache/draft figures, per test: it reports them per request in its history, which carries no bench
+        # tag, so they are matched to the tests by the seconds each test ran (Suite.phase) and the whole-run figures are the
+        # difference of the cumulative counters taken before and after - exact whatever the server did before this run.
+        out["engine"] = engine_attribution(base, key, out, pre.get("totals") or {})
+        w = out["engine"]["whole_suite"]
+        say(f"  expert cache: {w['cache_hit_pct'] if w['cache_hit_pct'] is not None else 'not reported'}% of routed experts "
+            f"already in VRAM, {w['pcie_share_pct'] if w['pcie_share_pct'] is not None else 'not reported'}% over PCIe; "
+            f"drafts accepted {w['draft_accept_pct'] if w['draft_accept_pct'] is not None else 'not reported'}%")
+        for name, v in out["engine"]["per_test"].items():
+            say(f"    {name}: hit {v['cache_hit_pct']}%, PCIe {v['pcie_share_pct']}%, drafts {v['draft_accept_pct']}%, "
+                f"engine decode {v['decode_tok_s_median']} tok/s ({v['requests']} requests)")
         machine = collect_machine(base, key, cfg)             # again: VRAM and the cache after the work
         if not machine.get("gpu"):
             machine["gpu"] = pre.get("gpu")
         res = {"schema": SCHEMA, "tool": "tools/strata_bench.py", "date": datetime.date.today().isoformat(),
                "params": {"runs": suite.runs, "think": a.think, "clients": a.clients, "long": a.long, "started_server": started,
+                          "tests": sorted(suite.tests), "arm": a.arm or "", "note": a.note or "",
+                          "engine_arg": [x for args in a.engine_arg for x in args.split()],
                           "command": "python tools/strata_bench.py" + "".join(
                               f" {x}" for x in (f"--clients {a.clients}" if a.clients else "", "--long" if a.long else "",
-                                                "--think" if a.think else "", f"--runs {a.runs}" if a.runs != 3 else "") if x)},
+                                                "--think" if a.think else "", f"--runs {a.runs}" if a.runs != 3 else "",
+                                                f"--tests {a.tests}" if a.tests else "",
+                                                f"--config {Path(a.config).name}" if a.config else "",
+                                                *(f'--engine-arg "{args}"' for args in a.engine_arg),
+                                                f"--arm {a.arm}" if a.arm else "") if x)},
                "elapsed_s": time.time() - t0, "machine": machine, "results": out}
         parent = Path(a.out) if a.out else ROOT / "bench" / "results"
         d = write_results(res, parent, red, log_excerpt(log_path) if log_path else [])
