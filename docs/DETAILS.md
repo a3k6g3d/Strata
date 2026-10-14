@@ -631,7 +631,17 @@ sizes a cache whose misses are copied over PCIe and computed on the GPU, while S
 system RAM and computes them there, so the bus the other engine is measuring is not the one being tuned here. And
 the row above is this project's own case of a **larger** cache and a **higher** hit rate decoding 7x slower. What
 was measured here is `auto` - sized from the free VRAM and checked again after the slots are written - at
-102.1 / 122.3 tok/s on the same card that collapsed to 13.7 at 11,631 slots.
+102.1 / 122.3 tok/s on the same card that collapsed to 13.7 at 11,631 slots.  What that cache is, what it measures on
+a 4090 and a 5090, and what else is worth taking from it and from LMCache, is in
+[RELATED_WORK.md](RELATED_WORK.md).
+
+**Which of the two speed features carries the speed ([CACHE_VS_DRAFTS.md](CACHE_VS_DRAFTS.md)).** The expert cache and
+the drafts are usually on together, so it is not obvious which one is doing the work.  On an RTX 5070 12 GiB with this
+model, four arms that each remove one thing found the drafts accepted 68.8% of the time and worth 18.9% of the decode,
+while removing the cache cost 1.7% - inside the run-to-run spread, because the suite's prompts are fresh by
+construction and the engine reported a 0.0% expert hit rate in every arm.  Read that as "the cache does nothing for
+work that never repeats itself", not as a verdict on the cache: the agent session, where it is supposed to matter, was
+not part of that run.
 
 **Checking it on Windows.** `\GPU Process Memory(<pid>)\Shared Usage` and `Dedicated Usage` (Performance Monitor, or
 `Get-Counter`) look like the right instrument, but on this machine they did **not** separate a 13.7 tok/s run from a
@@ -2093,7 +2103,9 @@ and a **higher** hit rate at 13.7 tok/s against `auto` at 102.1. That section al
 thumb (start near 10% of the model's total expert size, `--moe-cache-mib`) is not a starting point here: it sizes a
 cache whose misses are copied over PCIe and computed on the GPU, while Strata keeps the experts that miss in system
 RAM and computes them there, so it is tuning a different bus. The lever here is `--vram-reserve-mib`, which that
-section measures (700 -> 1000 -> 1500 MiB), not a MiB figure taken from the other engine.
+section measures (700 -> 1000 -> 1500 MiB), not a MiB figure taken from the other engine.  A 0.0% hit rate is also
+worth reading twice: it is what a workload of fresh prompts gives, and it is why a benchmark that reports only tok/s
+cannot tell the cache's contribution from the drafts' ([CACHE_VS_DRAFTS.md](CACHE_VS_DRAFTS.md)).
 
 ### Prompt buffers: `bo` shares `emb` (#1454)
 
