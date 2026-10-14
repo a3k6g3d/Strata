@@ -37,10 +37,18 @@ BENCH = ROOT / "tools" / "strata_bench.py"
 # The drafts-off recipe is the one bench/results/exchange-rotation-ab.json already used: load the MTP runtime the
 # configuration names, but offer at most one token and switch the suffix drafter off, so the runtime is loaded exactly
 # as in the other arms and no draft is ever offered.
+# The fifth arm asks a question the first four could not.  All of them reported a 0.0% expert-cache hit rate, and the
+# engine says why that is possible even when a workload repeats: without `--expert-cache-per-layer` the cache's slots
+# are one pool shared by all 48 layers, filled in the order pairs ARRIVE and never evicted, so the first n_slots
+# distinct (layer, position) pairs take every slot - in-tree that is measured at 2.97% at 256 slots, against 21.4% at
+# 8 slots per layer and 70.4% at 64.  A 1951-slot cache on a fresh prompt therefore spends everything on the warm-up's
+# own positions, and nothing arriving later can be resident.  This arm changes that ONE flag on top of the baseline and
+# reads the hit line, so it tests the cache's own admission policy rather than whether the workload repeats.
 ARMS = [("as configured", []),
         ("expert-cache off", ["--expert-cache 0"]),
         ("drafts off", ["--mtp-max-t 1 --suffix-draft 0"]),
-        ("both off", ["--expert-cache 0", "--mtp-max-t 1 --suffix-draft 0"])]
+        ("both off", ["--expert-cache 0", "--mtp-max-t 1 --suffix-draft 0"]),
+        ("expert cache, per-layer slots", ["--expert-cache-per-layer"])]
 NOTE = ("Does the expert cache carry the speed, or the drafts? Same model, same prompts, same runs; one engine "
         "argument changed per arm. Decode tok/s is the engine's own figure; the cache hit and PCIe share come from "
         "the engine's per-request records, matched to each test by their own seconds.")
