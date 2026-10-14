@@ -452,32 +452,43 @@ def engine_attribution(base: str, key: str, out: dict, before: dict) -> dict:
     def delta(k: str) -> int:
         return max(0, int(after.get(k) or 0) - int(before.get(k) or 0))
     offered, accepted, reqs = delta("drafts_offered"), delta("drafts_accepted"), delta("requests")
-    # The counters are exact for the whole suite.  Hit rate and PCIe share are only in the per-request records, and the
-    # server keeps records from before the bench too, so those two come from the records whose own timestamp falls inside
-    # one of our phases; the hit rate there is token-weighted (reused over prompt), which is what a hit rate should mean.
+    # The counters are exact for the whole suite.  The cache's hit rate and its PCIe share are only in the per-request
+    # records, and the server keeps records from before the bench too, so those two come from the records whose own
+    # timestamp falls inside one of our phases.  Both are a mean over the requests that reported them: an engine too old
+    # to report one says nothing about it, and counting its silence as a zero would invent a number.  (The expert cache's
+    # hit_rate is its lookups that were already in VRAM, and its pcie_share is the experts routed to the GPU over the bus;
+    # they are NOT two halves of one figure - what is left came from the resident copy in system RAM, which is the whole
+    # point of the cache being small.)  The prompt cache's reuse is a different thing and is reported as its own figure.
+    def hit_pct(rows: list) -> float | None:
+        v = [r["hit_rate"] for r in rows if r.get("hit_rate") is not None]
+        return round(100.0 * sum(v) / len(v), 1) if v else None
+    def pcie_pct(rows: list) -> float | None:
+        v = [r["pcie_share"] for r in rows if r.get("pcie_share") is not None]
+        return round(100.0 * sum(v) / len(v), 1) if v else None
+    def reuse_pct(tok: int, reused: int) -> float | None:
+        return round(100.0 * reused / tok, 1) if tok else None
     def span_of(ph: dict) -> list:
         t0, t1 = ph.get("from_s") or 0, ph.get("to_s", 0)
         return [r for r in recs if t0 and t0 <= float(r.get("time") or 0) <= t1]
     ours = [r for r in recs if any(ph.get("from_s") and ph["from_s"] <= float(r.get("time") or 0) <= ph.get("to_s", 0)
                                    for ph in out.get("phases") or [])]
-    tok, reuse = sum(r.get("prompt_tokens") or 0 for r in ours), sum(r.get("prompt_cache_reused_tokens") or 0 for r in ours)
     off, acc = sum(r.get("drafts_offered") or 0 for r in ours), sum(r.get("drafts_accepted") or 0 for r in ours)
     whole = {"requests": reqs, "prompt_tokens": delta("prompt_tokens"), "reused_tokens": delta("reused"),
              "drafts_offered": offered, "drafts_accepted": accepted, "matched_requests": len(ours),
-             "cache_hit_pct": round(100.0 * reuse / tok, 1) if tok else None,
-             "pcie_share_pct": round(100.0 * sum(r.get("pcie_share") or 0 for r in ours) / len(ours), 1) if ours else None,
+             "cache_hit_pct": hit_pct(ours), "pcie_share_pct": pcie_pct(ours),
+             "prompt_reuse_pct": reuse_pct(delta("prompt_tokens"), delta("reused")),
              "draft_accept_pct": round(100.0 * accepted / offered, 1) if offered else None}
     per_test = {}
     for ph in out.get("phases") or []:
         span = span_of(ph)
         if not span:
             continue
-        stok, sreuse = sum(r.get("prompt_tokens") or 0 for r in span), sum(r.get("prompt_cache_reused_tokens") or 0 for r in span)
+        stok = sum(r.get("prompt_tokens") or 0 for r in span)
         soff, sacc = sum(r.get("drafts_offered") or 0 for r in span), sum(r.get("drafts_accepted") or 0 for r in span)
         per_test[ph["name"]] = {"requests": len(span),
-                                "cache_hit_pct": round(100.0 * sreuse / stok, 1) if stok else None,
-                                "pcie_share_pct": round(100.0 * sum(r.get("pcie_share") or 0 for r in span) / len(span), 1)
-                                                 if any(r.get("pcie_share") is not None for r in span) else None,
+                                "cache_hit_pct": hit_pct(span),
+                                "pcie_share_pct": pcie_pct(span),
+                                "prompt_reuse_pct": reuse_pct(stok, sum(r.get("reused") or 0 for r in span)),
                                 "draft_accept_pct": round(100.0 * sacc / soff, 1) if soff else None,
                                 "decode_tok_s_median": med([r.get("decode_tok_s") for r in span if r.get("decode_tok_s")])}
     return {"whole_suite": whole, "per_test": per_test}
@@ -502,6 +513,8 @@ def summary_metrics(out: dict) -> dict:
     w = eng.get("whole_suite") or {}
     if w.get("cache_hit_pct") is not None:
         m["expert cache hit %"] = w["cache_hit_pct"]
+    if w.get("prompt_reuse_pct") is not None:
+        m["prompt cache reuse %"] = w["prompt_reuse_pct"]
     if w.get("pcie_share_pct") is not None:
         m["experts over PCIe %"] = w["pcie_share_pct"]
     if w.get("draft_accept_pct") is not None:
@@ -878,15 +891,20 @@ def render_readme(res: dict) -> str:
         w = eng.get("whole_suite") or {}
         L += ["", "### The expert cache and the drafts (the engine's own figures, not measured by this client)", "",
               f"Over the whole run: {w.get('requests', 0)} requests, the expert cache found "
-              f"{fmt_pct(w.get('cache_hit_pct'))}% of the routed experts already in VRAM and sent "
-              f"{fmt_pct(w.get('pcie_share_pct'))}% of them over PCIe; the drafts were accepted "
+              f"{fmt_pct(w.get('cache_hit_pct'))}% of the experts it looked for already in VRAM, sent "
+              f"{fmt_pct(w.get('pcie_share_pct'))}% of the routed experts over PCIe, and the prompt cache reused "
+              f"{fmt_pct(w.get('prompt_reuse_pct'))}% of the prompt tokens; the drafts were accepted "
               f"{fmt_pct(w.get('draft_accept_pct'))}% of the time offered "
               f"({w.get('drafts_accepted', 0)} of {w.get('drafts_offered', 0)}).", "",
               "A larger PCIe share is NOT a better run: it is the share of the routed experts that had to be fetched over the bus.",
-              "", "| Test | Requests | Cache hit % | Over PCIe % | Drafts accepted % | Decode tok/s (engine) |",
-              "| --- | ---: | ---: | ---: | ---: | ---: |"]
+              "The two cache columns do not add up to 100: the expert cache's hit rate counts its own lookups, its PCIe share counts",
+              "the experts that came over the bus, and everything else was already resident in system RAM - which is what a cache",
+              "smaller than the model is for.  The prompt cache reusing 70% of a prompt says nothing about the expert cache.",
+              "", "| Test | Requests | Expert cache hit % | Over PCIe % | Prompt reuse % | Drafts accepted % | Decode tok/s (engine) |",
+              "| --- | ---: | ---: | ---: | ---: | ---: | ---: |"]
         for name, v in eng["per_test"].items():
             L.append(f"| {name} | {v['requests']} | {fmt_pct(v.get('cache_hit_pct'))} | {fmt_pct(v.get('pcie_share_pct'))} | "
+                     f"{fmt_pct(v.get('prompt_reuse_pct'))} | "
                      f"{fmt_pct(v.get('draft_accept_pct'))} | {v.get('decode_tok_s_median') if v.get('decode_tok_s_median') is not None else '-'} |")
         L += ["", "These come from the server's own per-request history, matched to each test by the seconds that test ran; the "
               "whole-run line is the difference of the engine's cumulative counters, so work the server did before this run cannot "
@@ -984,14 +1002,18 @@ def selftest() -> int:
 
     # 1. per-request records matched to the test that ran them, by the test's own seconds
     out = {"phases": [{"name": "chat", "from_s": 100.0, "to_s": 120.0}, {"name": "agent", "from_s": 200.0, "to_s": 260.0}]}
-    recs = [{"time": 90.0, "prompt_tokens": 5000, "prompt_cache_reused_tokens": 0, "pcie_share": 0.9, "drafts_offered": 40,
+    # The keys are the ones serve/server.py actually writes for a request ("reused", "hit_rate", "pcie_share", ...): a
+    # shape invented here is how a wrong key once made every run report a 0.0% expert cache hit.
+    recs = [{"time": 90.0, "prompt_tokens": 5000, "reused": 0, "pcie_share": 0.9, "drafts_offered": 40,
              "drafts_accepted": 4, "decode_tok_s": 11.0, "hit_rate": 0.0},          # before the bench: must be ignored
-            {"time": 110.0, "prompt_tokens": 1000, "prompt_cache_reused_tokens": 100, "pcie_share": 0.30, "drafts_offered": 10,
+            {"time": 110.0, "prompt_tokens": 1000, "reused": 100, "pcie_share": 0.30, "drafts_offered": 10,
              "drafts_accepted": 2, "decode_tok_s": 14.0, "hit_rate": 0.1},
-            {"time": 210.0, "prompt_tokens": 4000, "prompt_cache_reused_tokens": 3200, "pcie_share": 0.10, "drafts_offered": 40,
+            {"time": 210.0, "prompt_tokens": 4000, "reused": 3200, "pcie_share": 0.10, "drafts_offered": 40,
              "drafts_accepted": 20, "decode_tok_s": 20.0, "hit_rate": 0.8},
-            {"time": 250.0, "prompt_tokens": 6000, "prompt_cache_reused_tokens": 4700, "pcie_share": 0.20, "drafts_offered": 60,
-             "drafts_accepted": 30, "decode_tok_s": 22.0, "hit_rate": 0.78}]
+            {"time": 250.0, "prompt_tokens": 6000, "reused": 4700, "pcie_share": 0.20, "drafts_offered": 60,
+             "drafts_accepted": 30, "decode_tok_s": 22.0, "hit_rate": 0.78},
+            {"time": 255.0, "prompt_tokens": 500, "reused": 0, "drafts_offered": 0, "drafts_accepted": 0,
+             "decode_tok_s": 9.0}]                                # an engine that says nothing about its cache
     global try_json
     keep, try_json = try_json, lambda base, path, key="", timeout=10: {"requests": recs,
                                                                        "totals": {"requests": 4, "prompt_tokens": 16000,
@@ -1003,14 +1025,20 @@ def selftest() -> int:
     finally:
         try_json = keep
     w, pt = eng["whole_suite"], eng["per_test"]
-    check("records from before the bench are ignored", w["matched_requests"] == 3, w)
-    check("whole-suite hit rate is token-weighted over our tests only", w["cache_hit_pct"] == 72.7, w["cache_hit_pct"])
-    check("whole-suite PCIe share averages our three requests", w["pcie_share_pct"] == 20.0, w["pcie_share_pct"])
+    check("records from before the bench are ignored", w["matched_requests"] == 4, w)
+    check("the expert cache hit rate is the engine's own hit_rate, not the prompt cache's reuse",
+          w["cache_hit_pct"] == 56.0, w["cache_hit_pct"])          # mean of 0.1, 0.8, 0.78; the silent request is skipped
+    check("the prompt cache's reuse is its own figure, from the exact counters",
+          (w["prompt_reuse_pct"], w["reused_tokens"], w["prompt_tokens"]) == (72.7, 8000, 11000), w)
+    check("whole-suite PCIe share averages the requests that reported one, ignoring the silent one",
+          w["pcie_share_pct"] == 20.0, w["pcie_share_pct"])
     check("whole-suite drafts come from the engine's counters, not the records",
           (w["drafts_accepted"], w["drafts_offered"], w["draft_accept_pct"]) == (48, 70, 68.6), w)
-    check("the agent test gets its own two requests", (pt["agent"]["requests"], pt["agent"]["cache_hit_pct"]) == (2, 79.0), pt["agent"])
-    check("the chat test gets its own one", (pt["chat"]["requests"], pt["chat"]["pcie_share_pct"], pt["chat"]["decode_tok_s_median"])
-          == (1, 30.0, 14.0), pt["chat"])
+    check("the agent test gets its own two requests plus the silent one",
+          (pt["agent"]["requests"], pt["agent"]["cache_hit_pct"], pt["agent"]["pcie_share_pct"],
+           pt["agent"]["prompt_reuse_pct"]) == (3, 79.0, 15.0, 75.2), pt["agent"])   # 7900 of 10500, the silent request included
+    check("the chat test gets its own one", (pt["chat"]["requests"], pt["chat"]["cache_hit_pct"], pt["chat"]["pcie_share_pct"],
+                                            pt["chat"]["decode_tok_s_median"]) == (1, 10.0, 30.0, 14.0), pt["chat"])
 
     # 2. the comparison table: what changed, in the direction the reader expects
     def stats(v: float) -> dict:                        # what the suite stores for a repeated timing
@@ -1056,7 +1084,8 @@ def selftest() -> int:
     res = dict(after, date="2026-01-01", elapsed_s=100.0)
     doc = render_readme(res)
     check("the report says what the arm changed", "This run changed one thing on purpose" in doc, doc[:120])
-    check("the report carries the engine's own attribution", "routed experts already in VRAM" in doc, doc[:200])
+    check("the report carries the engine's own attribution, and keeps the two caches apart",
+          all(s in doc for s in ("already in VRAM", "prompt cache reused", "do not add up to 100")), doc[:200])
     check("the report warns that PCIe share is not a score", "NOT a better run" in doc)
     check("the report says the model was not reset between tests", "deliberately not reset" in doc)
     check("the speed table has a row per test", all(s in doc for s in ("short chat", "4k prompt, fresh", "agent session")), doc[:400])
@@ -1180,8 +1209,10 @@ def main(argv=None) -> int:
         # difference of the cumulative counters taken before and after - exact whatever the server did before this run.
         out["engine"] = engine_attribution(base, key, out, pre.get("totals") or {})
         w = out["engine"]["whole_suite"]
-        say(f"  expert cache: {w['cache_hit_pct'] if w['cache_hit_pct'] is not None else 'not reported'}% of routed experts "
-            f"already in VRAM, {w['pcie_share_pct'] if w['pcie_share_pct'] is not None else 'not reported'}% over PCIe; "
+        say(f"  expert cache: {w['cache_hit_pct'] if w['cache_hit_pct'] is not None else 'not reported'}% of the experts it "
+            f"looked for already in VRAM, {w['pcie_share_pct'] if w['pcie_share_pct'] is not None else 'not reported'}% of the "
+            f"routed experts over PCIe, prompt cache reused "
+            f"{w['prompt_reuse_pct'] if w['prompt_reuse_pct'] is not None else 'not reported'}%; "
             f"drafts accepted {w['draft_accept_pct'] if w['draft_accept_pct'] is not None else 'not reported'}%")
         for name, v in out["engine"]["per_test"].items():
             say(f"    {name}: hit {v['cache_hit_pct']}%, PCIe {v['pcie_share_pct']}%, drafts {v['draft_accept_pct']}%, "

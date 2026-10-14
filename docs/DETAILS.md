@@ -638,10 +638,13 @@ a 4090 and a 5090, and what else is worth taking from it and from LMCache, is in
 **Which of the two speed features carries the speed ([CACHE_VS_DRAFTS.md](CACHE_VS_DRAFTS.md)).** The expert cache and
 the drafts are usually on together, so it is not obvious which one is doing the work.  On an RTX 5070 12 GiB with this
 model, four arms that each remove one thing found the drafts accepted 68.8% of the time and worth 18.9% of the decode,
-while removing the cache cost 1.7% - inside the run-to-run spread, because the suite's prompts are fresh by
-construction and the engine reported a 0.0% expert hit rate in every arm.  The agent session, where the cache is
-supposed to matter, was measured too: the conversation cache reused 69.2% of the prompt there and the expert hit rate
-was still 0.0%, because a turn that comes back from the conversation cache never re-routes its tokens.
+while removing the cache cost 1.7% - inside the run-to-run spread.  The agent session, where the cache is supposed to
+matter, was measured too and says the same: 25.8 / 25.0 / 24.6 / 25.7 tok/s across the four arms, a difference smaller
+than the spread within one arm.  Both suites printed a 0.0% expert hit rate, which turned out to be `strata_bench.py`
+reading a key the server never writes; recomputed from the records the real figures are 40.6% on the chat suite and
+61.0% on the agent session, with 9.1% of the lookups going over PCIe and the rest served by the resident copy in
+system RAM - which is why removing the cache changes so little on a box whose resident budget already covers the
+model.  The drafts' 18.9% never depended on any of that, and stands.
 
 **Checking it on Windows.** `\GPU Process Memory(<pid>)\Shared Usage` and `Dedicated Usage` (Performance Monitor, or
 `Get-Counter`) look like the right instrument, but on this machine they did **not** separate a 13.7 tok/s run from a
@@ -2103,9 +2106,12 @@ and a **higher** hit rate at 13.7 tok/s against `auto` at 102.1. That section al
 thumb (start near 10% of the model's total expert size, `--moe-cache-mib`) is not a starting point here: it sizes a
 cache whose misses are copied over PCIe and computed on the GPU, while Strata keeps the experts that miss in system
 RAM and computes them there, so it is tuning a different bus. The lever here is `--vram-reserve-mib`, which that
-section measures (700 -> 1000 -> 1500 MiB), not a MiB figure taken from the other engine.  A 0.0% hit rate is also
-worth reading twice: it is what a workload of fresh prompts gives, and it is why a benchmark that reports only tok/s
-cannot tell the cache's contribution from the drafts' ([CACHE_VS_DRAFTS.md](CACHE_VS_DRAFTS.md)).
+section measures (700 -> 1000 -> 1500 MiB), not a MiB figure taken from the other engine.  What a benchmark can and
+cannot tell is the other half of the lesson: a run that reports only tok/s cannot separate the cache's contribution
+from the drafts' (on this box the drafts were worth 18.9% and the cache 1.7%), and a run that reports a cache hit rate
+has to know which quantity it printed - the first version of `tools/strata_bench.py` printed 0.0% in every arm for a
+key the server never writes, while the real figure sat unused in the same records at 40-61%.  Both are fixed and both
+are written up in [CACHE_VS_DRAFTS.md](CACHE_VS_DRAFTS.md).
 
 ### Prompt buffers: `bo` shares `emb` (#1454)
 
