@@ -2086,14 +2086,14 @@ layer resident in VRAM and the budget it spends in MiB. The numbers are read fro
 refresh, and the same figures go into every recorded request as `cache`, so a table of requests can be added up by
 hand. A model that routes no experts, or an engine older than this, leaves the line reading `not exposed`.
 
-**Reading it, and what budget to give.** Do not read the hit rate on its own: read it beside tok/s. A bigger cache
-lifts the hit rate and can still decode several times slower, because the extra MiB come out of the VRAM the KV cache
-and the slots need; the measured case here was a full cache and a higher hit rate at 13.7 tok/s against `auto` at
-102.1. llama.cpp's rule of thumb (start near 10% of the model's total expert size, `--moe-cache-mib`, merged
-2026-10-07, first release b11480) does not carry over to Strata: it sizes a cache whose misses are copied over PCIe
-and computed on the GPU, while Strata keeps the experts that miss in system RAM and computes them there, so it is
-tuning a different bus. Strata sizes the cache from the free VRAM (`auto`) and checks it again after the slots are
-written; the lever is `--vram-reserve-mib`, not a MiB figure taken from the other engine.
+**Reading it.** Do not read the hit rate on its own: read it beside tok/s. A bigger cache lifts the hit rate and can
+still decode several times slower, because the extra MiB come out of the VRAM the KV cache and the slots need; the
+measured case in [Sharing the GPU with other programs](#sharing-the-gpu-with-other-programs-optional) was a full cache
+and a **higher** hit rate at 13.7 tok/s against `auto` at 102.1. That section also explains why llama.cpp's rule of
+thumb (start near 10% of the model's total expert size, `--moe-cache-mib`) is not a starting point here: it sizes a
+cache whose misses are copied over PCIe and computed on the GPU, while Strata keeps the experts that miss in system
+RAM and computes them there, so it is tuning a different bus. The lever here is `--vram-reserve-mib`, which that
+section measures (700 -> 1000 -> 1500 MiB), not a MiB figure taken from the other engine.
 
 ### Prompt buffers: `bo` shares `emb` (#1454)
 
