@@ -19,13 +19,23 @@ server, and a few seconds each. `py -I tools/ui/<file>.py` (selenium is not in t
 | `ui-stream-check.py` | an answer arriving in the background: it stays in the chat that asked for it, the list marks that chat, opening it shows the live answer rather than the older copy on the server, and a half-typed question stays in the chat it was typed in. |
 | `ui-tabs-check.py` | the header tabs: centred at wide widths, and still not overlapping the brand or the controls down to phone width. |
 | `ui-monitor-check.py` | the request monitor page: a request's card still shows the figures it had, and the expert cache's hit rate is among them. It starts its own mock server with the monitor on, because the live app is usually started without `--api-monitor` and the page answers 404. |
+| `ui-run-check.py` | the clock on a running command: while a tool call is out, the page has to say how long it has been taking and against which limit - and go quiet once the result lands. The answer is a stubbed stream, so it runs in seconds and needs no model. |
 
 `STRATA_UI_URL` says which page to look at (default the review server on 8081, or the live app on 8080 for the
 panel check); `STRATA_UI_SHOTS` where the pictures go (default `tools/ui/shots/`, which is not tracked).
 
-Two traps these harnesses fell into once, and the reason they are written the way they are:
+Traps these harnesses fell into once, and the reason they are written the way they are:
 
 * `offsetParent` is null for `position: fixed`, so a naive "is it on screen" test calls every overlay invisible.
   They measure the rectangle instead.
 * Chrome will not make its window narrower than ~500px, so resizing the window is not a phone. Phone checks use
   `Emulation.setDeviceMetricsOverride`.
+* `ui-review.py` is a plain HTTP server: it serves the files as they are on disk, but it reads nothing about the
+  *code it runs* after it starts. A fix to the proxy itself only takes effect when the process is restarted - which
+  is how a chat that saved fine from the live app kept answering 403 through 8081 hours after the fix landed, and how
+  a toast fix that was in the tree kept being reported as broken. Restart it after changing it, and believe the
+  browser's error over the source you just read.
+* Driving a real local model to call a tool, and catching it mid-flight, costs minutes and misses anyway - the model
+  thinks for a minute, the command takes six seconds, and the look lands after it. Checks about the *page's* behaviour
+  feed the page a stubbed stream instead (`ui-run-check.py`); leave the model to the checks that need its judgement.
+

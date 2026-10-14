@@ -82,6 +82,9 @@ main { flex: 1; min-height: 0; display: flex; }
 .tool-call__name { font: 500 var(--st-fs-sm)/1.2 var(--st-font-mono); color: var(--st-ink); white-space: nowrap; }
 .tool-call__preview { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--st-fs-xs); }
 .tool-call .st-badge, .tool-call summary .small { flex: none; }
+/* the seconds a running command has been taking: the one number that says "still working" rather than "locked up" */
+.run-clock { font-variant-numeric: tabular-nums; font-family: var(--st-font-mono); }
+.run-clock.is-over { color: var(--st-danger-text); font-weight: var(--st-fw-medium); }
 .tool-call[data-state="error"] { border-color: color-mix(in srgb, var(--st-danger) 35%, var(--st-line)); }
 .tool-call[data-state="running"] .st-badge::before, .tool-call[data-state="writing"] .st-badge::before { animation: blink 1s steps(2) infinite; }
 .tool-call[data-state="blocked"] { border-color: color-mix(in srgb, var(--st-danger) 35%, var(--st-line)); }
