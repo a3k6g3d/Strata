@@ -1146,10 +1146,13 @@ const TOOL_STATE = {writing: ["st-badge--reading", "Writing"], running: ["st-bad
 const KIND_TEXT = {write: "This tool changes things on this PC.", danger: "This tool can delete, move or run things on this PC.",
                    read: "This tool only looks.", net: "This tool reads from the internet.", ask: "The model is asking you something.",
                    exec: "This runs a command or program on this PC."};
-// Why a call was announced but never ran.  There are only three reasons, and the badge has to say which one it was -
+// Why a call was announced but never ran.  There are only four reasons, and the badge has to say which one it was -
 // "Not run" on its own reads like a failure of the tool, and is really the turn ending first.
 const NOT_RUN = {limit: "stopped at the tool-round limit (mcp.max_rounds)", stop: "you stopped the answer",
-                 length: "the answer ran out of tokens before the call ran"};
+                 length: "the answer ran out of tokens before the call ran",
+                 // the model finished its own answer with a call still queued: nobody stopped anything, so saying
+                 // "you stopped the answer" here accuses the user of what the model did
+                 finished: "the answer ended before the call ran"};
 function toolHtml(t, k) {
   const [cls, label] = TOOL_STATE[t.state] || ["", t.state];
   const args = t.arguments == null ? "" : JSON.stringify(t.arguments, null, 2);
@@ -1674,7 +1677,7 @@ async function send(ready) {
   // calls that never got an answer at all (the request ended first): the page knows why, the server had no chance to say
   for (const t of m.tools || []) if (t.state === "writing" || t.state === "running") {
     t.state = "skipped"; t.ms = null;
-    t.reason = t.reason || (m.stopped ? NOT_RUN.stop : m.limit ? NOT_RUN.limit : "the answer ended before the call ran");
+    t.reason = t.reason || (m.stopped ? NOT_RUN.stop : m.limit ? NOT_RUN.limit : NOT_RUN.finished);
   }
   const ran = (m.tools || []).filter((t) => t.state === "done" || t.state === "error").length;
   if (ran) m.meta = `${m.meta ? `${m.meta} · ` : ""}${ran} tool call${ran > 1 ? "s" : ""}`;
