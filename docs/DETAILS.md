@@ -644,7 +644,11 @@ than the spread within one arm.  Both suites printed a 0.0% expert hit rate, whi
 reading a key the server never writes; recomputed from the records the real figures are 40.6% on the chat suite and
 61.0% on the agent session, with 9.1% of the lookups going over PCIe and the rest served by the resident copy in
 system RAM - which is why removing the cache changes so little on a box whose resident budget already covers the
-model.  The drafts' 18.9% never depended on any of that, and stands.
+model.  The drafts' 18.9% never depended on any of that, and stands.  A fifth arm then tested the cache's *allocation
+policy* - `--expert-cache-per-layer`, which gives each of the 48 layers its own 41 slots instead of one shared counter -
+and it **lost**: 20.4 tok/s against the baseline's 23.5, Mann-Whitney p = 0.004, on 8 runs of the agent suite.  The
+shared pool is doing the right thing at this size, so the flag stays off and the in-tree 2.97% figure (measured at 256
+slots) should not be quoted against a 1,951-slot pool.
 
 **Checking it on Windows.** `\GPU Process Memory(<pid>)\Shared Usage` and `Dedicated Usage` (Performance Monitor, or
 `Get-Counter`) look like the right instrument, but on this machine they did **not** separate a 13.7 tok/s run from a

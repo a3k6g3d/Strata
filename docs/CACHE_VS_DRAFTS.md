@@ -137,7 +137,7 @@ between the 21.4% and 70.4% rows and close to neither.  A baseline already at 61
 that size, and per-layer splitting can also **lose**: 40 slots per layer cannot hold what 1,951 shared slots hold when
 the traffic is concentrated on a few layers.
 
-## What to run next: a fifth arm, added
+## What to run next: a fifth arm, added *(it has now run - see "The fifth arm ran" below)*
 
 `tools/strata_ab.py` has a fifth arm, `expert cache, per-layer slots`, which adds that one flag to the baseline and
 nothing else.  It was added to move a 0.0% that has since turned out to be a bug, so the question it answers is now the
@@ -191,4 +191,56 @@ wrong.
 What this did **not** fix is the open question the run leaves behind: arms running `--expert-cache 0` report a 41-51%
 hit rate, higher than the arms with the cache on.  Until that is reconciled with the engine's own `DONE` line, the hit
 column is trustworthy inside one arm and not across arms.
+
+## The fifth arm ran: per-layer slots lose at this size (2026-10-14, 8 runs)
+
+`--expert-cache-per-layer` versus the shared pool, everything else identical, agent suite, 8 runs, one model load per
+arm (`run_ab_offline.ps1 -armName "as configured;expert cache, per-layer slots" -runs 8`).  Results in
+`bench/results/ab-agent-perlayer/`.
+
+**The flag took.**  The engine filled **1,968** experts instead of 1,951, and 1,968 = **48 layers x 41 slots** exactly -
+which only a per-layer split produces, since a shared counter has no reason to land on a multiple of 48.  (The
+`R4.2g PER-LAYER: each layer owns N slots` line the checklist asks for is not in the saved log excerpt, but the excerpt
+is a filter of the engine's stderr and does not carry it; the slot arithmetic is the proof.)
+
+**It is slower, by more than this suite's noise.**  Decode over the 40 turns of 40+ generated tokens in each arm:
+
+| arm | min | median | max | mean |
+|---|---|---|---|---|
+| as configured (shared pool, 1,951 slots) | 13.0 | **23.5** | 35.0 | 23.8 |
+| per-layer slots (41 per layer) | 8.6 | **20.4** | 29.2 | 20.3 |
+
+That is **-13.2%** for per-layer (the baseline is +15.5% over it).  The earlier warning about within-arm spread was right
+that 3 runs cannot resolve this suite, but 8 runs can: a Mann-Whitney rank-sum over the two 40-turn samples gives
+**U = 1,102.5 of 1,600 pairs (z = 2.91, two-sided p = 0.004)**, with the baseline ahead in **68.9%** of all pairings.
+The shapes back the test up - the baseline's upper tail reaches 35.0 tok/s while per-layer's tops out at 29.2, so the
+fast turns this model produces simply do not happen with per-layer slots.
+
+**The answer to the question as posed:** at 1,951 slots the shared pool is **not** leaving anything on the table.  A
+baseline already hitting 61.0% had little room to gain, and splitting the pool 41 ways costs it: 41 slots per layer
+cannot hold what 1,951 shared slots hold when the traffic concentrates on a few layers, which is exactly the failure
+mode predicted above.  Two things follow, and both are decisions rather than notes:
+
+1. **Do not flip the default.**  `--expert-cache-per-layer` stays off, and it is now measured rather than merely
+   off by default.
+2. **Stop quoting the in-tree 2.97% as though it applied here.**  That figure is a 256-slot pool; at this
+   configuration's size the shared pool reaches 61.0% and beats the per-layer split.  The per-layer win measured in
+   round 328 (-2.7 ms/token at 4,096 slots) is a *large-pool-on-CPU* result and does not transfer to a 3.75 GiB GPU
+   pool at 1,951 slots.
+
+**What the run cannot say, stated plainly.**  The two arms were measured with different versions of the bench: the
+baseline was rescued from a run started before the reporting fix (`d7cb238f`), so its hit column reads the bug's 0.0%
+and it has no `prompt_reuse_pct` at all, while the per-layer arm ran on the fixed tool (`24d3e55a`).  So **only the
+speed columns of the table are comparable**; the hit columns are not, across arms.  The engine binary is identical for
+both (built 2026-10-12, and the commit between them touches only `docs/` and `tools/`), which is what makes the speed
+comparison legitimate.  The arms also ran about 90 minutes apart rather than interleaved, so ordinary drift is a
+possible contributor - but the gap is 3.1 tok/s and p = 0.004, which is more than drift has produced anywhere in this
+work.
+
+**One thing in the run is still unexplained and worth a look.**  Per-layer reported a *lower* PCIe share (7.3% against
+the baseline's 9.1%) and a similar draft accept rate (62.3% against 61.3%) while being 13% slower.  Less bus traffic
+with less speed means the cost is not bytes crossing the bus; the obvious candidates are the per-slot bookkeeping in
+the per-layer path and eviction churn inside a layer's own 41-slot range.  That is a counters question
+(`STRATA_LOOKAHEAD_STATS`, the hit/miss/evicted/loaded lines) and not a sixth arm, which is where this doc already
+pointed.  Next open items, in order: reconcile the `--expert-cache 0` arms' 41-51% paradox, then those counters.
 
