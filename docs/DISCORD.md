@@ -34,8 +34,18 @@ Strata server.
 - The answer is written into one message as it streams; long answers continue in further messages. Pictures you attach go to the
   model (up to 8 MB each; the vision encoder must be configured). Text and code files (`.txt`, `.md`, `.py`, `.json`, `.csv`, `.log` and
   similar, up to 200 KB each and 120,000 characters per message) are read into the prompt. Anything else (video, audio, PDFs, bigger files)
-  is named back to you with the reason, and the model is told it was skipped. The bot sends text only: it cannot attach a picture or a
-  file to a reply.
+  is named back to you with the reason, and the model is told it was skipped. 
+
+## Sending files to Discord
+
+The bot can send you a file, from one folder only: `workspace` next to the Strata config (or the folder named by `"send_folder"` in the
+`discord` section; no folder, no sending). Nothing outside it can be sent, including through `..` or a link, and files on the no-read list
+(keys, `.env`, browser profiles) are refused. Up to 8 MB per file, only to the allowed account's own chat.
+
+- `!files` lists what is in the folder (newest 20), `!send NAME` sends one of them.
+- The model can offer a file by writing `[[send: relative/path]]` in its answer (it is told so). Nothing is sent until you press **Send it**;
+  at most 3 are offered per answer. A path that is not inside the folder is named in the channel and never sent.
+- The bot still cannot send a file from anywhere else on the PC.
 - **Tools never go above `ask`:** looking at files, searching and browsing run by themselves; anything that changes something, and
   every command, shows **Allow / Deny** buttons in Discord (only your account can press them). The protected Windows folders and the
   no-read list from the Strata config apply exactly as in the web app. `edit` and `full` access are not available from Discord.

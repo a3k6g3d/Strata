@@ -33,7 +33,8 @@ THINKING = ("off", "low", "medium", "high")
 HELP = ("**Strata on Discord**\n`!new` start a new conversation   `!stop` stop the answer   `!status` model and PC state\n"
         "`!chats` your latest chats (the same ones the Strata app lists)   `!open 2` continue one of them here\n"
         "`!mode off|read|ask` tools: none / look only / look + ask before changes   `!think off|low|medium|high`\n"
-        "Send a picture with your message to ask about it. Anything that changes files or runs a command waits for your button.")
+        "`!files` files in the workspace folder   `!send NAME` send one here (the model can offer files too; you confirm each)\n"
+        "Send a picture or a text / code file with your message to ask about it. Anything that changes files or runs a command waits for your button.")
 MAX_MESSAGE = 1900                              # Discord's limit is 2000 characters
 MAX_HISTORY_MESSAGES = 40
 MAX_IMAGE_BYTES = 8 * 2 ** 20
@@ -221,13 +222,53 @@ def new_session_id(channel_id, now=None) -> str:
     return f"s-discord-{channel_id}-{int(now if now is not None else time.time())}"
 
 
-def chat_body(history: list, text: str, images: list, thinking: str, permission: str, model=None) -> dict:
+MAX_SEND_BYTES = 8 * 2 ** 20                        # one file sent to Discord
+SEND_MARKER = re.compile(r"\[\[send:\s*([^\]\n]+?)\s*\]\]", re.I)
+MAX_SENDS_PER_ANSWER = 3
+SEND_HINT = ("You are answering in Discord. To send the user a file you made (a picture, a text file, a log), put "
+             "[[send: relative/path/to/file]] on its own line in your answer. Only files inside the workspace folder can be sent, "
+             "each up to 8 MB, and the user confirms every one with a button. You cannot send anything else.")
+
+
+def resolve_sendable(path_text: str, root) -> tuple:
+    """A path the model or the user named -> (the real Path, None) if it may be sent, else (None, why not).  Only a file inside `root`
+    (the workspace folder), found after links and `..` are resolved, up to 8 MB, and not on the no-read list."""
+    if root is None:
+        return None, "sending files is not set up (no workspace folder)"
+    text = (path_text or "").strip().strip("`'\"")
+    if not text:
+        return None, "give a file name"
+    try:
+        base = Path(os.path.realpath(root))
+        real = Path(os.path.realpath(base / text if not os.path.isabs(text) else text))
+    except (OSError, ValueError):
+        return None, "that path cannot be read"
+    try:
+        inside = os.path.commonpath([os.path.normcase(str(base)), os.path.normcase(str(real))]) == os.path.normcase(str(base))
+    except ValueError:                                  # another drive
+        inside = False
+    if not inside or real == base:
+        return None, "only files inside the workspace folder can be sent"
+    if not real.is_file():
+        return None, "no such file in the workspace folder"
+    try:
+        from serve import mcp as _mcp
+        if _mcp.BlockList(["@defaults"]).hit(os.path.normcase(str(real))):
+            return None, "that file is on the no-read list"
+    except ImportError:
+        pass
+    if real.stat().st_size > MAX_SEND_BYTES:
+        return None, f"the file is over {MAX_SEND_BYTES // 2 ** 20} MB"
+    return real, None
+
+
+def chat_body(history: list, text: str, images: list, thinking: str, permission: str, model=None, system: str | None = None) -> dict:
     content = text
     if images:
         content = [{"type": "text", "text": text or "What is in this picture?"}] + \
                   [{"type": "image_url", "image_url": {"url": u}} for u in images]
-    body = {"messages": trim_history(history) + [{"role": "user", "content": content}], "stream": True,
-            "reasoning_effort": thinking}
+    body = {"messages": ([{"role": "system", "content": system}] if system else []) + trim_history(history) + [{"role": "user", "content": content}],
+            "stream": True, "reasoning_effort": thinking}
     if model:
         body["model"] = model
     if permission != "off":
@@ -249,8 +290,10 @@ class ChannelState:
 
 
 class StrataDiscordBot:
-    def __init__(self, cfg: dict, base_url: str, api_key: str = "", history_dir: Path | None = None, token: str | None = None):
+    def __init__(self, cfg: dict, base_url: str, api_key: str = "", history_dir: Path | None = None, token: str | None = None,
+                 send_root: Path | None = None):
         self.cfg, self.base, self.api_key, self.token = cfg, base_url.rstrip("/"), api_key, token
+        self.send_root = Path(send_root) if send_root else None     # the only folder files may be sent from
         self.history_dir = Path(history_dir) if history_dir else None
         self.default_thinking = clamp_thinking(cfg.get("thinking"))
         self.default_permission = clamp_permission(cfg.get("permission"))
@@ -456,7 +499,71 @@ class StrataDiscordBot:
                 return await send("\n".join(x for x in lines if x))
             except Exception as e:  # noqa: BLE001
                 return await send(f"Strata is not answering: {type(e).__name__}")
+        if name == "files":
+            if self.send_root is None:
+                return await send("No workspace folder is set up, so there is nothing to send.")
+            found = sorted((p for p in self.send_root.rglob("*") if p.is_file() and resolve_sendable(str(p), self.send_root)[0]),
+                           key=lambda p: p.stat().st_mtime, reverse=True)[:20]
+            if not found:
+                return await send("The workspace folder has no files to send yet.")
+            return await send("Files you can send (newest first), with `!send NAME`:\n" + "\n".join(
+                f"`{p.relative_to(self.send_root).as_posix()}`  {p.stat().st_size / 1024:.0f} KB" for p in found))
+        if name == "send":
+            real, why = resolve_sendable(arg, self.send_root)
+            if real is None:
+                return await send(f"Cannot send that: {why}.")
+            try:
+                return await send(content=f"`{real.name}`", file=self.discord.File(str(real)))
+            except Exception as e:  # noqa: BLE001 - too big for this server, no permission to attach files
+                return await send(f"Discord refused the file: {type(e).__name__}.")
         return await send("Unknown command. " + HELP)
+
+    async def confirm(self, channel, text: str) -> bool:
+        """A yes / no question with Allow and Deny buttons; only an allowed account's click counts; no click in time means no."""
+        discord = self.discord
+        done = asyncio.get_event_loop().create_future()
+        view = discord.ui.View(timeout=self.approval_timeout)
+
+        def button(label, style, allow):
+            b = discord.ui.Button(label=label, style=style)
+
+            async def clicked(interaction):
+                if not is_allowed(interaction.user.id, self.cfg):
+                    return await interaction.response.send_message("Not for you.", ephemeral=True)
+                if not done.done():
+                    done.set_result(allow)
+                view.stop()
+                await interaction.response.edit_message(content=text + ("\n✅ sent" if allow else "\n🚫 not sent"), view=None)
+            b.callback = clicked
+            return b
+
+        async def on_timeout():
+            if not done.done():
+                done.set_result(False)
+        view.on_timeout = on_timeout
+        view.add_item(button("Send it", discord.ButtonStyle.success, True))
+        view.add_item(button("Don't send", discord.ButtonStyle.danger, False))
+        await channel.send(text[:MAX_MESSAGE], view=view)
+        return await done
+
+    async def send_marked_files(self, channel, content: str) -> str:
+        """The model asked for files with [[send: path]]: take the markers out of the answer; for each one that resolves inside the
+        workspace folder, ask with a button and upload it.  A path that does not resolve is named in the channel, never sent."""
+        paths = SEND_MARKER.findall(content or "")
+        cleaned = SEND_MARKER.sub("", content or "").strip()
+        for path in paths[:MAX_SENDS_PER_ANSWER]:
+            real, why = resolve_sendable(path, self.send_root)
+            if real is None:
+                await channel.send(f"⚠ Strata wanted to send `{path[:120]}`, but {why}.")
+                continue
+            if await self.confirm(channel, f"**Strata wants to send you a file:** `{real.name}` ({real.stat().st_size / 1024:.0f} KB, from the workspace folder)"):
+                try:
+                    await channel.send(content=f"`{real.name}`", file=self.discord.File(str(real)))
+                except Exception as e:  # noqa: BLE001
+                    await channel.send(f"Discord refused the file: {type(e).__name__}.")
+        if len(paths) > MAX_SENDS_PER_ANSWER:
+            await channel.send(f"⚠ Only the first {MAX_SENDS_PER_ANSWER} files were offered; the other {len(paths) - MAX_SENDS_PER_ANSWER} were not.")
+        return cleaned
 
     # -- one answer
     async def answer(self, msg, st: ChannelState, text: str, images: list):
@@ -468,7 +575,7 @@ class StrataDiscordBot:
             saved = await self.session_get(st.session) if st.session else None     # the chat as the Strata app has it now (it may have been continued there)
             if saved is not None:
                 st.history = api_history(saved.get("messages"))
-            body = chat_body(st.history, text, images, st.thinking, st.permission)
+            body = chat_body(st.history, text, images, st.thinking, st.permission, system=SEND_HINT if self.send_root else None)
 
             def view():
                 lines = [f"{'⏳' if t['state'] in ('running', 'waiting') else '✅' if t['state'] == 'done' else '❌'} `{t['name']}`"
@@ -512,6 +619,10 @@ class StrataDiscordBot:
                 error = f"⚠ {e}"[:400]
             finally:
                 typing.cancel()
+            raw = content
+            marked = self.send_root is not None and bool(SEND_MARKER.search(raw))
+            if marked:
+                content = SEND_MARKER.sub("", raw).strip()          # the [[send: ...]] lines are not part of the answer
             pieces = split_message(content)
             try:
                 if pieces:
@@ -524,6 +635,11 @@ class StrataDiscordBot:
                     await note.edit(content=error or "(no answer)")
             except Exception:  # noqa: BLE001
                 pass
+            if marked and not error:
+                try:
+                    await self.send_marked_files(channel, raw)
+                except Exception:  # noqa: BLE001 - a failed upload must not lose the saved chat below
+                    pass
             if content.strip() and not error:
                 st.history = trim_history(st.history + [{"role": "user", "content": text or "[picture]"},
                                                         {"role": "assistant", "content": content.strip()}])
@@ -650,7 +766,9 @@ def start(cfg: dict, base_url: str, api_key: str = "", config_dir: Path | None =
         print(f"[strata] Discord: not started - {e.name} is not installed (pip install discord.py httpx)", flush=True)
         return None
     history = (config_dir or Path(".")) / "discord"
-    bot = StrataDiscordBot(cfg, base_url, api_key, history, token)
+    folder = Path(str(cfg.get("send_folder") or "workspace"))              # the only place files can be sent from
+    folder = folder if folder.is_absolute() else (config_dir or Path(".")) / folder
+    bot = StrataDiscordBot(cfg, base_url, api_key, history, token, send_root=folder if folder.is_dir() else None)
 
     def run():
         while True:                                       # a dropped connection or a Discord outage: try again later
