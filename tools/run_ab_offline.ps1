@@ -23,10 +23,13 @@ $tests = "agent"
 $out   = if ($outOverride) { $outOverride } elseif ($sweep) { "bench\results\ab-$sweep-sweep" } else { "bench\results\ab-cache-vs-drafts-agent" }
 $log  = "<work>/ab-offline-agent.log"
 
-# 2026-10-14: the sweep's arms move where bytes live, not how arithmetic is done, so at temperature 0 they owe the
-# baseline the same tokens.  The engine prints its state fingerprint per request only when this is set, and the child
-# engine inherits it from this window, so no arm needs its own flag.  It costs a little on every arm equally, which
-# leaves the comparison between arms intact.  Read it afterwards with the same parser the parity gates use
+# 2026-10-14: the sweep's arms move where bytes live, not how arithmetic is done, so at temperature 0 they were expected
+# to give the baseline the same tokens, and this variable was set to check that.  2026-10-15: it does not work that way -
+# two arms of this SAME configuration generated different token counts (21 vs 23, 17 vs 9), so the fingerprints never line
+# up across arms and cannot rank them; see docs/REJECTED_PROPOSALS.md item 6.  It stays set because the lines are still
+# worth having inside a run (does the parked conversation restore), and it costs the same on every arm, which leaves the
+# comparison between arms intact.  Note the lines land in the SERVER's engine log (<work>/strata.log), not in the
+# bench harness's own log or the arm folders.  Read them with the parser the parity gates use
 # (tools/conversation_cache_parity.py: state_hashes); beware that pooled/pooled_full/kv legitimately DIFFER in the arms
 # that change the VRAM budget or stream the KV - see docs/SWEEP_ADAPT_KV.md.
 $env:STRATA_STATE_HASH = "1"

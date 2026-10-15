@@ -111,6 +111,41 @@ speed was worth it, TU by TU, with an oracle pinned beside each one (`native_mmv
 **Rule:** fast-math is not a build-wide switch here. New use is per-kernel, needs its pinned oracle, and is not worth
 proposing unless the kernel is measured as the bottleneck.
 
+## 6. "The arms owe the baseline the same tokens, so `STATE_HASH` will rank them"
+
+This one is not somebody else's proposal - it is an assumption this branch wrote into the runner and the sweep notes, and
+the sweep has now falsified it. `tools/run_ab_offline.ps1:26-32` sets `STRATA_STATE_HASH=1` for the whole run on the
+grounds that the knobs "move where bytes live, not how arithmetic is done, so at temperature 0 they owe the baseline the
+same tokens". Two problems, the second fatal.
+
+**The lines do not land where the sweep looks for them.** The engine prints the fingerprint per request only when the
+variable is set (`generate.cpp:12074`), and only for a request that reused prompt context (`!cancelled &&
+o.prompt_cache > 0`, `generate.cpp:12075`) - so the first turn of every session has no hash at all. Worse, the bench
+harness opens its own engine log in the temp folder (`strata_bench.py:1190`, `start_server` at `:719-724`), while the
+server's engine writes to its own log, which is where the lines actually appear: all 29 `strata-bench-*.log` files in the
+temp folder contain zero `STATE_HASH` lines, and `<work>/strata.log` contains 456. Each arm folder's
+`engine-log-excerpt.txt` is the head of the temp log, so it shows none of them.
+
+**The tokens are not equal anyway, with nothing changed.** Two arms of the identical configuration, run 8 minutes apart
+in the same sweep, generated these token counts per turn (`ab-confirm-kv-vram`, 3 runs of 6 turns each):
+
+```
+run 0   A = 21 64 64 64 60 64      B = 23 64 64 64 59 64
+run 1   A = 17 64 64 64 64 64      B =  9 64 64 64 64 64
+run 2   A =  9 64 64 51 59 64      B = 50 64 64 64 64 64
+```
+
+Same exe, same arguments, same prompts, temperature 0, GPU otherwise empty. Turn 0 differs by 2-41 tokens, and because
+each turn's prompt contains the previous turn's answer, every later turn drifts too - the `L=` values in the hashes
+separate by 2 to 41 tokens between arms. A fingerprint that only lines up when the generations agree cannot be compared
+across arms, because they never agree. Whatever the cause (the sampling path, the batched/paged KV, the GPU's own
+non-reproducibility), the consequence for the sweep is the same: **token parity is not available as a gate here**,
+and the arms can only be judged against a measured noise floor.
+
+**Rule:** on this machine, `STRATA_STATE_HASH` is a within-run diagnostic (does the parked conversation restore, does
+the tail stay put), not an A/B gate. An arm is compared against a same-configuration arm - never against a token
+sequence. `docs/SWEEP_ADAPT_KV.md` records the noise floor this produced.
+
 ## What survived the audit
 
 Three of the five items were not wrong in spirit, only in placement: the bus share, the pool width and the KV size are
