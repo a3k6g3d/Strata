@@ -17,7 +17,11 @@ __pycache__/
 *.pyc
 
 # plan v0.3 P1 (repository hygiene, review E1): profiler captures and large diagnostic dumps stay out of git.
+# the engine's stall watchdog writes one beside its working directory whenever a request runs long enough to be called
+# stalled - every thread's stack, to read against the build's PDB (generate.cpp:1255 stall_report, :1289, issue #31).
+# It names the file after its own pid, so these accumulate in the tree after every stall.
 *.nsys-rep
+strata-stall-*.dmp
 
 # Pi harness metadata (local session state, not project source)
 *.sqlite
