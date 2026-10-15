@@ -80,8 +80,42 @@ instead. Note `generate.cpp:2462` only rejects negative values, so nothing would
   experts into the cache" (`generate.cpp:579`). Its cost shows as the PCIe share and as decode dips between adaptation
   rounds, not as a field of its own.
 - **token parity** - `STRATA_STATE_HASH=1` is set for the whole run, so each arm's engine log carries
-  `STATE_HASH L=... gdn=... ple=... tail=... pooled=... kv=... stale=... ple_prev=...`. Caveat, so nobody over-reads it:
-  `pooled`, `pooled_full` and `kv` are *expected* to differ in the arms that change the VRAM budget or stream the KV -
-  that is the experiment, not a regression. The check that means something here is the generated token ids matching at
-  temperature 0, which is what `tools/conversation_cache_parity.py:112-116` compares. These knobs move where bytes live,
-  not how arithmetic is done, so equal tokens is the expectation; if they differ, the arm is not measuring what it claims.
+  `STATE_HASH L=... gdn=... ple=... tail=... pooled=... kv=... stale=... ple_prev=...`. Two caveats, and the second one
+  killed this measure. `pooled`, `pooled_full` and `kv` are *expected* to differ in the arms that change the VRAM budget
+  or stream the KV - that is the experiment, not a regression. And the deeper problem: the generated tokens do not match
+  between arms **or between two runs of the same arm**, at temperature 0, so the fingerprints have nothing to line up
+  against. `docs/REJECTED_PROPOSALS.md` item 6 shows the numbers. What was written here first - "these knobs move where
+  bytes live, not how arithmetic is done, so equal tokens is the expectation" - was true of the arithmetic and wrong of
+  the sampling. Token parity is not a gate for this sweep; the noise floor below is.
+
+## The result, and the number that decides it (2026-10-15)
+
+The twelve arms above were run, and a shortened re-cut of four of them was run afterwards (`ab-confirm-kv-vram` for the
+baseline twice, `ab-confirm-kv-vram2` for three arms plus the baseline again). Read any arm with
+`python tools/summarize_ab_sweep.py bench/results/<folder>`, which prints one row per arm and finds the noise floor
+itself:
+
+| arm | decode tok/s | engine's own | hit % | PCIe % | draft accepted % |
+| --- | --- | --- | --- | --- | --- |
+| `as configured` (7:54) | 25.7 | 27.1 | 48.2 | 6.2 | 61.7 |
+| `as configured` (8:02) | 26.9 | 28.55 | 46.2 | 6.3 | 68.6 |
+| `adapt-decay 0.65` | 26.55 | 26.85 | 48.6 | 6.1 | 60.7 |
+| `kv-resident 24576` | 27.45 | 28.45 | 51.4 | 5.7 | 62.2 |
+| `vram-reserve 512` | 26.95 | 28.45 | 48.5 | 6.0 | 63.7 |
+
+**The noise floor is 4.6% of decode** - that is the spread between the two identical baselines (25.7 and 26.9 tok/s,
+8 minutes apart, GPU otherwise empty). Every arm above is inside it. `kv-resident 24576` looks 5.2% over the first
+baseline and 1.9% over the second; with a floor of 4.6% those two readings of the same arm mean the same thing, which is
+nothing. The same holds for the twelve-arm sweep, where `adapt-swaps 16` (26.85) and `adapt-decay 0.65` (26.45) led the
+field and the baseline's own repeat scored 25.9 - and where the baseline's *first* run came in at 16.45 tok/s with a
+10.12 s first token, 10 points below its own repeat, for a reason nothing in the logs explains.
+
+So the honest conclusion, twice over: **none of these four knobs carries the speed on this machine**, and the ones that
+move the hit rate visibly (`--adapt-swaps 0` drops the expert cache from ~48% to 24.9%, `16` raises it to 56.9%) do not
+move the speed out of the noise either. That is worth knowing before anyone tunes them: the engine's own defaults are
+already at a flat part of the curve, which is the same conclusion `CACHE_VS_DRAFTS.md` reached about drafts.
+
+Two things this run could not settle, kept here so they are not mistaken for settled: the `--kv-resident` arms are not
+single-variable (interaction 1 above), and one decode median per arm over 18 turns is not enough to resolve anything
+under ~5%. Settling it would mean 8-10 runs per arm and hours per arm, on a machine whose own baseline moved 10 tok/s
+between runs. If anyone re-runs this, run the baseline twice and subtract what it says.
