@@ -13,6 +13,11 @@ dated, and the fork's releases follow [SemVer](https://semver.org) once it tags 
   the engine over `/metrics`, and need `--api-monitor` (they read "not exposed" without it). The same numbers go into each recorded request as
   `cache`, so the request table can be added up by hand. A note in the docs says what to look for and what budget to give.
 
+### Fixed (2026-10-15, Discord attachments were dropped silently)
+- The Discord bot used only pictures and ignored every other attachment without saying so, so the model answered "I cannot see that". Text and code
+  files are now read into the prompt (200 KB each, 120,000 characters per message), and video, audio, PDFs and oversized files are named back in the
+  channel with the reason and to the model as a note. The bot still sends text only. 2 new tests.
+
 ### Changed (2026-10-12, Full access no longer asks before a web call)
 - In Full access a web search or fetch after a local tool runs without the leak click, so Full access behaves like a bypass mode: commands, file
   changes and web calls run by themselves. Still refused or asked in every mode: the no-read list (refused), the protected Windows folders (asked). Allow

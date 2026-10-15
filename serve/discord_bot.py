@@ -36,6 +36,49 @@ HELP = ("**Strata on Discord**\n`!new` start a new conversation   `!stop` stop t
         "Send a picture with your message to ask about it. Anything that changes files or runs a command waits for your button.")
 MAX_MESSAGE = 1900                              # Discord's limit is 2000 characters
 MAX_HISTORY_MESSAGES = 40
+MAX_IMAGE_BYTES = 8 * 2 ** 20
+MAX_TEXT_FILE_BYTES = 200_000                       # one text / code attachment
+MAX_TEXT_TOTAL_CHARS = 120_000                      # all of a message's files together (about 30K tokens)
+TEXT_EXTENSIONS = {".txt", ".md", ".py", ".json", ".csv", ".tsv", ".log", ".js", ".ts", ".tsx", ".jsx", ".html", ".css", ".xml", ".yaml",
+                   ".yml", ".ini", ".cfg", ".toml", ".c", ".h", ".cpp", ".hpp", ".cu", ".java", ".rs", ".go", ".sh", ".ps1", ".bat",
+                   ".cmd", ".sql", ".diff", ".patch", ".env", ".gradle", ".kt"}
+
+
+def is_text_attachment(name: str, content_type: str) -> bool:
+    return (content_type or "").split(";")[0].startswith("text/") or os.path.splitext(name or "")[1].lower() in TEXT_EXTENSIONS
+
+
+async def collect_attachments(attachments) -> tuple:
+    """A message's attachments -> (image data URLs for the model, text-file blocks for the prompt, names that could not be used and why).
+    Pictures go to the vision encoder; text and code files are read into the prompt; video, audio, PDFs and anything else are named back."""
+    images, files, skipped, chars = [], [], [], 0
+    for a in attachments or []:
+        name, ctype, size = a.filename or "file", (a.content_type or ""), int(a.size or 0)
+        if ctype.startswith("image/"):
+            if size > MAX_IMAGE_BYTES:
+                skipped.append(f"{name} (picture over {MAX_IMAGE_BYTES // 2 ** 20} MB)")
+            else:
+                images.append(f"data:{ctype};base64," + base64.b64encode(await a.read()).decode())
+        elif is_text_attachment(name, ctype):
+            if size > MAX_TEXT_FILE_BYTES:
+                skipped.append(f"{name} (text file over {MAX_TEXT_FILE_BYTES // 1000} KB)")
+                continue
+            body = (await a.read()).decode("utf-8", errors="replace")
+            room = MAX_TEXT_TOTAL_CHARS - chars
+            if room <= 0:
+                skipped.append(f"{name} (too much text in one message)")
+                continue
+            cut = len(body) > room
+            body, chars = body[:room], chars + min(len(body), room)
+            fence = "````" if "```" in body else "```"
+            files.append(f"[file: {name}]\n{fence}\n{body}\n{fence}" + ("\n[the rest of this file was cut]" if cut else ""))
+        elif ctype.startswith("video/"):
+            skipped.append(f"{name} (video is not supported)")
+        elif ctype.startswith("audio/"):
+            skipped.append(f"{name} (audio is not supported)")
+        else:
+            skipped.append(f"{name} (this file type is not supported; text and code files and pictures are)")
+    return images, files, skipped
 MAX_HISTORY_CHARS = 60000
 EDIT_EVERY_S = 1.3                              # Discord rate-limits message edits
 
@@ -331,12 +374,16 @@ class StrataDiscordBot:
             token, st.question = st.question, None
             await self.post(self.http, "/mcp/answer", {"approval": token, "text": text})
             return await msg.add_reaction("✅")
-        images = []
-        for a in msg.attachments:
-            if (a.content_type or "").startswith("image/") and a.size <= 8 * 2 ** 20:
-                images.append(f"data:{a.content_type};base64," + base64.b64encode(await a.read()).decode())
-        if not text and not images:
-            return
+        images, files, skipped = await collect_attachments(msg.attachments)
+        note = ("Could not use: " + "; ".join(skipped)) if skipped else ""
+        if note:
+            await msg.channel.send("⚠️ " + note)
+        if not (text or images or files):
+            return                                            # nothing but unusable attachments: the notice is the whole answer
+        if note:
+            text = (text + "\n\n" if text else "") + f"[{note}]"
+        if files:
+            text = (text + "\n\n" if text else "") + "\n\n".join(files)
         if st.lock.locked():
             await msg.add_reaction("⏳")                      # it waits its turn (the model answers one request at a time)
         task = asyncio.ensure_future(self.answer(msg, st, text, images))
