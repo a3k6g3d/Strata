@@ -53,6 +53,41 @@ NOTE = ("Does the expert cache carry the speed, or the drafts? Same model, same 
         "argument changed per arm. Decode tok/s is the engine's own figure; the cache hit and PCIe share come from "
         "the engine's per-request records, matched to each test by their own seconds.")
 
+# The second experiment, and the one the audit in docs/REJECTED_PROPOSALS.md left standing: the adaptation and KV-
+# streaming knobs, varied one at a time against this machine's own configuration.  Two things make this list different
+# from the five above, and both are recorded in docs/SWEEP_ADAPT_KV.md so an arm is not believed to say more than it
+# can.  (1) `--pcie-frac`, `--pool-workers` and `--expert-cache` are passed in NO arm: the link probe, the CPU topology
+# and the fit calculation answer for this machine, and pinning any of them would be pinning a measurement away.  (2) Two
+# of the values one might sweep are already the configuration's own - strata.json sets --adapt-swaps 8 and
+# --vram-reserve-mib 640, and --adapt-decay is absent where the engine's default is 0.7 - so they are the baseline
+# rather than arms, and asking for them again would only re-measure the baseline under a second label.  The last arm
+# does that on purpose: on this machine one arm's decode medians ranged 13-35 tok/s, so an arm is worth believing only
+# once a same-configuration arm has said how much of that spread was noise.
+# 16384 is NOT in the kv-resident arms: layer.cpp:667 sets a floor of 20480 and layer.cpp:648 clamps to it, so 16384
+# would have measured 20480 under the label 16384 with nothing complaining (generate.cpp:2462 rejects only negatives).
+SWEEPS = {
+    "adapt-kv": {
+        "note": ("Which adaptation / KV-streaming setting carries the speed?  Same model, same prompts, same runs; one "
+                 "engine argument changed per arm, and --pcie-frac / --pool-workers / --expert-cache left to the "
+                 "engine's own probes in every arm.  The three --kv-resident arms also lose --kv-grow on their own "
+                 "(generate.cpp:4228 gates the elastic KV on the KV being wholly in VRAM), so their difference belongs "
+                 "to the pair, not to one flag.  The last arm repeats the baseline to measure the noise floor."),
+        "arms": [("as configured", []),
+                 ("adapt-swaps 0", ["--adapt-swaps 0"]),
+                 ("adapt-swaps 4", ["--adapt-swaps 4"]),
+                 ("adapt-swaps 16", ["--adapt-swaps 16"]),
+                 ("adapt-decay 0.65", ["--adapt-decay 0.65"]),
+                 ("adapt-decay 0.80", ["--adapt-decay 0.80"]),
+                 ("kv-resident 20480", ["--kv-resident 20480"]),
+                 ("kv-resident 24576", ["--kv-resident 24576"]),
+                 ("kv-resident 32768", ["--kv-resident 32768"]),
+                 ("vram-reserve 512", ["--vram-reserve-mib 512"]),
+                 ("vram-reserve 600", ["--vram-reserve-mib 600"]),
+                 ("vram-reserve 768", ["--vram-reserve-mib 768"]),
+                 ("as configured (repeat)", [])],
+    },
+}
+
 
 def port_busy(port: int) -> bool:
     """Is something answering on this port?  A Strata, or anything else holding the GPU."""
@@ -78,6 +113,9 @@ def main(argv=None) -> int:
     ap.add_argument("--runs", type=int, default=3, help="runs per test in every arm (default 3)")
     ap.add_argument("--out", default=None, help="where the arms' folders go (default bench/results/ab-cache-vs-drafts)")
     ap.add_argument("--arm-name", default=None, help="run only this arm (by its label), and stop")
+    ap.add_argument("--sweep", default=None, choices=sorted(SWEEPS),
+                    help=f"run the arms of one experiment instead of the cache-vs-drafts set: "
+                         f"{', '.join(sorted(SWEEPS))}")
     ap.add_argument("--ready-timeout", type=int, default=600, help="seconds to wait for the model to load per arm")
     ap.add_argument("--yes", action="store_true", help="start even if something already answers on the port")
     ap.add_argument("--dry-run", action="store_true", help="print the arms and stop: check the recipe before spending an hour")
@@ -89,9 +127,12 @@ def main(argv=None) -> int:
     parent = Path(a.out) if a.out else ROOT / "bench" / "results" / "ab-cache-vs-drafts"
     parent.mkdir(parents=True, exist_ok=True)
 
-    arms = [x for x in ARMS if not a.arm_name or x[0] == a.arm_name]
+    # a sweep brings its own arms AND its own note: the note is printed in every arm's README, and a README that
+    # describes the cache-vs-drafts question above a table of KV numbers would mislead whoever reads it next month.
+    pool, note = (SWEEPS[a.sweep]["arms"], SWEEPS[a.sweep]["note"]) if a.sweep else (ARMS, NOTE)
+    arms = [x for x in pool if not a.arm_name or x[0] == a.arm_name]
     if not arms:
-        print(f"No arm called {a.arm_name!r}: it is one of " + ", ".join(f"{n!r}" for n, _ in ARMS), file=sys.stderr)
+        print(f"No arm called {a.arm_name!r}: it is one of " + ", ".join(f"{n!r}" for n, _ in pool), file=sys.stderr)
         return 2
 
     if port_busy(a.port) and not (a.yes or a.dry_run):
@@ -117,7 +158,7 @@ def main(argv=None) -> int:
         return 0
 
     base = [sys.executable, "-u", str(BENCH), *cfg, "--port", str(a.port), "--tests", a.tests, "--runs", str(a.runs),
-            "--out", str(parent), "--ready-timeout", str(a.ready_timeout), "--note", NOTE]
+            "--out", str(parent), "--ready-timeout", str(a.ready_timeout), "--note", note]
     done, failed = [], []
     for i, (name, extra) in enumerate(arms):
         # `--engine-arg VALUE` would not survive an argument that starts with a dash: argparse reads the next token as a
