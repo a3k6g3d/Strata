@@ -9,7 +9,7 @@
 # arms and the run count; with none of them this script does exactly what it did before.  $armName takes a SEMICOLON-
 # separated list (not commas: the arm labels contain them) because the model load costs minutes per arm and the server
 # must only be stopped once for them all.
-param([string]$armName = "", [int]$runs = 3, [string]$outOverride = "")
+param([string]$armName = "", [int]$runs = 3, [string]$outOverride = "", [string]$sweep = "")
 
 $repo = "J:\Strata-work\Strata-0140"
 $cfg  = "J:/Strata-work/strata.json"
@@ -20,8 +20,18 @@ $port = 8080
 # never repeats gives the cache nothing to hit.  This suite resends the conversation turn after turn, which is the one
 # case the cache is built for - and the only one that can say whether the first run's conclusion holds.
 $tests = "agent"
-$out   = if ($outOverride) { $outOverride } else { "bench\results\ab-cache-vs-drafts-agent" }
+$out   = if ($outOverride) { $outOverride } elseif ($sweep) { "bench\results\ab-$sweep-sweep" } else { "bench\results\ab-cache-vs-drafts-agent" }
 $log  = "J:\Strata-work\ab-offline-agent.log"
+
+# 2026-10-14: the sweep's arms move where bytes live, not how arithmetic is done, so at temperature 0 they owe the
+# baseline the same tokens.  The engine prints its state fingerprint per request only when this is set, and the child
+# engine inherits it from this window, so no arm needs its own flag.  It costs a little on every arm equally, which
+# leaves the comparison between arms intact.  Read it afterwards with the same parser the parity gates use
+# (tools/conversation_cache_parity.py: state_hashes); beware that pooled/pooled_full/kv legitimately DIFFER in the arms
+# that change the VRAM budget or stream the KV - see docs/SWEEP_ADAPT_KV.md.
+$env:STRATA_STATE_HASH = "1"
+$sweepArgs = @()
+if ($sweep) { $sweepArgs = @("--sweep", $sweep) }
 
 function Say($m) {
     $line = "[{0}] {1}" -f (Get-Date -Format "HH:mm:ss"), $m
@@ -69,9 +79,9 @@ $armList = @()
 if ($armName) { $armList = @($armName -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
 $armArgs = @()
 if ($runs -ne 3) { $armArgs += @("--runs", "$runs") }
-Say ("running on '$tests' (runs $runs, out $out)" + $(if ($armList) { ", arms: " + ($armList -join ' | ') } else { ": all arms" }))
+Say ("running on '$tests' (runs $runs, out $out" + $(if ($sweep) { ", sweep $sweep" } else { "" }) + ")" + $(if ($armList) { ", arms: " + ($armList -join ' | ') } else { ": all arms" }))
 if (-not $armList) {
-    & $py -u tools\strata_ab.py --config $cfg --port $port --tests $tests --out $out --yes @armArgs 2>&1 | ForEach-Object {
+    & $py -u tools\strata_ab.py --config $cfg --port $port --tests $tests --out $out --yes @sweepArgs @armArgs 2>&1 | ForEach-Object {
         $t = "$_"
         Write-Host $t
         Add-Content -Path $log -Value $t -Encoding UTF8
@@ -83,7 +93,7 @@ if (-not $armList) {
     foreach ($arm in $armList) {
         Say ("arm: $arm")
         & $py -u tools\strata_ab.py --config $cfg --port $port --tests $tests --out $out --yes `
-            --arm-name $arm @armArgs 2>&1 | ForEach-Object {
+            --arm-name $arm @sweepArgs @armArgs 2>&1 | ForEach-Object {
             $t = "$_"
             Write-Host $t
             Add-Content -Path $log -Value $t -Encoding UTF8
