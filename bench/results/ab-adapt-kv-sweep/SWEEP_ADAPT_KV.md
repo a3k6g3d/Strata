@@ -79,7 +79,12 @@ knobs. Two further problems:
   reported swap overhead cannot tell them apart. Nothing to change.
 - **`--kv-resident` above the default looks promising**: 20480/24576/32768 measured 11–13 %
   over the default 16384, and they were three adjacent arms, all consistent. This is the
-  one candidate worth a clean test.
+  one candidate worth a clean test. **But the comparison is not one flag**: the config
+  passes `--kv-grow`, and `generate.cpp:4228` gates the elastic KV on the KV being wholly in
+  VRAM, so every `--kv-resident` arm also ran *without* `--kv-grow`. The gain belongs to the
+  pair — a whole KV in VRAM with no growth — and not to `--kv-resident` on its own. (The
+  default is also not really 16384: `layer.cpp:667` floors it at 20480, so the baseline and
+  the `20480` arm ask for the same thing; the only real step is 24576/32768.)
 - **`--vram-reserve-mib 512`** (giving the VRAM pool ~200 MiB more experts) is the other
   candidate.
 - **`--adapt-decay`** is unreadable: 0.65 and 0.80 both beat the 0.70 baseline, which cannot
