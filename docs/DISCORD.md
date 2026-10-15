@@ -32,7 +32,10 @@ Strata server.
 - **Only the accounts in `allowed_user_ids` get an answer.** Everyone else is ignored. An empty list starts nothing.
 - Each DM (or allowed channel) is one conversation, kept in a `discord` folder next to the config. `!new` starts a fresh one.
 - The answer is written into one message as it streams; long answers continue in further messages. Pictures you attach go to the
-  model (the vision encoder must be configured).
+  model (up to 8 MB each; the vision encoder must be configured). Text and code files (`.txt`, `.md`, `.py`, `.json`, `.csv`, `.log` and
+  similar, up to 200 KB each and 120,000 characters per message) are read into the prompt. Anything else (video, audio, PDFs, bigger files)
+  is named back to you with the reason, and the model is told it was skipped. The bot sends text only: it cannot attach a picture or a
+  file to a reply.
 - **Tools never go above `ask`:** looking at files, searching and browsing run by themselves; anything that changes something, and
   every command, shows **Allow / Deny** buttons in Discord (only your account can press them). The protected Windows folders and the
   no-read list from the Strata config apply exactly as in the web app. `edit` and `full` access are not available from Discord.

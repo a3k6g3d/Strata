@@ -88,6 +88,44 @@ class HelperTests(unittest.TestCase):
         img = D.chat_body([], "look", ["data:image/png;base64,AAAA"], "low", "read")["messages"][-1]["content"]
         self.assertEqual([p["type"] for p in img], ["text", "image_url"])
 
+    def test_attachments_pictures_text_files_and_the_rest(self):
+        class A:
+            def __init__(self, name, ctype, data=b"x", size=None):
+                self.filename, self.content_type, self.data = name, ctype, data
+                self.size = len(data) if size is None else size
+
+            async def read(self):
+                return self.data
+
+        async def go(items):
+            return await D.collect_attachments(items)
+        img, files, skipped = asyncio.run(go([A("p.png", "image/png", b"PNG"), A("big.png", "image/png", size=9 * 2 ** 20),
+                                              A("notes.txt", "text/plain", b"hello"), A("main.py", None, b"print(1)" + bytes([10])),
+                                              A("clip.mp4", "video/mp4"), A("song.mp3", "audio/mpeg"), A("doc.pdf", "application/pdf"),
+                                              A("huge.log", "text/plain", size=300_000)]))
+        self.assertEqual(len(img), 1)
+        self.assertTrue(img[0].startswith("data:image/png;base64,"))
+        self.assertEqual([f.split(chr(10))[0] for f in files], ["[file: notes.txt]", "[file: main.py]"])
+        self.assertIn("print(1)", files[1])
+        text = " | ".join(skipped)
+        for needle in ("big.png (picture over 8 MB)", "clip.mp4 (video is not supported)", "song.mp3 (audio is not supported)",
+                       "doc.pdf (this file type", "huge.log (text file over 200 KB)"):
+            self.assertIn(needle, text)
+
+    def test_text_files_are_fenced_safely_and_capped(self):
+        class A:
+            def __init__(self, name, data):
+                self.filename, self.content_type, self.data, self.size = name, "text/plain", data, len(data)
+
+            async def read(self):
+                return self.data
+        _, files, skipped = asyncio.run(D.collect_attachments([A("a.md", b"```code```")]))
+        self.assertTrue(files[0].split(chr(10))[1].startswith("````"))                   # a file that holds a fence gets a longer one
+        big = b"z" * 150_000
+        _, files, skipped = asyncio.run(D.collect_attachments([A("1.txt", big), A("2.txt", big)]))
+        self.assertIn("the rest of this file was cut", files[0] + (files[1] if len(files) > 1 else ""))
+        self.assertTrue(any("too much text" in x for x in skipped) or len(files) == 2)
+
     def test_start_says_why_it_does_not_start(self):
         self.assertIsNone(D.start({"enabled": False}, "http://x"))
         self.assertIsNone(D.start({"enabled": True, "allowed_user_ids": []}, "http://x"))
