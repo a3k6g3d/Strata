@@ -13,6 +13,12 @@ dated, and the fork's releases follow [SemVer](https://semver.org) once it tags 
   the engine over `/metrics`, and need `--api-monitor` (they read "not exposed" without it). The same numbers go into each recorded request as
   `cache`, so the request table can be added up by hand. A note in the docs says what to look for and what budget to give.
 
+### Added (2026-10-15, files from Discord's side: `!files`, `!send`, `[[send: path]]`)
+- The Discord bot can send a file, from the workspace folder only (`discord.send_folder`, default `workspace` next to the config): `!files` lists it,
+  `!send NAME` sends one, and the model can offer one with `[[send: path]]`, which waits for a "Send it" button (3 per answer at most). Paths are
+  resolved first, so `..`, absolute paths and links out of the folder are refused, as are files over 8 MB and anything on the no-read list. 9 new
+  tests (`serve/test_discord_send.py`; the symbolic-link case is skipped on an account that cannot create links).
+
 ### Fixed (2026-10-15, Discord attachments were dropped silently)
 - The Discord bot used only pictures and ignored every other attachment without saying so, so the model answered "I cannot see that". Text and code
   files are now read into the prompt (200 KB each, 120,000 characters per message), and video, audio, PDFs and oversized files are named back in the
