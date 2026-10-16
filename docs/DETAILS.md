@@ -1430,10 +1430,12 @@ argument per folder, and it refuses to start without one):
 ```
 
 Three tools: `read_file` (the whole file, or its first `head` / last `tail` lines), `write_file` (create or replace) and
-`edit_file` (change text that must match exactly, and only once, unless `replace_all`). The official filesystem server
-has fourteen tools whose names Strata has to guess a class for; these three are named for what they do, so `read_file`
-counts as a read and the two changes count as writes - Read-only refuses them, Allow edits lets them, Ask about every
-change asks for each one, and a protected place asks again even in Full access. Its own rules, on top of Strata's:
+`edit_file` (change text that must match exactly, and only once, unless `replace_all`). The names are what they are so
+the permission model works out of the box without a `tool_classes` entry: `read_file` counts as a read, the two changes
+as writes - Read-only refuses them, Allow edits lets them, Ask about every change asks for each one, and a protected
+place asks again even in Full access. (The official server's names are classed correctly too - `read_file` a read,
+`move_file` a danger - so this is not about the classifier; it is about needing Node.js, and about the rules below.) Its
+own rules, on top of Strata's:
 
 - a file you never read in this session cannot be replaced - `write_file` refuses it, so a guess cannot overwrite real
   content (`edit_file` needs an exact match, which is the same guard in a stronger form);

@@ -10,13 +10,13 @@ dated, and the fork's releases follow [SemVer](https://semver.org) once it tags 
 ### Added (2026-10-16, file tools of Strata's own: `read_file`, `write_file`, `edit_file`)
 - `tools/strata_files_mcp.py` is a file server for the folders you name on its command line, so the chat can change a file
   and not only find one. Until now changing something meant `npx @modelcontextprotocol/server-filesystem` (Node.js on
-  PATH, fourteen tools whose names Strata has to guess a class for) or a PowerShell one-liner. Three tools instead:
-  `read_file` (whole file, or its first / last lines), `write_file` (create or replace) and `edit_file` (an exact match,
-  refused when it appears more than once). The names make the permission model work out of the box - read_file is a read,
-  the two changes are writes, so Read-only refuses them and a protected place asks even in Full access. A file never read
-  in the session cannot be replaced, and a change keeps CR LF or LF endings, a byte-order mark and the final newline, so
-  editing a Windows file does not turn it into a Unix one (the match is compared with line endings ignored, so the same
-  edit works either way). 21 new tests (`serve/test_files_mcp.py`).
+  PATH, fourteen tools) or a PowerShell one-liner. Three tools instead: `read_file` (whole file, or its first / last
+  lines), `write_file` (create or replace) and `edit_file` (an exact match, refused when it appears more than once). The
+  names need no `tool_classes` entry - read_file is a read, the two changes are writes, so Read-only refuses them and a
+  protected place asks even in Full access. A file never read in the session cannot be replaced, and a change keeps CR LF
+  or LF endings, a byte-order mark and the final newline, so editing a Windows file does not turn it into a Unix one (the
+  match is compared with line endings ignored, so the same edit works either way); a failed write leaves the old file and
+  no temporary file behind. 21 new tests (`serve/test_files_mcp.py`).
 
 ### Added (2026-10-13, Monitor shows the expert cache hit rate)
 - The Monitor page now shows the expert cache as a line of its own: hit rate since start, hits of looked-up layers over the layers that ask for
