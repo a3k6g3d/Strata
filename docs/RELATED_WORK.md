@@ -50,6 +50,36 @@ many tokens routes to many more distinct experts than one token does.  If our ow
 `--batch` above a handful of tokens quietly costs the cache most of its value, and that is worth checking against
 `STRATA_LOOKAHEAD_STATS` and the per-request hit rate rather than assumed.
 
+#### Checked: the mechanism is ours too, but our window never reaches the cliff
+
+That check turned out to be a read of the code, not a run.  The mechanism is ours - `expert_pool_dispatch_multi` counts
+the window's entries as `n = n_tok * k`, k the experts each token routes (10 here), and groups the distinct ones
+(`src/core/expert_source.cpp:3666`), so a wider window really does mean more distinct experts and the same dilution.
+What differs is how wide a window may be:
+
+- `Verifier::init` refuses a window outside 2..8 tokens (`src/core/verify.cpp:560`), bounded by `kVerifyMaxT = 8`
+  (`include/strata/kernels/verify_kernels.hpp:21`) and `cpu::MAXT = 8` (`include/strata/kernels/cpu/expert.hpp:139`).
+- A batch window - `--batch-mtp`, several concurrent slots decoded as one window - is bounded by the same constant:
+  `batch_rows_error` rejects `S > max_t` (`include/strata/core/batch_rows.hpp:16`) and `max_t_` is that same 8.
+
+So `n_tok` never passes 8, whether the tokens are one request's drafts or the rows of several slots, and `n` never
+passes 80.  Strata sits permanently in the regime llama.cpp reports at 85-95%, and no flag moves it into the other
+regime: there is no `--batch` value that costs the cache its hit rate, because the window is capped at the exact number
+where their cliff starts.  The cliff is not absent from this engine; it is behind a wall.
+
+Two things follow that are worth having written down.
+
+**The 128-entry guard is currently unreachable.**  `kMaxWindowEntries = 128` carries `static_assert(MAXT * 10 <= 128)`
+(`src/core/expert_source.cpp:3603`), so the runtime refusal of a larger window (`:3641`, "a verify window routes more
+entries than the expert pool's window tables hold") cannot fire while `MAXT` is 8: a full window is 80 entries, 48 short
+of the cap.  The comment there says such a window is "refused at run time", which reads like a live path; it is a guard
+for a `MAXT` nobody has raised yet.  Raise it past 12 and their cliff becomes ours, which would make this question one
+to measure again instead of one to read.
+
+**The video's comparison is not on this axis.**  llama.cpp's batch is its server's concurrent decode batch, which grows
+past 8 as requests arrive; ours is one window of at most 8 tokens.  "They drop to 18% at large batches and we do not"
+would be a difference only if we could run a large batch, and we cannot.
+
 ## LMCache
 
 LMCache (12.1k stars, PyTorch Foundation, Apache-2.0) is a KV cache layer beside the engine, not inside it: a
