@@ -20,10 +20,10 @@ Strata's chat page in its own window. Strata is [Niko1221/Strata](https://github
 | key | default | |
 | --- | --- | --- |
 | `url` | `http://127.0.0.1:8080` | the server |
-| `startServer` | `true` | start the model when it is not running |
-| `launcher` | `<work>/run-strata.ps1` | a PowerShell script that starts the server (it gets `STRATA_NO_OPEN=1`) |
-| `stopper` | `<work>/Stop-Strata.bat` | stops the model |
-| `consoleLog` | `<work>/strata-console.txt` | shown while loading |
+| `startServer` | `false` | `true`: start the model when it is not running (needs the three paths below) |
+| `launcher` | *(empty: set the full path)* | a PowerShell script that starts the server (it gets `STRATA_NO_OPEN=1`) |
+| `stopper` | *(empty: set the full path)* | stops the model |
+| `consoleLog` | *(empty: set the full path)* | shown while loading |
 | `stopOnQuit` | `true` | Quit stops a model this app started |
 | `closeToTray` | `true` | the X hides the window |
 | `loadTimeoutMinutes` | `10` | after this the loading screen offers Try again / Open the log |

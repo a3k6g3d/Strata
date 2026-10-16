@@ -37,10 +37,10 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             url: "http://127.0.0.1:8080".into(),
-            start_server: true,
-            launcher: r"<work>/run-strata.ps1".into(),
-            stopper: r"<work>/Stop-Strata.bat".into(),
-            console_log: r"<work>/strata-console.txt".into(),
+            start_server: false,           // set the three paths below in desktop.json to let the app start the model
+            launcher: String::new(),
+            stopper: String::new(),
+            console_log: String::new(),
             stop_on_quit: true,
             close_to_tray: true,
             load_timeout_minutes: 10,

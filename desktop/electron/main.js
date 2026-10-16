@@ -11,10 +11,10 @@ const { spawn, execFile } = require('child_process');
 const SMOKE = process.argv.includes('--smoke');          // load the page, save a picture of it, exit (a check, no tray)
 const DEFAULTS = {
   url: 'http://127.0.0.1:8080',
-  startServer: true,                                     // start the model when it is not running
-  launcher: '<work>/run-strata.ps1',           // what starts it (PowerShell script)
-  stopper: '<work>/Stop-Strata.bat',           // what stops it
-  consoleLog: '<work>/strata-console.txt',     // shown while it loads
+  startServer: false,                                    // true: start the model when it is not running (set the three paths below)
+  launcher: '',                                          // what starts it (the full path of a PowerShell script)
+  stopper: '',                                           // what stops it (the full path of a .bat or script)
+  consoleLog: '',                                        // the server's console log, shown while it loads
   stopOnQuit: true,                                      // quitting stops the model the app started
   closeToTray: true,                                     // the window's X hides it; Quit in the tray menu ends the app
   loadTimeoutMinutes: 10,

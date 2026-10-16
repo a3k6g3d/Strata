@@ -1179,12 +1179,12 @@ def selftest() -> int:
 
     # 4. privacy: a stranger's paths, key and addresses must not survive
     red = redactor(key="sk-secret-1234567890")
-    line = red("launch <home>/AppData\\Local\\strata.exe --model D:\\models\\m.gguf key sk-secret-1234567890 at 192.168.4.22")
+    line = red("launch C:\\Users\\jdoe\\AppData\\Local\\strata.exe --model D:\\models\\m.gguf key sk-secret-1234567890 at 192.168.4.22")
     check("the API key is gone", "sk-secret-1234567890" not in line, line)
     check("the home folder is gone", "jdoe" not in line, line)
     check("the IP address is gone", "192.168.4.22" not in line, line)
     check("the model path is kept, only its folder is hidden", "m.gguf" in line, line)
-    deep = json.dumps(redact_obj({"a": {"b": ["<home>/x"]}}, red), ensure_ascii=False)
+    deep = json.dumps(redact_obj({"a": {"b": ["C:\\Users\\jdoe\\x"]}}, red), ensure_ascii=False)
     check("a results tree is redacted all the way down", "jdoe" not in deep, deep)
     print("SELFTEST", "passed" if bad == 0 else f"FAILED: {bad}")
     return 0 if bad == 0 else 1
