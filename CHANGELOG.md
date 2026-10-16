@@ -13,6 +13,12 @@ dated, and the fork's releases follow [SemVer](https://semver.org) once it tags 
   the engine over `/metrics`, and need `--api-monitor` (they read "not exposed" without it). The same numbers go into each recorded request as
   `cache`, so the request table can be added up by hand. A note in the docs says what to look for and what budget to give.
 
+### Added (2026-10-16, an opt-in warm-up after the model loads)
+- `"warmup": {"enabled": true}` in the config sends a few short typical requests (or the `"prompts"` you list, at most 12, `"max_tokens"` 16-512) once the
+  model is loaded (`serve/warmup.py`). Measured on this PC: the first answers after a start ran at about half speed (13.9, 18.8, 20.5, 21.8 tok/s on four
+  identical requests, expert-cache hit rate 31% -> 58%) because the GPU expert cache adapts to what is asked; the warm-up moves that before the first real
+  question. Off by default. 4 new tests.
+
 ### Added (2026-10-15, files from Discord's side: `!files`, `!send`, `[[send: path]]`)
 - The Discord bot can send a file, from the workspace folder only (`discord.send_folder`, default `workspace` next to the config): `!files` lists it,
   `!send NAME` sends one, and the model can offer one with `[[send: path]]`, which waits for a "Send it" button (3 per answer at most). Paths are
