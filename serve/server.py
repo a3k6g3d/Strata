@@ -3110,6 +3110,7 @@ class Service:
         self.keep_awake = None                        # #1727 (opt-in): serve.keepawake.KeepAwake, the config's "prevent_sleep"
         self.fifo = threading.Lock()
         self.slot_save_path = None                    # --slot-save-path: /slots/0?action=save|restore (off when None)
+        self.conv_store = None                        # "conversation_store" in the config (serve/conversation_store.py)
         self.embeddings = threading.local()           # the current request's image embeddings file (GENI)
         self.api_key = ""                              # when set, /v1/* needs it (Bearer or x-api-key)
         # #458 (opt-in, the config's "effort_position": "end"): a non-default reasoning effort goes in a short system
@@ -3177,6 +3178,13 @@ class Service:
 
     def loaded(self) -> bool:
         return not hasattr(self.engine, "alive") or self.engine.alive()
+
+    def store_session_file(self, action: str, path: str):
+        """The engine's SAVE / RESTORE of the conversation it holds, for serve/conversation_store.py (the request's turn is already held)."""
+        if action == "save" and getattr(self.engine, "session_save_reclaim", False):
+            from serve.session_save_retry import session_file
+            return session_file(self, action, path, SessionRefused)
+        return self.engine.session_file(action, path)
 
     def slot_action(self, slot: str, action: str, filename) -> tuple[int, dict]:
         """llama-server's POST /slots/{id}?action=save|restore {"filename": ...}: the conversation the engine holds,
@@ -4276,6 +4284,8 @@ class Service:
                             self.status.update(st)
                         self.last_request_at = time.time()
                         rate.clear()                    # the previous request's samples must not leak into this one
+                    if self.conv_store is not None and not par and not emb:
+                        self.conv_store.before_request(self, ids)       # another conversation: keep the live one, restore a saved one
                     before = getattr(self.engine, "last", None)
                     last_print = time.time()
                     prompt, thought = ids, 0            # thought: the reasoning tokens so far (the budget's count)
@@ -4583,6 +4593,8 @@ class Service:
                                 self.status.update(busy=False)
                                 self.status.pop("tail", None)
                                 self.status.pop("tool", None)
+                    if self.conv_store is not None and not par:
+                        self.conv_store.after_request(self, ids, finish, pictures=bool(emb))    # still holding the turn: save it if it grew
         finally:
             if emb:
                 Path(emb).unlink(missing_ok=True)
@@ -7542,6 +7554,12 @@ def main() -> int:
         from serve import discord_bot
         keys = key_list(svc.api_key) if svc.api_key else []
         discord_bot.start(cfg["discord"], f"http://127.0.0.1:{a.port}", keys[0] if keys else "", Path(a.config).resolve().parent)
+    if isinstance(cfg.get("conversation_store"), dict):  # the optional on-disk conversations (serve/conversation_store.py)
+        from serve import conversation_store
+        if getattr(engine, "batch", 0) or not hasattr(engine, "session_file"):
+            print("[strata] conversation store: not started - this engine has no session save/restore (or runs parallel requests)", flush=True)
+        else:
+            svc.conv_store = conversation_store.create(cfg["conversation_store"], Path(a.config).resolve().parent)
     if isinstance(cfg.get("warmup"), dict):             # the optional warm-up requests after the load (serve/warmup.py)
         from serve import warmup
         keys = key_list(svc.api_key) if svc.api_key else []
