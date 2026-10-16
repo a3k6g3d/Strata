@@ -206,6 +206,147 @@ class Files(unittest.TestCase):
         self.assertIn("longer than", str(cm.exception))
 
 
+class LookingAround(unittest.TestCase):
+    """The folder tools: what is where, and the two that change the tree."""
+
+    def setUp(self):
+        self.base = tempfile.mkdtemp(prefix="strata-files-tree-")
+        self.inside = os.path.join(self.base, "notes")
+        os.makedirs(os.path.join(self.inside, "sub"))
+        os.makedirs(os.path.join(self.base, "elsewhere"))
+        self.f = os.path.join(self.inside, "todo.md")
+        Path(self.f).write_text("buy milk\n", encoding="utf-8")
+        Path(os.path.join(self.inside, "sub", "deep.txt")).write_text("deep\n", encoding="utf-8")
+        Path(os.path.join(self.base, "elsewhere", "out.md")).write_text("out\n", encoding="utf-8")
+        x.configure([], [], [self.inside])
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.base, ignore_errors=True)
+
+    def test_it_lists_a_folder_with_folders_first(self):
+        out = x.list_directory(self.inside)
+        self.assertIn("[DIR]  sub", out)
+        self.assertIn("[FILE] todo.md", out)
+        self.assertLess(out.index("[DIR]"), out.index("[FILE]"))
+
+    def test_it_can_show_sizes(self):
+        self.assertIn("B", x.list_directory(self.inside, True))
+
+    def test_a_file_is_not_a_folder(self):
+        with self.assertRaises(x.FilesError):
+            x.list_directory(self.f)
+
+    def test_the_tree_goes_down_to_the_depth_asked_for(self):
+        self.assertIn("sub/", x.directory_tree(self.inside))
+        self.assertIn("deep.txt", x.directory_tree(self.inside, 2))
+        self.assertNotIn("deep.txt", x.directory_tree(self.inside, 1))
+
+    def test_search_finds_by_name_under_the_folder(self):
+        self.assertIn("deep.txt", x.search_files(self.inside, "*.txt"))
+        self.assertNotIn("out.md", x.search_files(self.inside, "*.md"))     # elsewhere is outside the allow-list
+        self.assertIn("nothing", x.search_files(self.inside, "*.nope"))
+
+    def test_it_needs_a_pattern_to_search_for(self):
+        with self.assertRaises(x.FilesError):
+            x.search_files(self.inside, "")
+
+    def test_the_info_of_a_file_and_of_a_folder(self):
+        info = x.get_file_info(self.f)
+        self.assertIn("type: file", info)
+        self.assertIn("modified:", info)
+        self.assertIn("type: folder", x.get_file_info(self.inside))
+
+    def test_it_names_the_folders_it_may_use(self):
+        self.assertIn(self.inside, x.list_allowed_directories())
+
+    def test_it_reads_several_files_and_reports_the_ones_that_failed(self):
+        out = x.read_multiple_files([self.f, os.path.join(self.inside, "nope.md")])
+        self.assertIn("buy milk", out)
+        self.assertIn("could not read it", out)
+        self.assertIn("1 of them could not be read", out)
+
+    # ---- the two that change the tree
+
+    def test_it_makes_a_folder_and_the_ones_above_it(self):
+        new = os.path.join(self.inside, "a", "b")
+        self.assertIn("created folder", x.create_directory(new))
+        self.assertTrue(os.path.isdir(new))
+        self.assertIn("already there", x.create_directory(new))
+
+    def test_a_new_folder_lets_a_new_file_be_written_at_once(self):
+        new = os.path.join(self.inside, "inbox")
+        x.create_directory(new)
+        self.assertIn("created", x.write_file(os.path.join(new, "note.md"), "first\n"))
+
+    def test_a_move_leaves_nothing_behind_and_names_the_new_place(self):
+        dst = os.path.join(self.inside, "sub", "renamed.md")
+        self.assertIn("moved", x.move_file(self.f, dst))
+        self.assertFalse(os.path.exists(self.f))
+        self.assertEqual(Path(dst).read_text(encoding="utf-8"), "buy milk\n")
+
+    def test_a_move_across_drives_falls_back_to_copying(self):
+        # Windows answers "Access is denied" to a rename between volumes; the tool should copy instead of giving up.
+        real_rename = x.os.rename
+
+        def cross_drive(a, b):
+            raise PermissionError(5, "Access is denied")
+
+        x.os.rename = cross_drive
+        try:
+            dst = os.path.join(self.inside, "sub", "renamed.md")
+            self.assertIn("copied", x.move_file(self.f, dst))
+            self.assertIn("another drive", x.move_file(dst, os.path.join(self.inside, "back.md")))
+        finally:
+            x.os.rename = real_rename
+        self.assertFalse(os.path.exists(self.f))
+        self.assertEqual(Path(os.path.join(self.inside, "back.md")).read_text(encoding="utf-8"), "buy milk\n")
+
+    def test_a_move_that_cannot_copy_either_says_what_might_be_wrong(self):
+        real_rename, real_move = x.os.rename, x.shutil.move
+        x.os.rename = lambda a, b: (_ for _ in ()).throw(PermissionError(5, "Access is denied"))
+        x.shutil.move = lambda a, b: (_ for _ in ()).throw(PermissionError(5, "Access is denied"))
+        try:
+            with self.assertRaises(x.FilesError) as cm:
+                x.move_file(self.f, os.path.join(self.inside, "sub", "nope.md"))
+            self.assertIn("open somewhere else", str(cm.exception))
+        finally:
+            x.os.rename, x.shutil.move = real_rename, real_move
+        self.assertTrue(os.path.exists(self.f))
+
+    def test_a_move_onto_something_that_exists_is_refused(self):
+        other = os.path.join(self.inside, "other.md")
+        Path(other).write_text("other\n", encoding="utf-8")
+        with self.assertRaises(x.FilesError) as cm:
+            x.move_file(self.f, other)
+        self.assertIn("already", str(cm.exception))
+        self.assertTrue(os.path.exists(self.f))            # nothing moved
+
+    def test_a_move_into_itself_is_refused(self):
+        with self.assertRaises(x.FilesError) as cm:
+            x.move_file(self.inside, os.path.join(self.inside, "sub", "inner"))
+        self.assertIn("inside itself", str(cm.exception))
+
+    def test_a_move_needs_the_destination_folder_to_exist(self):
+        with self.assertRaises(x.FilesError) as cm:
+            x.move_file(self.f, os.path.join(self.inside, "gone", "x.md"))
+        self.assertIn("create_directory", str(cm.exception))
+
+    def test_a_move_outside_the_named_folders_is_refused(self):
+        with self.assertRaises(x.FilesError) as cm:
+            x.move_file(self.f, os.path.join(self.base, "elsewhere", "x.md"))
+        self.assertIn("outside the folders", str(cm.exception))
+        self.assertTrue(os.path.exists(self.f))
+
+    def test_a_moved_file_must_be_read_again_before_it_is_replaced(self):
+        dst = os.path.join(self.inside, "sub", "renamed.md")
+        x.read_file(self.f)
+        x.move_file(self.f, dst)
+        with self.assertRaises(x.FilesError) as cm:
+            x.write_file(dst, "guessed\n")
+        self.assertIn("has not been read", str(cm.exception))
+
+
 class Protocol(unittest.TestCase):
     def test_mcp_session_with_a_named_folder(self):
         base = tempfile.mkdtemp(prefix="strata-files-probe-")
@@ -219,9 +360,15 @@ class Protocol(unittest.TestCase):
                     return json.loads(p.stdout.readline())
                 self.assertEqual(ask(1, "initialize")["result"]["serverInfo"]["name"], "strata-files")
                 tools = ask(2, "tools/list")["result"]["tools"]
-                self.assertEqual([t["name"] for t in tools], ["read_file", "write_file", "edit_file"])
+                self.assertEqual([t["name"] for t in tools],
+                                 ["read_file", "write_file", "edit_file", "read_multiple_files", "list_directory",
+                                  "directory_tree", "search_files", "get_file_info", "list_allowed_directories",
+                                  "create_directory", "move_file"])
                 self.assertTrue(tools[0]["annotations"]["readOnlyHint"])
                 self.assertTrue(tools[1]["annotations"]["destructiveHint"])
+                self.assertTrue([t for t in tools if t["name"] == "move_file"][0]["annotations"]["destructiveHint"])
+                self.assertTrue(all(t["annotations"]["readOnlyHint"] for t in tools
+                                    if t["name"].startswith(("read_", "list_di", "list_al", "search_", "get_", "directory_"))))
                 path = os.path.join(base, "a.txt")
                 r = ask(3, "tools/call", {"name": "write_file", "arguments": {"path": path, "content": "one\n"}})["result"]
                 self.assertFalse(r["isError"], r["content"][0]["text"])

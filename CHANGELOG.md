@@ -7,16 +7,21 @@ dated, and the fork's releases follow [SemVer](https://semver.org) once it tags 
 
 ## Unreleased - 2026-10-10
 
-### Added (2026-10-16, file tools of Strata's own: `read_file`, `write_file`, `edit_file`)
+### Added (2026-10-16, file tools of Strata's own: eleven tools under the official server's names)
 - `tools/strata_files_mcp.py` is a file server for the folders you name on its command line, so the chat can change a file
   and not only find one. Until now changing something meant `npx @modelcontextprotocol/server-filesystem` (Node.js on
-  PATH, fourteen tools) or a PowerShell one-liner. Three tools instead: `read_file` (whole file, or its first / last
-  lines), `write_file` (create or replace) and `edit_file` (an exact match, refused when it appears more than once). The
-  names need no `tool_classes` entry - read_file is a read, the two changes are writes, so Read-only refuses them and a
-  protected place asks even in Full access. A file never read in the session cannot be replaced, and a change keeps CR LF
-  or LF endings, a byte-order mark and the final newline, so editing a Windows file does not turn it into a Unix one (the
-  match is compared with line endings ignored, so the same edit works either way); a failed write leaves the old file and
-  no temporary file behind. 21 new tests (`serve/test_files_mcp.py`).
+  PATH, fourteen tools) or a PowerShell one-liner. Eleven tools instead, under the official names so switching is only a
+  config change: `read_file` (whole file, or its first / last lines), `read_multiple_files`, `write_file`, `edit_file` (an
+  exact match, refused when it appears more than once - the official one takes line numbers, which drift the moment the
+  file changes under you), `list_directory`, `directory_tree`, `search_files`, `get_file_info`,
+  `list_allowed_directories`, `create_directory` and `move_file` (the destination must not exist, so nothing lands on top
+  of something; deleting is a move, and a move across drives copies rather than failing with "Access is denied"). It
+  lacks only the official image/audio reader, its read alias and its sizes listing. The names need no `tool_classes`
+  entry - reads are reads, the changes are writes, `move_file` is a danger - so Read-only refuses them and a protected
+  place asks even in Full access. A file never read in the session cannot be replaced, and a change keeps CR LF or LF
+  endings, a byte-order mark and the final newline, so editing a Windows file does not turn it into a Unix one (the match
+  is compared with line endings ignored, so the same edit works either way); a failed write leaves the old file and no
+  temporary file behind. 41 tests (`serve/test_files_mcp.py`).
 
 ### Added (2026-10-13, Monitor shows the expert cache hit rate)
 - The Monitor page now shows the expert cache as a line of its own: hit rate since start, hits of looked-up layers over the layers that ask for

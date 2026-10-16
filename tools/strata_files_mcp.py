@@ -2,8 +2,12 @@
 """tools/strata_files_mcp.py - read, change and create files from Strata's chat (an MCP server over stdio).
 
     read_file(path, head, tail)                             the whole file as text (or its first / last lines)
+    read_multiple_files(paths)                             several of them in one call
     write_file(path, content)                               create it, or replace it (a file you have not read is refused)
     edit_file(path, oldText, newText, replace_all)         change text that must match exactly once
+    list_directory(path, sizes) / directory_tree(path, depth) / search_files(path, pattern, exclude)
+    get_file_info(path) / list_allowed_directories()
+    create_directory(path) / move_file(source, destination)
 
 Give the folders it may touch as arguments, one per folder:
 
@@ -14,10 +18,11 @@ in STRATA_BLOCKED_JSON); links and junctions are followed to what they lead to b
 step out of the allow-list. A change under one of `mcp.protected_paths` still asks you in every mode - Strata checks the
 path in the call, not this server.
 
-Three tools and no more: the official filesystem server has fourteen, and its tool names are a guess for Strata's
-permission classifier. These three are named for what they do, and `read_file` / `edit_file` are classed read and write
-by their names, so the permission modes work out of the box: Read-only refuses the changes, Edit-changes lets them,
-Ask-about-every-change asks for each one, and it asks again for a protected place even in Full access.
+These tools are named for what they do, and the permission classifier reads that name: `read_` / `list_` / `search_` /
+`get_` are classed read, `write_file` / `edit_file` / `create_directory` as write, and `move_file` as danger. So the modes
+work out of the box - Read-only refuses the changes, Edit-changes lets them, Ask-about-every-change asks for each one, and
+it asks again for a protected place even in Full access. (The official filesystem server has fourteen tools; the names
+differ, which is the one thing to know when switching between them.)
 
 What it will not do:
   - replace a file it has not read in this session first, so a guess cannot quietly overwrite real content (an
@@ -36,8 +41,10 @@ import difflib
 import fnmatch
 import json
 import os
+import shutil
 import sys
 import threading
+import time
 
 MAX_FILE = 5_000_000            # read: nothing bigger than this is opened at all
 MAX_WRITE = 1_000_000           # write / edit: the new content, in characters
@@ -47,7 +54,8 @@ READ_LIMIT = 40_000             # read_file: characters of text in one answer
 _BLOCK = json.loads(os.environ.get("STRATA_BLOCKED_JSON") or "{}")
 PREFIXES: list[str] = list(_BLOCK.get("prefixes", []))
 GLOBS: list[str] = list(_BLOCK.get("globs", []))
-ROOTS: list[str] = []           # the folders this instance may touch (from the command line)
+ROOTS: list[str] = []           # the folders this instance may touch, lowercased for matching (from the command line)
+DISPLAY: list[str] = []         # the same folders as the person typed them, for the messages the model reads
 READ: set[str] = set()          # paths read in this session: a change needs one
 
 
@@ -62,7 +70,15 @@ def configure(prefixes, globs, roots) -> None:
     # A drive root is stored without its trailing separator, so the `root + os.sep` below is one backslash and not two:
     # "J:\\" as it stands would match nothing at all, because a real path under it has a single backslash after the colon.
     ROOTS[:] = [os.path.normcase(os.path.realpath(r)).rstrip("\\/") or r for r in roots]
+    DISPLAY[:] = [_show(r) for r in roots]
     READ.clear()
+
+
+def _show(r: str) -> str:
+    r"""A folder as it was named, without the untidy trailing separator - except a drive root, where `C:\` is how people
+    write it and `C:` reads like a mistake."""
+    r = str(r).strip().strip('"').rstrip("\\/")
+    return r + "\\" if len(r) == 2 and r[1] == ":" else r
 
 
 def _norm(p: str) -> str:
@@ -75,7 +91,7 @@ def is_blocked(path: str) -> bool:
     return any(p == x or p.startswith(x + os.sep) for x in PREFIXES) or any(fnmatch.fnmatchcase(p, g) for g in GLOBS)
 
 
-def locate(path: str, must_exist: bool = True) -> str:
+def locate(path: str, must_exist: bool = True, want_dir: bool = False) -> str:
     """The real path of `path`, checked against the allow-list and the no-read list.  A path whose folder does not exist
     is reported as such, because that is what a model needs to know before it tries to create a file."""
     if not path or not str(path).strip():
@@ -85,18 +101,27 @@ def locate(path: str, must_exist: bool = True) -> str:
     if not ROOTS:
         raise FilesError("this file server was started without any folders; name them as arguments")
     if not any(real == r or real.startswith(r + os.sep) for r in ROOTS):
-        raise FilesError("that path is outside the folders this server may use: " + ", ".join(ROOTS))
+        raise FilesError("that path is outside the folders this server may use: " + ", ".join(DISPLAY or ROOTS))
     if is_blocked(real):
         raise FilesError("that file is on the user's no-read list")
     if must_exist:
         if not os.path.exists(real):
             raise FilesError(f"no such file: {raw}" + ("" if os.path.isdir(os.path.dirname(real) or ".")
                                                        else f" (and its folder does not exist: {os.path.dirname(raw)})"))
-        if os.path.isdir(real):
+        if os.path.isdir(real) and not want_dir:
             raise FilesError(f"that is a folder: {raw}")
-    elif os.path.isdir(real):
+    elif os.path.isdir(real) and not want_dir:
         raise FilesError(f"that path is a folder: {raw}")
     return raw
+
+
+def _human(n) -> str:
+    n = float(n or 0)
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} GB"
 
 
 def _decode(raw: bytes) -> tuple[str, str, str]:
@@ -214,6 +239,178 @@ def edit_file(path: str, old_text: str, new_text: str, replace_all: bool = False
             + (f"\n\n{diff}" if diff else ""))
 
 
+def list_directory(path: str, sizes: bool = False) -> str:
+    """What is in a folder: folders first, then files, each by name. Blocked entries are left out silently."""
+    real = locate(path, want_dir=True)
+    try:
+        entries = list(os.scandir(real))
+    except OSError as e:
+        raise FilesError(f"could not read that folder: {e}") from None
+    dirs, files, hidden = [], [], 0
+    for e in entries:
+        if is_blocked(e.path):
+            hidden += 1
+            continue
+        try:
+            if e.is_dir():
+                dirs.append(f"[DIR]  {e.name}")
+            else:
+                files.append(f"[FILE] {e.name}" + (f"  {_human(e.stat().st_size)}" if sizes else ""))
+        except OSError:
+            hidden += 1
+    dirs.sort(key=str.lower)
+    files.sort(key=str.lower)
+    rows = dirs + files
+    if not rows:
+        return f"{real}: nothing in it" + (f" ({hidden} hidden by the no-read list)" if hidden else "")
+    return f"{real}: {len(dirs)} folder(s), {len(files)} file(s)" + (f", {hidden} not shown" if hidden else "") + \
+           "\n\n" + "\n".join(rows)
+
+
+def directory_tree(path: str, depth: int = 3) -> str:
+    """A folder and what is under it, as an indented tree; stops at `depth` levels and skips blocked paths."""
+    real = locate(path, want_dir=True)
+    depth = max(1, min(int(depth or 3), 8))
+    out, shown, hidden = [], 0, 0
+
+    def walk(p: str, level: int) -> None:
+        nonlocal shown, hidden
+        if shown > 2000:
+            return
+        try:
+            entries = sorted(os.scandir(p), key=lambda e: (not e.is_dir(), os.path.normcase(e.name)))
+        except OSError:
+            return
+        for e in entries:
+            if shown > 2000:
+                return
+            if is_blocked(e.path):
+                hidden += 1
+                continue
+            try:
+                is_dir = e.is_dir()
+            except OSError:
+                hidden += 1
+                continue
+            shown += 1
+            out.append("  " * level + (e.name + "/" if is_dir else e.name))
+            if is_dir and level + 1 < depth:
+                walk(e.path, level + 1)
+
+    walk(real, 0)
+    return f"{real}: {shown} entries (down to {depth} level(s))" + (f", {hidden} not shown" if hidden else "") + \
+           "\n\n" + ("\n".join(out) or "(empty)") + ("\n[a folder's contents are cut off at 2000 entries]"
+                                                    if shown > 2000 else "")
+
+
+def search_files(path: str, pattern: str, exclude: str = "") -> str:
+    """Files and folders whose *name* matches a glob (`*.py`, `**/*.md`), under `path`, deepest first by name."""
+    real = locate(path, want_dir=True)
+    if not str(pattern or "").strip():
+        raise FilesError("give a pattern to look for, such as *.py")
+    pat, skip = str(pattern).strip(), str(exclude or "").strip()
+    hits, hidden = [], 0
+    for base, dirnames, filenames in os.walk(real):
+        dirnames[:] = [d for d in dirnames if not is_blocked(os.path.join(base, d))]
+        for name in dirnames + filenames:
+            full = os.path.join(base, name)
+            rel = os.path.relpath(full, real).replace("\\", "/")
+            if not (fnmatch.fnmatchcase(name, pat) or fnmatch.fnmatchcase(rel, pat)
+                    or ("/" in pat and fnmatch.fnmatchcase(rel, "**/" + pat))):
+                continue
+            if skip and (fnmatch.fnmatchcase(rel, skip) or fnmatch.fnmatchcase(rel, "**/" + skip)):
+                hidden += 1
+                continue
+            if is_blocked(full):
+                hidden += 1
+                continue
+            hits.append(full if len(full) <= 120 else "..." + full[-117:])
+            if len(hits) >= 300:
+                break
+        if len(hits) >= 300:
+            break
+    if not hits:
+        return f"nothing under {real} matches {pat}" + (f" ({hidden} skipped by the exclude pattern)" if hidden else "")
+    return f"{len(hits)} match(es) for {pat} under {real}" + (f", {hidden} excluded" if hidden else "") + \
+           "\n\n" + "\n".join(sorted(hits, key=str.lower)) + ("\n[... more matches exist; narrow the pattern]"
+                                                              if len(hits) >= 300 else "")
+
+
+def get_file_info(path: str) -> str:
+    """What a path is: a file or a folder, how big, when it last changed."""
+    real = locate(path, want_dir=True)
+    try:
+        st = os.stat(real)
+    except OSError as e:
+        raise FilesError(f"could not look at it: {e}") from None
+    is_dir = os.path.isdir(real)
+    kind = "folder" if is_dir else ("link" if os.path.islink(real) else "file")
+    when = lambda t: time.strftime("%Y-%m-%d %H:%M", time.localtime(t))
+    return (f"{real}\n"
+            + f"type: {kind}\nsize: {st.st_size:,} bytes" + ("" if is_dir else f" ({_human(st.st_size)})") + "\n"
+            + f"modified: {when(st.st_mtime)}\ncreated: {when(getattr(st, 'st_birthtime', st.st_ctime))}\n"
+            + f"readable: {os.access(real, os.R_OK)}" + ("" if is_dir else f"  writable: {os.access(real, os.W_OK)}"))
+
+
+def create_directory(path: str) -> str:
+    """Make a folder, and any folders above it that are missing."""
+    real = locate(path, must_exist=False, want_dir=True)
+    if os.path.isdir(real):
+        return f"that folder is already there: {path}"
+    try:
+        os.makedirs(real, exist_ok=True)
+    except OSError as e:
+        raise FilesError(f"could not make the folder: {e}") from None
+    return f"created folder {path}"
+
+
+def move_file(source: str, destination: str) -> str:
+    """Move or rename a file or a folder. `destination` is the new full path; it must not already be there, so nothing
+    is ever moved on top of something by mistake."""
+    src = locate(source, want_dir=True)
+    dst = locate(destination, must_exist=False, want_dir=True)
+    if os.path.exists(os.path.normcase(dst)):
+        raise FilesError(f"something is already at {destination}; move it aside first, or name the new place differently")
+    if os.path.normcase(dst).startswith(os.path.normcase(src) + os.sep):
+        raise FilesError("that would move a folder inside itself")
+    if not os.path.isdir(os.path.dirname(os.path.normcase(dst)) or ""):
+        raise FilesError(f"the destination's folder does not exist: {os.path.dirname(destination)}"
+                         " (make it with create_directory first)")
+    try:
+        os.rename(src, dst)
+        how = "moved"
+    except OSError as e:
+        # Across drives Windows answers "Access is denied" to a rename, which is not what is wrong: it wants a copy
+        # instead. So try that, and say which of the two happened.
+        try:
+            shutil.move(src, dst)
+            how = "copied"
+        except OSError:
+            raise FilesError(f"could not move it: {e}. The file may be open somewhere else, or you may not be allowed to "
+                             "write where it would go") from None
+    READ.discard(os.path.normcase(src))
+    return f"{how} {source} -> {destination}" + ("" if how == "moved" else
+           " (it went to another drive, so this was a copy and then a delete: not one quick step)")
+
+
+def read_multiple_files(paths: list) -> str:
+    """Several files in one go; one that fails is reported and the rest still come back."""
+    if not paths:
+        raise FilesError("give at least one path")
+    parts, failed = [], 0
+    for p in [str(x) for x in list(paths)][:20]:
+        try:
+            parts.append(f"---- {p} ----\n{read_file(p)}")
+        except FilesError as e:
+            failed += 1
+            parts.append(f"---- {p} ----\ncould not read it: {e}")
+    return "\n\n".join(parts) + (f"\n\n[{failed} of them could not be read]" if failed else "")
+
+
+def list_allowed_directories() -> str:
+    return "this server may use these folders (and everything under them):\n" + "\n".join(DISPLAY or ROOTS or ["(none)"])
+
+
 TOOLS = [
     {"name": "read_file", "description": "Read the complete contents of a file as text, or only its first (head) or last "
                                          "(tail) lines for a long one. Returns the whole file, so for a big one pass head or "
@@ -239,6 +436,52 @@ TOOLS = [
                                                        "replace_all": {"type": "boolean", "description": "change every place it appears"}},
                                           "required": ["path", "oldText", "newText"]},
      "annotations": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": False}},
+    {"name": "read_multiple_files", "description": "Read several files in one call. Each path is read the same way as "
+                                                   "read_file; one that cannot be read is reported and the rest still come "
+                                                   "back.",
+     "inputSchema": {"type": "object", "properties": {"paths": {"type": "array", "items": {"type": "string"},
+                                                                "description": "up to 20 paths"}},
+                     "required": ["paths"]},
+     "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False}},
+    {"name": "list_directory", "description": "What is in a folder: folders first, then files, each by name. Pass sizes "
+                                              "for the size of each file.",
+     "inputSchema": {"type": "object", "properties": {"path": {"type": "string"},
+                                                       "sizes": {"type": "boolean", "description": "show each file's size"}},
+                     "required": ["path"]},
+     "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False}},
+    {"name": "directory_tree", "description": "A folder and what is under it, as an indented tree (folders end in /). "
+                                              "Goes `depth` levels down (default 3, most 8).",
+     "inputSchema": {"type": "object", "properties": {"path": {"type": "string"},
+                                                       "depth": {"type": "integer", "description": "how many levels"}},
+                     "required": ["path"]},
+     "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False}},
+    {"name": "search_files", "description": "Find files and folders by *name* under a folder, by glob (`*.py`, or a "
+                                            "path like src/**/*.md). Searching inside files is the code search server's "
+                                            "job, not this one.",
+     "inputSchema": {"type": "object", "properties": {"path": {"type": "string"},
+                                                       "pattern": {"type": "string", "description": "e.g. *.py"},
+                                                       "exclude": {"type": "string", "description": "skip names matching this"}},
+                     "required": ["path", "pattern"]},
+     "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False}},
+    {"name": "get_file_info", "description": "What a path is - file or folder - its size, and when it was created and last "
+                                             "changed.",
+     "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
+     "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False}},
+    {"name": "list_allowed_directories", "description": "The folders this server may use. Use it when a path is refused as "
+                                                        "outside them.",
+     "inputSchema": {"type": "object", "properties": {}},
+     "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False}},
+    {"name": "create_directory", "description": "Make a folder, and any folders above it that are missing.",
+     "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
+     "annotations": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": False}},
+    {"name": "move_file", "description": "Move or rename a file or a folder. `destination` is the new full path and must "
+                                         "not already be there, so nothing is moved on top of something by accident. "
+                                         "Deleting a file is done by moving it, not by a tool of its own. Across drives "
+                                         "it is a copy and then a delete, which is slower and can stop half way.",
+     "inputSchema": {"type": "object", "properties": {"source": {"type": "string"},
+                                                       "destination": {"type": "string", "description": "the new full path"}},
+                     "required": ["source", "destination"]},
+     "annotations": {"readOnlyHint": False, "destructiveHint": True, "openWorldHint": False}},
 ]
 
 
@@ -251,6 +494,22 @@ def call(name: str, args: dict) -> dict:
         elif name == "edit_file":
             text = edit_file(args.get("path", ""), args.get("oldText", ""), args.get("newText", ""),
                              bool(args.get("replace_all")))
+        elif name == "read_multiple_files":
+            text = read_multiple_files(args.get("paths") or [])
+        elif name == "list_directory":
+            text = list_directory(args.get("path", ""), bool(args.get("sizes")))
+        elif name == "directory_tree":
+            text = directory_tree(args.get("path", ""), int(args.get("depth") or 3))
+        elif name == "search_files":
+            text = search_files(args.get("path", ""), args.get("pattern", ""), args.get("exclude", ""))
+        elif name == "get_file_info":
+            text = get_file_info(args.get("path", ""))
+        elif name == "list_allowed_directories":
+            text = list_allowed_directories()
+        elif name == "create_directory":
+            text = create_directory(args.get("path", ""))
+        elif name == "move_file":
+            text = move_file(args.get("source", ""), args.get("destination", ""))
         else:
             return {"content": [{"type": "text", "text": f"unknown tool {name}"}], "isError": True}
         return {"content": [{"type": "text", "text": text}], "isError": False}

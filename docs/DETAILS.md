@@ -1423,7 +1423,7 @@ junctions, skips binary files, files over 5 MB and `.git`, `node_modules`, `__py
 stops a search after 25 s and cuts an answer at 30,000 characters.
 
 **Your own file tools, without Node.js.** The official server above is what most people use. `tools/strata_files_mcp.py`
-does the same job with three tools and no Node, and adds the two rules at the end; name the folders it may use on its
+does the same job with eleven tools and no Node, and adds the two rules at the end; name the folders it may use on its
 command line, one per folder (it refuses to start without one) - a whole drive works as well as a folder, so you can
 give it the same reach:
 
@@ -1431,14 +1431,20 @@ give it the same reach:
 "mcp_servers": {"files": {"command": "python", "args": ["tools/strata_files_mcp.py", "C:\\Users\\me\\Documents\\notes", "J:\\\\"]}}
 ```
 
-Three tools: `read_file` (the whole file, or its first `head` / last `tail` lines), `write_file` (create or replace) and
-`edit_file` (change text that must match exactly, and only once, unless `replace_all`). The official server has fourteen
-tools, including directories, moving and information; this one has three and no folders, so a new file needs a folder
-that already exists. The names are what they are so the permission model works out of the box without a `tool_classes`
-entry: `read_file` counts as a read, the two changes as writes - Read-only refuses them, Allow edits lets them, Ask about
-every change asks for each one, and a protected place asks again even in Full access. (The official server's names are
-classed correctly too - `read_file` a read, `move_file` a danger - so this is not about the classifier; it is about
-needing Node.js, and about the rules below.) Its own rules, on top of Strata's:
+Eleven tools, under the same names the official server uses, so switching between the two is only a config change:
+`read_file` (the whole file, or its first `head` / last `tail` lines), `read_multiple_files`, `write_file` (create or
+replace), `edit_file` (change text that must match exactly, and only once, unless `replace_all`), `list_directory`
+(`sizes` for the size of each file), `directory_tree` (`depth` levels down), `search_files` (by *name* - searching inside
+files is the code search server's job), `get_file_info`, `list_allowed_directories`, `create_directory` and `move_file`
+(rename or move; the destination must not already be there, so nothing is moved on top of something by accident).
+`move_file` is how a file is deleted as well - there is no delete tool, which is deliberate: a delete that cannot be
+undone is the one thing a model gets wrong. It lacks only the official server's image and audio reader, its alias for
+plain reads and its separate sizes listing. The names are what they are so the permission model works out of the box
+without a `tool_classes` entry: `read_` / `list_` / `search_` / `get_` / `directory_tree` count as reads,
+`write_file` / `edit_file` / `create_directory` as writes and `move_file` as a danger - Read-only refuses the changes,
+Allow edits lets them, Ask about every change asks for each one, and a protected place asks again even in Full access.
+(The official server's names are classed correctly too - `read_file` a read, `move_file` a danger - so this is not about
+the classifier; it is about needing Node.js, and about the rules below.) Its own rules, on top of Strata's:
 
 - a file you never read in this session cannot be replaced - `write_file` refuses it, so a guess cannot overwrite real
   content (`edit_file` needs an exact match, which is the same guard in a stronger form);
