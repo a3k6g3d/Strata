@@ -12,7 +12,7 @@ Config (in the Strata config file):
   "discord": {"enabled": true,
               "allowed_user_ids": [123456789012345678],      required: your Discord user id (Developer Mode > Copy User ID)
               "token_env": "STRATA_DISCORD_TOKEN",           the bot token is read from this environment variable, or from
-              "token_file": "<work>/discord-token.txt",   this file (first line) - never from the config itself
+              "token_file": "discord-token.txt",   this file (first line) - never from the config itself
               "channel_ids": [],                             optional server channels it also answers in (needs the
                                                              "Message Content Intent" switched on in the Developer Portal)
               "permission": "ask",                           off | read | ask   (edit and full are not available from Discord)

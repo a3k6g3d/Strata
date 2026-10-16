@@ -16,7 +16,7 @@ check (`generate.cpp:709` region, help text). It needs a draft layer to propose 
 the window is not merely unused, it is set to a sentinel: `c.mtp_window = o.mtp.empty() ? -1 : o.mtp_window`
 (`generate.cpp:7786`).
 
-**Why the assumption is falsified.** The live `strata.json` does pass `--mtp <work>/mtp-rt-basalt`, so drafts *are*
+**Why the assumption is falsified.** The live `strata.json` does pass `--mtp <the Basalt draft layer folder>`, so drafts *are*
 live here - but the point is that `--spec` alone carries no information about whether speculation is on. Two earlier arms
 in `tools/strata_ab.py:48-50` have to turn drafts off by *three* flags together (`--mtp-max-t 1 --suffix-draft 0`) while
 still loading the MTP runtime, precisely so the runtime's memory cost stays in the comparison. An arm that dropped
@@ -123,7 +123,7 @@ variable is set (`generate.cpp:12074`), and only for a request that reused promp
 o.prompt_cache > 0`, `generate.cpp:12075`) - so the first turn of every session has no hash at all. Worse, the bench
 harness opens its own engine log in the temp folder (`strata_bench.py:1190`, `start_server` at `:719-724`), while the
 server's engine writes to its own log, which is where the lines actually appear: all 29 `strata-bench-*.log` files in the
-temp folder contain zero `STATE_HASH` lines, and `<work>/strata.log` contains 456. Each arm folder's
+temp folder contain zero `STATE_HASH` lines, and the server's `strata.log` contains 456. Each arm folder's
 `engine-log-excerpt.txt` is the head of the temp log, so it shows none of them.
 
 **The tokens are not equal anyway, with nothing changed.** Two arms of the identical configuration, run 8 minutes apart

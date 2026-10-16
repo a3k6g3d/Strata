@@ -147,8 +147,8 @@ ordinary sizes too; if it loses, the shared pool is doing the right thing at thi
 being quoted as though it applied here.
 
 ```
-py -3.11 tools/strata_ab.py --config <work>/strata.json --tests agent --dry-run   # 5 arms, prints the recipes
-py -3.11 tools/strata_ab.py --config <work>/strata.json --tests agent --runs 8 \
+py -3.11 tools/strata_ab.py --config strata.json --tests agent --dry-run   # 5 arms, prints the recipes
+py -3.11 tools/strata_ab.py --config strata.json --tests agent --runs 8 \
     --out bench/results/ab-cache-vs-drafts-agent-perlayer --yes
 # or the two arms that matter, in one model load each:
 #   run_ab_offline.ps1 -armName "as configured;expert cache, per-layer slots" -runs 8 \

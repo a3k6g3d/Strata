@@ -1066,7 +1066,7 @@ def settings_from(cfg: dict) -> dict:
             out[key] = [v.strip() for v in value]
         elif key == "auto_scratch_paths":                # extra folders where Auto mode deletes without asking (temp is built in)
             if not isinstance(value, list) or any(not isinstance(v, str) or not v.strip() for v in value):
-                raise SystemExit("[strata] config mcp.auto_scratch_paths: expected a list of folders, e.g. [\"<work>/workspace\"]")
+                raise SystemExit("[strata] config mcp.auto_scratch_paths: expected a list of folders, e.g. [\"D:\\scratch\"]")
             out[key] = [v.strip() for v in value]
         elif key == "ask_user":                          # the built-in ask_user tool (default on)
             if not isinstance(value, bool):

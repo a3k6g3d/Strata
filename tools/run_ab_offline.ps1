@@ -11,9 +11,9 @@
 # must only be stopped once for them all.
 param([string]$armName = "", [int]$runs = 3, [string]$outOverride = "", [string]$sweep = "")
 
-$repo = "<work>/Strata-0140"
-$cfg  = "<work>/strata.json"
-$py   = "<home>/AppData\Local\Programs\Python\Python311\python.exe"
+$repo = Split-Path -Parent $PSScriptRoot
+$cfg  = if ($env:STRATA_CONFIG) { $env:STRATA_CONFIG } else { Join-Path (Split-Path -Parent $repo) "strata.json" }
+$py   = (Get-Command python).Source
 $srv  = "C:\Program Files\Python311\python.exe"
 $port = 8080
 # the agent session, not the fresh prompts: the first run of this found a 0.0% cache hit rate, because a prompt that
@@ -21,14 +21,14 @@ $port = 8080
 # case the cache is built for - and the only one that can say whether the first run's conclusion holds.
 $tests = "agent"
 $out   = if ($outOverride) { $outOverride } elseif ($sweep) { "bench\results\ab-$sweep-sweep" } else { "bench\results\ab-cache-vs-drafts-agent" }
-$log  = "<work>/ab-offline-agent.log"
+$log  = Join-Path (Split-Path -Parent $repo) "ab-offline-agent.log"
 
 # 2026-10-14: the sweep's arms move where bytes live, not how arithmetic is done, so at temperature 0 they were expected
 # to give the baseline the same tokens, and this variable was set to check that.  2026-10-15: it does not work that way -
 # two arms of this SAME configuration generated different token counts (21 vs 23, 17 vs 9), so the fingerprints never line
 # up across arms and cannot rank them; see docs/REJECTED_PROPOSALS.md item 6.  It stays set because the lines are still
 # worth having inside a run (does the parked conversation restore), and it costs the same on every arm, which leaves the
-# comparison between arms intact.  Note the lines land in the SERVER's engine log (<work>/strata.log), not in the
+# comparison between arms intact.  Note the lines land in the SERVER's engine log (the server's strata.log), not in the
 # bench harness's own log or the arm folders.  Read them with the parser the parity gates use
 # (tools/conversation_cache_parity.py: state_hashes); beware that pooled/pooled_full/kv legitimately DIFFER in the arms
 # that change the VRAM budget or stream the KV - see docs/SWEEP_ADAPT_KV.md.
@@ -55,7 +55,7 @@ Start-Sleep -Seconds 20
 #    forward slashes, which is how the first attempt at this stopped nothing at all.
 $mine = 'serve\.server|strata(-vision)?\.exe'
 $targets = @(Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='strata.exe' OR Name='strata-vision.exe'" |
-             Where-Object { $_.CommandLine -and ($_.CommandLine -match $mine -or $_.CommandLine -match '<work>') } |
+             Where-Object { $_.CommandLine -and ($_.CommandLine -match $mine -or $_.CommandLine -match [regex]::Escape((Split-Path -Parent $repo))) } |
              Where-Object { $_.CommandLine -notmatch 'run_ab_offline' })
 if (-not $targets) { Say "nothing matched - no Strata process found to stop" }
 foreach ($p in $targets) {

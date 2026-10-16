@@ -2199,7 +2199,12 @@ cannot tell is the other half of the lesson: a run that reports only tok/s canno
 from the drafts' (on this box the drafts were worth 18.9% and the cache 1.7%), and a run that reports a cache hit rate
 has to know which quantity it printed - the first version of `tools/strata_bench.py` printed 0.0% in every arm for a
 key the server never writes, while the real figure sat unused in the same records at 40-61%.  Both are fixed and both
-are written up in [CACHE_VS_DRAFTS.md](CACHE_VS_DRAFTS.md).
+are written up in [CACHE_VS_DRAFTS.md](CACHE_VS_DRAFTS.md).  A third thing a run here cannot tell is whether two
+configurations differ at all: the same settings repeated come out 4-5% apart, because two runs of the same turn of the
+same arm differ from each other by 12.1% at the median and 29.3% at the 90th percentile - and worse, the arms of one
+sweep are not independent, because the machine behaves differently for its first ~20 minutes of benching and predicts
+both speed (+0.40) and hit rate (+0.46) by where an arm sits in the session.  That is what
+[BENCH_NOISE.md](BENCH_NOISE.md) measures, and what it recommends changing.
 
 ### Web console
 

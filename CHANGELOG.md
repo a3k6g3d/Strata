@@ -13,6 +13,14 @@ dated, and the fork's releases follow [SemVer](https://semver.org) once it tags 
   the engine over `/metrics`, and need `--api-monitor` (they read "not exposed" without it). The same numbers go into each recorded request as
   `cache`, so the request table can be added up by hand. A note in the docs says what to look for and what budget to give.
 
+### Added (2026-10-16, the tuning log, learning a profile from your chats, and a README of our own)
+- `docs/TUNING_LOG.md`: every measurement from tuning one 12 GB machine (quantizations, PCIe, the settings sweeps, draft layer and speculation, three engine
+  versions, expert profiles, the stacking test, the RAM incident, the cold start), with the dead ends and how noisy the numbers are.
+- `tools/learn_profile_from_chats.py` and `docs/LEARN_A_PROFILE.md`: learn an expert profile from saved chats (+11% decode and 56% fewer file reads on agent
+  chats, no loss on general prompts when general prompts are in the mix). 6 new tests.
+- `README.md` now tells this fork's story; the text it started from is kept as `README.upstream.md`. `docs/BENCH_NOISE.md` joins the sweep write-ups, and the
+  fork's own scripts and docs no longer name this PC's folders (`tools/run_ab_offline.ps1` finds its repository, config and Python by itself).
+
 ### Added (2026-10-16, an opt-in warm-up after the model loads)
 - `"warmup": {"enabled": true}` in the config sends a few short typical requests (or the `"prompts"` you list, at most 12, `"max_tokens"` 16-512) once the
   model is loaded (`serve/warmup.py`). Measured on this PC: the first answers after a start ran at about half speed (13.9, 18.8, 20.5, 21.8 tok/s on four

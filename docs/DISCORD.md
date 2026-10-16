@@ -8,7 +8,7 @@ Strata server.
 
 1. Go to <https://discord.com/developers/applications>, **New Application**, then **Bot**. Click **Reset Token** and copy the token.
    The token is a password: anyone with it controls your bot. Do not paste it into a chat or a config file.
-2. Save the token as the first line of a file next to your Strata config, for example `<work>/discord-token.txt`
+2. Save the token as the first line of a file next to your Strata config, for example `discord-token.txt`
    (or set the environment variable `STRATA_DISCORD_TOKEN`).
 3. In Discord, turn on **Settings > Advanced > Developer Mode**, right-click your own name and **Copy User ID**.
 4. **OAuth2 > URL Generator**: scope `bot`, no permissions needed. Open the generated link and add the bot to a private server of
