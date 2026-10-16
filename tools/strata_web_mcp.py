@@ -348,6 +348,17 @@ def find_browser() -> str | None:
     return None
 
 
+_BROKEN_BROWSERS: set = set()      # browsers that returned no page where another one did (Edge 156's headless mode prints nothing): tried last
+
+
+def find_browsers() -> list:
+    """Every installed browser, the one named by STRATA_BROWSER first, those known to return no page last."""
+    env = os.environ.get("STRATA_BROWSER")
+    found = [p for p in ([env] if env else []) + list(BROWSER_PATHS) if p and os.path.isfile(p)]
+    found = list(dict.fromkeys(found))
+    return [p for p in found if p not in _BROKEN_BROWSERS] + [p for p in found if p in _BROKEN_BROWSERS]
+
+
 class _Proxy(socketserver.ThreadingTCPServer):
     daemon_threads = True
     allow_reuse_address = True
@@ -427,33 +438,45 @@ class _ProxyHandler(socketserver.StreamRequestHandler):
 def browse_url(url: str, start: int = 0, max_chars: int = 12000, wait_ms: int = 8000, allow_private: bool = False) -> str:
     """The page as a browser shows it after its scripts ran, as readable text (the same shape as fetch_url)."""
     p, port, ip = validate(url, allow_private)          # the same refusals as fetch_url, before a browser is started
-    exe = find_browser()
-    if exe is None:
+    exes = find_browsers()
+    if not exes:
         raise WebError("no browser was found: install Microsoft Edge or Google Chrome (or set STRATA_BROWSER to its path)")
     wait_ms = max(1000, min(int(wait_ms or 8000), 20000))
     proxy = _Proxy(allow_private)
     threading.Thread(target=proxy.serve_forever, daemon=True).start()
-    profile = tempfile.mkdtemp(prefix="strata-browse-")
-    cmd = [exe, "--headless=new", "--disable-gpu", "--incognito", "--no-first-run", "--no-default-browser-check",
-           "--disable-extensions", "--disable-background-networking", "--disable-sync", "--disable-component-update",
-           "--disable-features=Translate,OptimizationHints,MediaRouter", "--mute-audio", "--hide-scrollbars",
-           f"--user-data-dir={profile}", f"--proxy-server=http://127.0.0.1:{proxy.server_address[1]}",
-           "--proxy-bypass-list=<-loopback>", "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
-           f"--virtual-time-budget={wait_ms}", "--window-size=1280,2000", "--dump-dom", url]
-    proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    dom, failed, last_err = "", [], ""
     try:
-        out, _ = proc.communicate(timeout=45)
-    except subprocess.TimeoutExpired:
-        subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True)
-        raise WebError("the page took longer than 45 seconds to render") from None
+        for exe in exes:
+            profile = tempfile.mkdtemp(prefix="strata-browse-")
+            cmd = [exe, "--headless=new", "--disable-gpu", "--incognito", "--no-first-run", "--no-default-browser-check",
+                   "--disable-extensions", "--disable-background-networking", "--disable-sync", "--disable-component-update",
+                   "--disable-features=Translate,OptimizationHints,MediaRouter", "--mute-audio", "--hide-scrollbars",
+                   f"--user-data-dir={profile}", f"--proxy-server=http://127.0.0.1:{proxy.server_address[1]}",
+                   "--proxy-bypass-list=<-loopback>", "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+                   f"--virtual-time-budget={wait_ms}", "--window-size=1280,2000", "--dump-dom", url]
+            proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            try:
+                out, err = proc.communicate(timeout=45)
+            except subprocess.TimeoutExpired:
+                subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True)
+                raise WebError("the page took longer than 45 seconds to render") from None
+            finally:
+                shutil.rmtree(profile, ignore_errors=True)
+            dom = out.decode("utf-8", "replace")
+            if "<html" in dom.lower():
+                _BROKEN_BROWSERS.update(failed)        # another browser rendered what these returned nothing for
+                break
+            failed.append(exe)
+            lines = err.decode("utf-8", "replace").strip().splitlines()
+            last_err = lines[-1][-160:] if lines else ""
     finally:
         proxy.shutdown()
         proxy.server_close()
-        shutil.rmtree(profile, ignore_errors=True)
-    dom = out.decode("utf-8", "replace")
     if "<html" not in dom.lower():
-        raise WebError("the browser returned no page (the address may be unreachable or blocked)")
+        raise WebError("the browser returned no page (the address may be unreachable or blocked"
+                       + (f"; the browser said: {last_err}" if last_err else "")
+                       + (f"; tried {len(failed)} browsers" if len(failed) > 1 else "") + ")")
     title, text = html_to_text(dom)
     start = max(0, int(start or 0))
     max_chars = max(500, min(int(max_chars or 12000), 50000))
