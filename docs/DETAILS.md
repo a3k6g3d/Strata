@@ -1349,7 +1349,7 @@ also paste as it is (key `"mcpServers"`):
 
 ```json
 "mcp_servers": {
-  "files": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "C:\\Users\\me\\Documents\\notes"]},
+  "files": {"command": "python", "args": ["tools/strata_files_mcp.py", "C:\\Users\\me\\Documents\\notes"]},
   "search": {"url": "http://127.0.0.1:3000/mcp", "headers": {"Authorization": "Bearer ..."}}
 },
 "mcp": {"timeout_s": 60, "max_result_chars": 20000, "max_rounds": 8}
@@ -1421,6 +1421,29 @@ filesystem server (names and whole files only) cannot do. Add it like any server
 this one skips those folders and files while it walks, so a blocked name never reaches the model. It follows no links or
 junctions, skips binary files, files over 5 MB and `.git`, `node_modules`, `__pycache__` and virtual environments,
 stops a search after 25 s and cuts an answer at 30,000 characters.
+
+**The file tools.** `tools/strata_files_mcp.py` reads and changes files inside folders you name on its command line (one
+argument per folder, and it refuses to start without one):
+
+```json
+"mcp_servers": {"files": {"command": "python", "args": ["tools/strata_files_mcp.py", "C:\\Users\\me\\Documents\\notes"]}}
+```
+
+Three tools: `read_file` (the whole file, or its first `head` / last `tail` lines), `write_file` (create or replace) and
+`edit_file` (change text that must match exactly, and only once, unless `replace_all`). The official filesystem server
+has fourteen tools whose names Strata has to guess a class for; these three are named for what they do, so `read_file`
+counts as a read and the two changes count as writes - Read-only refuses them, Allow edits lets them, Ask about every
+change asks for each one, and a protected place asks again even in Full access. Its own rules, on top of Strata's:
+
+- a file you never read in this session cannot be replaced - `write_file` refuses it, so a guess cannot overwrite real
+  content (`edit_file` needs an exact match, which is the same guard in a stronger form);
+- a change keeps the file as it was: CR LF or LF endings, a byte-order mark and the final newline are detected and
+  written back the same way, and the text to match is compared with line endings ignored, so the same edit works on a
+  Windows file and a Unix one (the model is told which a file uses);
+- `..`, links and junctions are resolved before the folder check, so they cannot step outside the allow-list, and the
+  no-read list refuses reads and changes alike;
+- no folder is created for a new file, binary files and files over 5 MB are refused, and no backup is kept - point it
+  at a folder you version.
 
 **The internet tool.** `tools/strata_web_mcp.py` is a small MCP server with `web_search` (Bing, DuckDuckGo as a
 fallback) and `fetch_url` (a page as text with its links, in parts for long pages). Add it like any server and name it
