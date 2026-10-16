@@ -97,9 +97,11 @@ next, which is why file reads per token, not decode speed alone, is the figure t
 
 | branch | what it is |
 |---|---|
-| `speed-work-0.1.44.1` | the current line: upstream 0.1.44.1 plus everything above |
-| `speed-work-0.1.43`, `-0.1.42`, `-0.1.40.2` | earlier lines, kept for reference |
-| `best`, `main` | inherited from the speed fork this one started from |
+| `main` | the current line, and the default: upstream 0.1.44.1 plus everything above |
+| `speed-work-0.1.44.1` | the same commit as `main`, named by the upstream version it is built on |
+| `best`, `main-old` | the speed fork this one started from, kept for reference |
+
+Each new upstream release is merged into a branch named after it; `main` follows the newest.
 
 ## Install and use
 
