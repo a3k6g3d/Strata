@@ -108,14 +108,29 @@ itself:
 baseline and 1.9% over the second; with a floor of 4.6% those two readings of the same arm mean the same thing, which is
 nothing. The same holds for the twelve-arm sweep, where `adapt-swaps 16` (26.85) and `adapt-decay 0.65` (26.45) led the
 field and the baseline's own repeat scored 25.9 - and where the baseline's *first* run came in at 16.45 tok/s with a
-10.12 s first token, 10 points below its own repeat, for a reason nothing in the logs explains.
+10.12 s first token, 10 points below its own repeat, for a reason nothing in the logs explains. It was the *first arm
+of the session*: the machine has a cold region for its first ~20 minutes of benching, and the 2nd and 3rd arms of this
+sweep (`adapt-swaps 0` at 23.4, `adapt-swaps 4` at 24.15) sit in it too. Everything started after minute 20 lands in
+24.5-27.65 (`BENCH_NOISE.md`).
 
 So the honest conclusion, twice over: **none of these four knobs carries the speed on this machine**, and the ones that
 move the hit rate visibly (`--adapt-swaps 0` drops the expert cache from ~48% to 24.9%, `16` raises it to 56.9%) do not
-move the speed out of the noise either. That is worth knowing before anyone tunes them: the engine's own defaults are
-already at a flat part of the curve, which is the same conclusion `CACHE_VS_DRAFTS.md` reached about drafts.
+move the speed in a way these arms can attribute to the flag. That is worth knowing before anyone tunes them: the
+engine's own defaults are already at a flat part of the curve, which is the same conclusion `CACHE_VS_DRAFTS.md` reached
+about drafts. Weaker, and stated here deliberately: the `--adapt-swaps 0` and `4` speeds above cannot be read as an
+effect at all, in either direction, because those two arms were the 2nd and 3rd of a session that behaves differently
+for its first 20 minutes.
 
 Two things this run could not settle, kept here so they are not mistaken for settled: the `--kv-resident` arms are not
 single-variable (interaction 1 above), and one decode median per arm over 18 turns is not enough to resolve anything
 under ~5%. Settling it would mean 8-10 runs per arm and hours per arm, on a machine whose own baseline moved 10 tok/s
 between runs. If anyone re-runs this, run the baseline twice and subtract what it says.
+
+That subtraction now has numbers attached to it, read out of the 414 pairs of same-turn runs already sitting in these
+folders (3-run arms) without re-running anything: two runs of one arm's one turn differ by **12.1% at the median**, 29.3%
+at the 90th percentile, 71% at the worst; on the two 8-run arms, which sample the tail properly, 20.3% / 57.0% / 110.1%.
+A 4-5% gap between two arm medians is therefore not a finding, and neither is the 10-point baseline movement above.
+Worse than noise, the arms in this sweep are not independent: position in the session correlates with decode at +0.40
+and with hit rate at +0.46, and the drift stops after ~20 minutes. See `BENCH_NOISE.md` for the cold region, for what
+does carry the speed instead (draft acceptance, +0.44 within an arm where the flags are identical; hit rate +0.11 across
+arms), and for the five things to change so the next sweep can resolve what this one could not.
