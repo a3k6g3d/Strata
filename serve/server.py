@@ -7022,6 +7022,10 @@ def main() -> int:
         from serve import discord_bot
         keys = key_list(svc.api_key) if svc.api_key else []
         discord_bot.start(cfg["discord"], f"http://127.0.0.1:{a.port}", keys[0] if keys else "", Path(a.config).resolve().parent)
+    if isinstance(cfg.get("warmup"), dict):             # the optional warm-up requests after the load (serve/warmup.py)
+        from serve import warmup
+        keys = key_list(svc.api_key) if svc.api_key else []
+        warmup.start(cfg["warmup"], f"http://127.0.0.1:{a.port}", keys[0] if keys else "")
     svc.start_idle_unload()
     here = "127.0.0.1" if a.host in ("0.0.0.0", "", "::") else a.host
     print(f"ready: http://{here}:{a.port}/v1  (OpenAI: /v1/chat/completions, Anthropic: /v1/messages, "
