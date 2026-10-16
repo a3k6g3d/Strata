@@ -58,6 +58,11 @@ page or a gallery next to the chat. There are desktop apps for Windows ([`deskto
 chats as the app's (`!chats`, `!open`, `!new`). You can send it pictures and text or code files, and it can send files back from one folder you
 choose, each one confirmed with a button. Setup in five minutes: [docs/DISCORD.md](docs/DISCORD.md).
 
+**Conversations that survive a switch or a restart.** Reading a long conversation again takes 8 to 34 seconds on this machine. With
+`"conversation_store": {"enabled": true}` the server keeps the engine's state of each conversation on the disk and restores it when you come back:
+0.7 s after a full restart instead of 18.6 s (a 25K-token conversation: 34 s against 0.6 s). The numbers and the design are in the
+[tuning log](docs/TUNING_LOG.md#conversations-on-the-nvme).
+
 **Guard rails for a PC that is also your desktop.**
 - A warning when the Windows commit limit is nearly used (the PC pages and the model stalls long before it says so).
 - `fit_max_tokens`, a default `sampling` block (clients that send no settings otherwise get greedy output) and an opt-in warm-up

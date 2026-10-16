@@ -21,6 +21,18 @@ dated, and the fork's releases follow [SemVer](https://semver.org) once it tags 
 - `README.md` now tells this fork's story; the text it started from is kept as `README.upstream.md`. `docs/BENCH_NOISE.md` joins the sweep write-ups, and the
   fork's own scripts and docs no longer name this PC's folders (`tools/run_ab_offline.ps1` finds its repository, config and Python by itself).
 
+### Fixed (2026-10-16, browse_url returned no page on Edge 156)
+- Edge 156's headless mode exits at once with no output for every flag combination we tried (`--dump-dom`, `--screenshot`, old and new headless, a
+  file or a pipe for stdout), so `browse_url` always failed with "the browser returned no page"; Chrome 155 renders the same page with the same flags.
+  The tool now tries every installed browser (the one in `STRATA_BROWSER` first), skips one that returns no page when another renders it and tries that
+  one last from then on, and keeps what the browser printed for the error message. 1 new test; the two real-browser tests that failed now pass.
+
+### Added (2026-10-16, an opt-in conversation store on the disk)
+- `"conversation_store": {"enabled": true}` (`serve/conversation_store.py`) saves the engine's conversation to disk when a request for another conversation
+  arrives and again as it grows (every 6,000 tokens), and restores it when a prompt continues a saved one, using the engine's `SAVE` / `RESTORE`. A 25K-token
+  conversation: 34 s to read again, 0.6 s to restore (585 MB on disk). After a server restart: 0.7 s instead of 18.6 s. Options: `folder`, `max_gib` (20),
+  `min_tokens` (4,000), `grow_tokens` (6,000). Off by default; not available with parallel requests. 14 new tests.
+
 ### Added (2026-10-16, an opt-in warm-up after the model loads)
 - `"warmup": {"enabled": true}` in the config sends a few short typical requests (or the `"prompts"` you list, at most 12, `"max_tokens"` 16-512) once the
   model is loaded (`serve/warmup.py`). Measured on this PC: the first answers after a start ran at about half speed (13.9, 18.8, 20.5, 21.8 tok/s on four

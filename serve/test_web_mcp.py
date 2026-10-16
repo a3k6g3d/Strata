@@ -291,6 +291,36 @@ class Browser(unittest.TestCase):
         self.assertNotIn("before", out)                                             # the script replaced the body
         self.assertIn("Hello", w.browse_url(self.base + "/page", wait_ms=2000, allow_private=True))
 
+    def test_a_browser_that_returns_no_page_is_skipped_for_the_next_one(self):
+        import tempfile
+        from unittest import mock
+
+        class Proc:                                                         # a browser that was "run": what it printed
+            def __init__(self, cmd, **kw):
+                self.cmd, self.pid = cmd, 1
+
+            def communicate(self, timeout=None):
+                if os.path.basename(self.cmd[0]).startswith("broken"):
+                    return b"", b"nothing to say"                          # exits 0 and prints nothing, like Edge 156's headless mode
+                return b"<html><body>the fallback worked</body></html>", b""
+        with tempfile.TemporaryDirectory() as d:
+            broken, good = os.path.join(d, "broken.exe"), os.path.join(d, "good.exe")
+            for path in (broken, good):
+                open(path, "wb").close()
+            w._BROKEN_BROWSERS.clear()
+            with mock.patch.dict(os.environ, {"STRATA_BROWSER": ""}), mock.patch.object(w, "BROWSER_PATHS", (broken, good)),                     mock.patch.object(w.subprocess, "Popen", Proc):
+                self.assertEqual(w.find_browsers(), [broken, good])
+                self.assertIn("the fallback worked", w.browse_url(self.base + "/page", wait_ms=1000, allow_private=True))
+                self.assertEqual(w.find_browsers(), [good, broken])          # the one that returned nothing is tried last from now on
+                with mock.patch.object(w, "BROWSER_PATHS", (broken,)):
+                    w._BROKEN_BROWSERS.clear()
+                    with self.assertRaises(w.WebError) as ctx:
+                        w.browse_url(self.base + "/page", wait_ms=1000, allow_private=True)
+                    self.assertIn("returned no page", str(ctx.exception))
+                    self.assertIn("nothing to say", str(ctx.exception))      # what the browser said is in the message
+                    self.assertEqual(w._BROKEN_BROWSERS, set())              # nothing else rendered it: not proof the browser is broken
+            w._BROKEN_BROWSERS.clear()
+
     def test_refusals_come_before_any_browser_starts(self):
         for url in ("http://127.0.0.1:8080/", "http://10.0.0.1/", "file:///C:/Windows/win.ini", "https://example.com:22/"):
             with self.assertRaises(w.WebError):

@@ -27,6 +27,9 @@ What made the difference, in order of size:
 4. **A draft layer trained on the model's own output** (the Basalt layer) and a higher draft threshold (`--spec-min-p 0.7`): about +3% each.
 5. The PCIe link. Gen 3 would be worth about +17% but is not stable on this board.
 
+And one change that is not about decode at all: **keeping conversations on the NVMe** turns re-reading a long conversation after a chat switch or a restart
+(8 to 34 seconds) into a restore of about a second ([Conversations on the NVMe](#conversations-on-the-nvme)).
+
 Almost everything else we tried was inside the noise. Those results are listed too, so nobody has to repeat them.
 
 ## Contents
@@ -41,6 +44,7 @@ Almost everything else we tried was inside the noise. Those results are listed t
 - [Stacking small gains](#stacking-small-gains)
 - [The RAM incident and the 64K window](#the-ram-incident-and-the-64k-window)
 - [Cold start and the warm-up](#cold-start-and-the-warm-up)
+- [Conversations on the NVMe](#conversations-on-the-nvme)
 - [Ideas we looked at and did not do](#ideas-we-looked-at-and-did-not-do)
 - [Noise and method](#noise-and-method)
 
@@ -195,14 +199,40 @@ server starts the first benchmark pass ran 6% to 9% slower than the later passes
 the first real request from 13.9 to 17.2 tok/s. Because the cache keeps learning for some time, **any benchmark must drop its first pass**; two
 of our early sweeps read the cold start as a result.
 
+## Conversations on the NVMe
+
+In a long agent session prompt reading was 27% of the time (459 of 1,708 minutes in our logs; a median of 8 s per request, 30+ s whenever the
+conversation was summarised, restarted or switched away from). The engine can already write the conversation it holds to a file and read it back
+(`SAVE` / `RESTORE`, the `--slot-save-path` calls); we measured what that is worth, on conversations of random words:
+
+| conversation | re-read after a switch | save | restore | next request after restoring |
+|---|---|---|---|---|
+| 3K tokens | 8.2 s | 0.42 s, 269 MB | 0.29 s | 0.8 s (26 new tokens read) |
+| 12K | 17.8 s | 0.54 s, 400 MB | 0.44 s | 0.8 s |
+| 25K | 33.9 s | 0.71 s, 585 MB | 0.60 s | 0.8 s |
+
+A saved conversation costs about 270 MB plus 14 KB per token, and restoring it takes about as long as saving it: well under a second, against 8 to
+34 seconds to read the prompt again. So `serve/conversation_store.py` does it by itself (`"conversation_store": {"enabled": true}` in the config):
+the live conversation is saved when a request for another conversation arrives and again whenever it has grown by 6,000 tokens (a restart or a crash
+loses only the newest part), and a request whose prompt starts with a saved conversation gets it restored first. Conversations are found by the
+prompt tokens they were saved with, so any client's chats work; one file is kept per conversation, the oldest go first past 20 GiB, nothing is saved
+under 5 GiB of free disk, for a request with pictures or for one that was cancelled, and any failure leaves the request to carry on as if the store
+were off.
+
+End to end, with the store on: conversation A (11,936 tokens) read in 18.7 s, conversation B in 21.1 s, then A again with a new question took **1.3 s**
+(restore 0.4 s, 26 new tokens read). After a full server restart the same question took **0.7 s**, where it had taken 18.6 s. The first version
+skipped the restore after a restart: the warm-up requests leave a short live conversation, and as every prompt starts with the same system prompt a
+short live conversation looked like it was being continued. The rule is now to compare matches (restore whenever a saved conversation matches better
+than the live one), and the store logs why a lookup missed. The files are the engine's state of your private chats, so keep the folder out of backups
+and repositories.
+
 ## Ideas we looked at and did not do
 
 - **Rewriting the engine in Rust.** The decode step is CPU vector code, GPU kernels and transfers; a rewrite would compile to the same
   instructions, the Python server is not on the hot path, and we would lose the ability to merge upstream. Not worth it.
 - **Moving the card to the second slot.** x4 through the chipset: no faster than what we have, and it competes with the NVMe.
-- **A cache of conversation state on the NVMe.** Parked conversations live in RAM only and the option is off here (it would cost pinned RAM).
-  Prompt reading was 27% of agent time in our logs, mostly after the conversation was summarised or restarted. The engine can already write a
-  session to disk (`--slot-save-path`); wiring it to save and restore automatically is the open idea.
+- **Keeping conversations in RAM** (`--conversation-cache-mib`). It would cost pinned expert RAM (about 0.7 tok/s per GiB before the profile). We kept
+  them on the NVMe instead: see [Conversations on the NVMe](#conversations-on-the-nvme).
 - **More VRAM or a second NVIDIA card.** The estimates are in the notes below, not measured here.
 
 Hardware notes, not measurements: a 32 GB card such as a Tesla V100 would hold about five times as many experts (about +50% decode by our
