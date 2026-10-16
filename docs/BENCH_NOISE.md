@@ -72,10 +72,13 @@ Two consequences, and they are not comfort readings:
   of that ladder is the same cold-start gradient, and the arms cannot be ranked against each other by these
   numbers alone.
 
-The cold region also has a smaller twin inside every arm. Run 1 of an arm sits **12.0% below the median of
-that arm's own later runs, in 23 of 25 arms** (pooled: run 1 median 24.20, runs 2+ median 27.02). And turn 1
-of a run sits 15.7% below the median of the later turns of the same run, over 85 runs. The harness warms up
-before it measures, but it still keeps run 1 in the median of three.
+The cold region also has a smaller twin inside every arm. The first run of an arm sits **12.0% below the median of
+that arm's own later runs, in 23 of 25 arms** (pooled: 24.20 against 27.02). And the first turn of a run sits 15.7%
+below the median of the later turns of the same run, over 85 runs. The harness warms up before it measures, and still
+keeps that run: `bench_record.digest()` takes a median over the turns of **every** run in the launch, so the cold run's
+turns sit inside the figure an arm is ranked by, and `--runs 3` dilutes it to about a third of 12% rather than dropping
+it. (Numbering: this paragraph counts runs from 1; `tools/check_cold_axis.py` and the section below count them from 0,
+so its "run 0" is this paragraph's "run 1".)
 
 ## The noise floor, measured
 
@@ -169,9 +172,11 @@ re-run to be worth anything.
    of a session whose first 20 minutes behave differently. Either repeat every arm at several positions and
    average, or discard every arm started inside the cold region. A sweep that runs its baseline first and last
    (which the harness already does) can detect this; it cannot correct for it.
-2. **Discard run 1, or report it separately.** Run 1 is 12% below its own arm's later runs in 23 of 25 arms.
-   Averaging it in biases every arm down by roughly 4%, which is the size of the differences being argued
-   about.
+2. **Discard the first run of each launch, or report it separately.** It is 12% below its own arm's later runs in 23
+   of 25 arms, and it is pooled into the median every arm is ranked by, which biases every arm down by roughly 4% at
+   `--runs 3` - the size of the differences being argued about. `summarize_ab_sweep.py` now prints that figure
+   alongside the pooled one (`decode_warm`); reading the sweep off that column instead costs nothing and needs no
+   re-run.
 3. **Compare arms turn by turn, not median to median.** The same turn number in two arms faces the same
    prompt; pairing cancels the draft-acceptance luck that dominates the within-arm spread. The data is already
    there - `results.agent.sessions[run][turn]` is indexed by turn - so this is a summariser change, not a
