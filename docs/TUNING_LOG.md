@@ -170,6 +170,22 @@ pages per second: generation stalled with the GPU idle. Lowering the pinned budg
 page-ins on a 22K-token prompt) at a cost of about 16% decode. Free RAM, not VRAM, is this machine's real limit; the pinned budget should be
 set from `free RAM` and `Pages Input/sec`, not from what loads.
 
+### The pinned budget, once the profile is learned
+
+With the mixed profile in place we repeated the budget sweep (agent set and general set, three passes each with the first dropped, then a 22K-token
+and a 29K-token prompt read while recording the lowest free RAM and the worst page-in rate; no other heavy program running):
+
+| pinned GiB | agent set | general set | lowest free RAM | page-ins |
+|---|---|---|---|---|
+| 36 | 32.8 tok/s, 7.3 reads/token | 31.8, 6.2 | 5.3 GiB | none |
+| 38 | 32.0, 6.6 | 33.6, 4.0 | 3.6 GiB | none |
+| 40 | 32.1, 6.4 | 31.6, 2.1 | 2.7 GiB | none |
+
+Decode speed is flat across the range (the differences are inside the run-to-run noise); only general prompts' file reads keep falling as more is
+pinned. The old rule of thumb (+0.7 tok/s per GiB) belongs to the shipped profile: once the right experts are already in RAM, the extra GiB hold
+experts that are rarely needed. The free-RAM margin, on the other hand, shrinks by about 1.3 GiB per 2 GiB pinned, and the earlier stall happened
+at 40 GiB with a browser and other programs open. We kept 36 GiB.
+
 ## Cold start and the warm-up
 
 The first answers after a start run at about half speed: the same prompt ran at 13.9, 18.8, 20.5 and 21.8 tok/s on four requests in a row, the
