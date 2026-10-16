@@ -54,6 +54,12 @@ from agent_turns_bench import SYSTEM, TOOLS         # noqa: E402  the same agent
 import serve_load                                   # noqa: E402  the burst client for --clients
 
 SCHEMA = 1
+
+try:                       # what the machine was doing, and one JSON line per run (tools/bench_state.py, tools/bench_record.py)
+    import bench_state
+    import bench_record
+except ImportError:
+    bench_state = bench_record = None
 CHAT_MAX_TOKENS = 100
 LONG_MAX_TOKENS = 24
 AGENT_MAX_TOKENS = 64
@@ -1284,6 +1290,8 @@ def main(argv=None) -> int:
                 return 1
         t0 = time.time()
         pre = collect_machine(base, key, cfg, a.gpu)
+        state_start = bench_state.snapshot() if bench_state else None             # uptime, GPU clocks and heat, free RAM, busy background processes
+        sampler = bench_state.Sampler(interval=10).start() if bench_state else None
         suite = Suite(base, key, pre.get("context"), max(1, a.runs), a.think, log=say, want_clients=a.clients, want_long=a.long,
                       tests=set(x.strip() for x in a.tests.split(",")) if a.tests else None)
         slots = pre.get("parallel_slots") or 1
@@ -1318,9 +1326,17 @@ def main(argv=None) -> int:
                                                 f"--config {Path(a.config).name}" if a.config else "",
                                                 *(f'--engine-arg "{args}"' for args in a.engine_arg),
                                                 f"--arm {a.arm}" if a.arm else "") if x)},
-               "elapsed_s": time.time() - t0, "machine": machine, "results": out}
+               "elapsed_s": time.time() - t0, "machine": machine, "results": out,
+               "state": {"start": state_start, "end": bench_state.snapshot() if bench_state else None,
+                         "during": sampler.stop() if sampler else None}}
         parent = Path(a.out) if a.out else ROOT / "bench" / "results"
-        d = write_results(res, parent, red, log_excerpt(log_path) if log_path else [])
+        log_lines = log_excerpt(log_path) if log_path else []
+        d = write_results(res, parent, red, log_lines)
+        if bench_record:                                                              # one line per run, beside the results folders
+            try:
+                bench_record.append(parent / "runs.jsonl", bench_record.make_record(redact_obj(res, red), d.name, log_lines))
+            except Exception as e:  # noqa: BLE001 - a record that cannot be written must not lose the run
+                say(f"  (runs.jsonl not written: {e})")
         say("\nResults (median, range over the runs):")
         say(red(short_table(res)))
         if out["failures"] or out["skipped"]:

@@ -4,11 +4,19 @@
     python tools/strata_ab.py                      all four arms of the cache-vs-drafts question
     python tools/strata_ab.py --tests chat,4k     only these tests, in every arm
     python tools/strata_ab.py --arm-name drafts-off ...   one arm on its own
+    python tools/strata_ab.py --sweep adapt-kv --rounds 3  every arm three times, the arms taking turns (A B C, C B A, A B C)
+    python tools/strata_ab.py --noise-floor 3 --config F   the baseline arm alone, three launches: how much two identical launches differ
 
 An experiment asks which of two settings carries the speed, and answers it by running the SAME suite with one changed
 engine argument at a time.  strata_bench.py already does one arm (--engine-arg, --arm, --compare-only); this runs the
 whole set, so an arm cannot be forgotten and the arms cannot be mixed up: the first is the baseline and every later one
 is printed against it.
+
+Why --rounds: with every repeat of one arm back to back, an arm's position in the session and the machine's drift are the SAME variable (the
+machine runs 10% to 35% slower for its first minutes, then settles: docs/BENCH_NOISE.md), and no table can separate them afterwards.  With
+--rounds K each arm is launched K times, the arms taking turns, and the order is reversed every second round (A B C, then C B A) so a drift that is
+linear in time cancels to first order.  tools/summarize_ab_sweep.py then compares each launch with the reference arm's launch of the same round
+and says whether the difference clears the noise.  --runs is the total per arm: each launch does runs / rounds of them (at least one).
 
 Two things it insists on, both learned from measuring this machine:
 
@@ -89,6 +97,18 @@ SWEEPS = {
 }
 
 
+def schedule(arms, rounds: int = 1, order: str = "alternate") -> list:
+    """[(round, index in the pool, arm)] in the order to launch them: each round runs every arm once; with order "alternate" every second round
+    runs them backwards (A B C, C B A, A B C ...), with "same" always forwards."""
+    plan = []
+    for rnd in range(1, max(1, rounds) + 1):
+        seq = list(enumerate(arms))
+        if order == "alternate" and rnd % 2 == 0:
+            seq.reverse()
+        plan += [(rnd, i, arm) for i, arm in seq]
+    return plan
+
+
 def port_busy(port: int) -> bool:
     """Is something answering on this port?  A Strata, or anything else holding the GPU."""
     try:
@@ -110,7 +130,12 @@ def main(argv=None) -> int:
     ap.add_argument("--config", default=None, help="the model configuration to run each arm on (default: the newest strata-*.json)")
     ap.add_argument("--port", type=int, default=8080, help="the port to check is free, and to run each arm on")
     ap.add_argument("--tests", default="chat,4k", help="these tests in every arm (default chat,4k: the two that answer the question)")
-    ap.add_argument("--runs", type=int, default=3, help="runs per test in every arm (default 3)")
+    ap.add_argument("--runs", type=int, default=3, help="runs per test in every arm (default 3); with --rounds, the total: each launch does runs / rounds")
+    ap.add_argument("--rounds", type=int, default=1, help="launch every arm this many times, the arms taking turns (default 1: each arm once, back to back)")
+    ap.add_argument("--order", choices=("alternate", "same"), default="alternate",
+                    help="with --rounds: reverse the arms every second round (default) so linear drift cancels, or always go forwards")
+    ap.add_argument("--noise-floor", type=int, default=0, metavar="N",
+                    help="launch the baseline arm alone N times (3 is the usual): the figure a difference between two arms has to beat")
     ap.add_argument("--out", default=None, help="where the arms' folders go (default bench/results/ab-cache-vs-drafts)")
     ap.add_argument("--arm-name", default=None, help="run only this arm (by its label), and stop")
     ap.add_argument("--sweep", default=None, choices=sorted(SWEEPS),
@@ -124,7 +149,11 @@ def main(argv=None) -> int:
     if not BENCH.exists():
         print(f"No {BENCH} here.", file=sys.stderr)
         return 2
-    parent = Path(a.out) if a.out else ROOT / "bench" / "results" / "ab-cache-vs-drafts"
+    if a.rounds < 1 or a.noise_floor < 0:
+        print("--rounds must be at least 1 and --noise-floor at least 0.", file=sys.stderr)
+        return 2
+    default_out = "noise-floor" if a.noise_floor else "ab-cache-vs-drafts"
+    parent = Path(a.out) if a.out else ROOT / "bench" / "results" / default_out
     parent.mkdir(parents=True, exist_ok=True)
 
     # a sweep brings its own arms AND its own note: the note is printed in every arm's README, and a README that
@@ -134,6 +163,11 @@ def main(argv=None) -> int:
     if not arms:
         print(f"No arm called {a.arm_name!r}: it is one of " + ", ".join(f"{n!r}" for n, _ in pool), file=sys.stderr)
         return 2
+    rounds = a.noise_floor or a.rounds
+    if a.noise_floor:
+        arms = arms[:1]                                    # the baseline, launched again and again: nothing else changes
+    plan = schedule(arms, rounds, "same" if a.noise_floor else a.order)
+    runs_each = max(1, round(a.runs / rounds)) if rounds > 1 else a.runs
 
     if port_busy(a.port) and not (a.yes or a.dry_run):
         print(f"Something already answers on port {a.port}.  An arm has to load the model itself, on an otherwise empty "
@@ -151,21 +185,21 @@ def main(argv=None) -> int:
     # name the interpreter, not the .py: Windows cannot CreateProcess a script by itself (WinError 193, "%1 is not a
     # valid Win32 application"), which is how the first attempt at this died in three seconds without loading a model.
     if a.dry_run:
-        for i, (name, extra) in enumerate(arms):
-            print(f"arm {i + 1}/{len(arms)}: {name}\n  " + " ".join(cmd for cmd in [*cfg, *(f"--engine-arg={x}" for x in extra)])
-                  + f"\n  runs {a.runs} x {a.tests} on port {a.port}, out: {parent}")
+        for i, (rnd, _, (name, extra)) in enumerate(plan):
+            print(f"launch {i + 1}/{len(plan)}: {name}  (round {rnd} of {rounds})\n  " + " ".join(cmd for cmd in [*cfg, *(f"--engine-arg={x}" for x in extra)])
+                  + f"\n  runs {runs_each} x {a.tests} on port {a.port}, out: {parent}")
         print("\nNothing has run yet.  Drop --dry-run when the GPU is free.")
         return 0
 
-    base = [sys.executable, "-u", str(BENCH), *cfg, "--port", str(a.port), "--tests", a.tests, "--runs", str(a.runs),
+    base = [sys.executable, "-u", str(BENCH), *cfg, "--port", str(a.port), "--tests", a.tests, "--runs", str(runs_each),
             "--out", str(parent), "--ready-timeout", str(a.ready_timeout), "--note", note]
     done, failed = [], []
-    for i, (name, extra) in enumerate(arms):
+    for i, (rnd, _, (name, extra)) in enumerate(plan):
         # `--engine-arg VALUE` would not survive an argument that starts with a dash: argparse reads the next token as a
         # flag rather than as the value, so the per-layer arm (--expert-cache-per-layer) died at its argument line while
         # the others, whose values start with a letter, ran fine.  The `=` form always takes the value as written.
         cmd = [*base, "--arm", name] + sum([[f"--engine-arg={x}"] for x in extra], [])
-        print(f"\n=== arm {i + 1}/{len(arms)}: {name} ===")
+        print(f"\n=== launch {i + 1}/{len(plan)}: {name}" + (f"  (round {rnd} of {rounds})" if rounds > 1 else "") + " ===")
         print("  " + " ".join(cmd[1:]) + "\n", flush=True)
         since = time.time() - 1
         t = time.time()
@@ -182,18 +216,26 @@ def main(argv=None) -> int:
         done.append((name, d))
         if rc != 0:
             failed.append(name)
-        if i + 1 < len(arms):                      # let the engine's process and its VRAM actually go before the next load
+        if i + 1 < len(plan):                      # let the engine's process and its VRAM actually go before the next load
             print("  waiting 20 s for the GPU to be free again ...", flush=True)
             time.sleep(20)
 
     if not done:
         print("\nNo arm produced a result: nothing to compare.  The logs above say why.", file=sys.stderr)
         return 1
-    base_dir = done[0][1]
-    for name, d in done[1:]:
-        print(f"\n=== {name}  vs  {done[0][0]} ===")
-        subprocess.call([sys.executable, BENCH, "--compare-only", str(d), "--compare", str(base_dir)])
-    print(f"\n{len(done)} arm(s) in {parent}: " + ", ".join(n for n, _ in done))
+    if rounds > 1:
+        # several launches per arm: the per-launch table, then each launch against its own round's reference, with the noise verdict
+        print(f"\n=== summary of {len(done)} launch(es) in {parent} ===")
+        subprocess.call([sys.executable, str(ROOT / "tools" / "summarize_ab_sweep.py"), str(parent)])
+        if a.noise_floor:
+            print("\nThe noise floor is the spread of the WARM launches above (the first launch warms the machine); give this folder to "
+                  "tools/summarize_ab_sweep.py --noise to put a verdict on another sweep.")
+    else:
+        base_dir = done[0][1]
+        for name, d in done[1:]:
+            print(f"\n=== {name}  vs  {done[0][0]} ===")
+            subprocess.call([sys.executable, BENCH, "--compare-only", str(d), "--compare", str(base_dir)])
+        print(f"\n{len(done)} arm(s) in {parent}: " + ", ".join(n for n, _ in done))
     if failed:
         print("incomplete: " + ", ".join(failed))
     print("Read the arms' own README.md for the cache and draft figures behind these speeds.")

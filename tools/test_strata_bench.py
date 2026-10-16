@@ -221,7 +221,7 @@ class ReportTests(unittest.TestCase):
         self.addCleanup(srv.stop)
         with tempfile.TemporaryDirectory() as d:
             self.assertEqual(self.run_main(srv, d, "--clients", "2"), 0)
-            dirs = list(Path(d).iterdir())
+            dirs = [x for x in Path(d).iterdir() if x.is_dir()]                    # runs.jsonl sits beside the result folders
             self.assertEqual(len(dirs), 1)
             name = dirs[0].name
             self.assertRegex(name, r"^\d{4}-\d\d-\d\d-community-rtx-9999")
@@ -234,24 +234,32 @@ class ReportTests(unittest.TestCase):
             self.assertEqual(raw["schema"], B.SCHEMA)
             self.assertEqual(raw["machine"]["engine_version"], "9.9.9")
             self.assertEqual(raw["results"]["chat"]["decode_tps"]["median"], 60.0)
+            self.assertIn("uptime_s", raw["state"]["start"])                       # what the machine was doing (tools/bench_state.py)
+            self.assertIn("samples", raw["state"]["during"])
+            runs = (Path(d) / "runs.jsonl").read_text(encoding="utf-8").splitlines()    # one flat line per run (tools/bench_record.py)
+            self.assertEqual(len(runs), 1)
+            rec = json.loads(runs[0])
+            self.assertEqual((rec["folder"], rec["schema"]), (name, 1))
+            self.assertIn("uptime_s", rec["state"]["start"])
+            self.assertNotIn("Someone", runs[0])
             blob = readme + json.dumps(raw)
             self.assertNotIn("Someone", blob)                    # the engine's model_path never reaches the report
             # a second run the same day does not overwrite the first
             self.assertEqual(self.run_main(srv, d), 0)
-            self.assertEqual(len(list(Path(d).iterdir())), 2)
+            self.assertEqual(len([x for x in Path(d).iterdir() if x.is_dir()]), 2)
 
     def test_compare(self):
         srv = FakeStrata()
         self.addCleanup(srv.stop)
         with tempfile.TemporaryDirectory() as d:
             self.run_main(srv, d)
-            old = next(Path(d).iterdir())
+            old = next(x for x in Path(d).iterdir() if x.is_dir())
             data = json.loads((old / "results.json").read_text(encoding="utf-8"))
             data["results"]["chat"]["decode_tps"]["median"] = 30.0
             data["machine"]["engine_version"] = "1.0"
             (old / "results.json").write_text(json.dumps(data), encoding="utf-8")
             self.run_main(srv, d)
-            new = max(Path(d).iterdir(), key=lambda p: p.name)
+            new = max((x for x in Path(d).iterdir() if x.is_dir()), key=lambda p: p.name)
             table = B.compare_table(B.load_results(old), B.load_results(new))
             self.assertIn("chat decode tok/s", table)
             self.assertIn("+100.0%", table)

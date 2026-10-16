@@ -247,6 +247,8 @@ AVX-512 and more cores attacks the CPU-bound step directly.
   Gains under about 3% are not findings; file reads per token are far steadier than decode speed and are the figure to trust when they move.
 - Decode speed is the engine's own figure (tokens over decode time); the earlier general-prompt numbers elsewhere in this log are wall-clock
   and include prompt reading, so the two kinds are not interchangeable.
+- `strata_ab.py --rounds K` now interleaves the arms and `summarize_ab_sweep.py` gives a noise figure and a verdict per arm
+  ([what the tools do now](BENCH_NOISE.md#what-the-tools-do-about-it-now-2026-10-16)).
 - Arms must not be ordered by the thing under test, and a sweep must not run its first arms cold; see [BENCH_NOISE.md](BENCH_NOISE.md) for the
   analysis of six earlier sweeps (25 arms, 750 same-turn pairs): the same settings repeated came out 4% to 5% apart, and the first 20 minutes of
   a session were slower than the rest.

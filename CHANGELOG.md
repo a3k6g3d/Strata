@@ -27,6 +27,15 @@ dated, and the fork's releases follow [SemVer](https://semver.org) once it tags 
   The tool now tries every installed browser (the one in `STRATA_BROWSER` first), skips one that returns no page when another renders it and tries that
   one last from then on, and keeps what the browser printed for the error message. 1 new test; the two real-browser tests that failed now pass.
 
+### Added (2026-10-16, benchmark tooling: interleaved arms, a noise verdict, machine state, a record per run, a wait)
+- `tools/strata_ab.py --rounds K` launches every arm K times with the arms taking turns (the order reversed every second round) and `--noise-floor N`
+  launches the baseline alone N times; `tools/summarize_ab_sweep.py` compares each launch with its own round's reference, leaves cold-region launches out
+  of the medians and prints a noise floor and an "above noise / inside noise" verdict (`--noise DIR` uses a noise-floor run; `runs.jsonl` is read in place
+  of the folders). A tie in "most company" now goes to the arm that started first.
+- `tools/bench_state.py`: uptime, GPU clocks, temperature, power, throttling, free RAM and busy background processes, read in-process through NVML, in
+  every `results.json` (`state`); `tools/bench_record.py`: one line per run in `runs.jsonl`; `tools/wait_for.py`: block until a log pattern, a process
+  exit or a timeout. 8 + 5 + 11 + 10 + 7 new tests; the benchmark's own tests now look at result folders only.
+
 ### Added (2026-10-16, an opt-in conversation store on the disk)
 - `"conversation_store": {"enabled": true}` (`serve/conversation_store.py`) saves the engine's conversation to disk when a request for another conversation
   arrives and again as it grows (every 6,000 tokens), and restores it when a prompt continues a saved one, using the engine's `SAVE` / `RESTORE`. A 25K-token

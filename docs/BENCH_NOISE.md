@@ -148,3 +148,25 @@ re-run to be worth anything.
    answer, which is the one thing a speed comparison is supposed to be checked against. The older harness in
    `bench/results/2026-10-04-community-rtx-4090-laptop/` recorded both `text` and `request_sha256` per request;
    the current one records neither.
+
+## What the tools do about it now (2026-10-16)
+
+Items 1 to 4 above, and a way to wait for a run, are in the tools; item 5 is not.
+
+| | |
+|---|---|
+| 1. interleaving | `tools/strata_ab.py --rounds K` launches every arm K times, the arms taking turns, and reverses the order every second round (A B C, C B A, A B C ...) so a drift that is linear in time gives every arm the same average position. `--runs` is the total per arm, split over the launches. `tools/summarize_ab_sweep.py` compares each launch with the reference arm's launch of the same round, so slow drift cancels instead of being read as a result. |
+| 2. run 1 and the cold region | a launch that started inside the first 20 minutes of the sweep is marked `*`, shown, and left out of the median when others remain; the reference arm's own noise figure leaves it out too. |
+| 3. turn by turn | already in the summarizer; now per round. |
+| 4. the machine during the run | `tools/bench_state.py`: uptime, GPU clocks, temperature, power, throttling and memory read through NVML in the benchmark's own process (polling `nvidia-smi` costs about 1 tok/s of decode, which is the kind of disturbance this is meant to catch), free RAM, and any watched background process (Defender, Windows Update, the indexer, and so on) that was busy. One snapshot at the start and the end and a sample every 10 s in between go into `results.json` under `state`. |
+| a noise figure | `tools/summarize_ab_sweep.py` prints a noise floor and a verdict per arm: "above noise" when the median difference is larger than the spread between the reference arm's own warm launches, or than a measured noise floor (`strata_ab.py --noise-floor 3` launches the baseline alone three times; `summarize_ab_sweep.py DIR --noise bench/results/noise-floor` drops the first, cold launch and uses the spread of the rest). |
+| one record per run | `tools/strata_bench.py` appends one JSON line per run to `runs.jsonl` next to the result folders (`tools/bench_record.py`): the arm, the launch line, when it started, how long the PC had been up, the machine state, decode speed (the client's and the engine's own), time to first token, expert-cache, PCIe, prompt-reuse and draft figures, every turn's decode speed, and a digest of the `STATE_HASH` lines when the log excerpt has them. `summarize_ab_sweep.py runs.jsonl` reads it in place of the folders. |
+| waiting | `tools/wait_for.py --file run.log --pattern "ALL DONE" [--pid N] [--timeout S]` blocks until the pattern is written, the process ends or the time is up, then prints the tail. One call instead of a poll loop. |
+
+Not done: item 5 (output text or a fingerprint). A hash of generated tokens cannot be compared across arms here: two launches of the same
+configuration generated different token counts at temperature 0 (`REJECTED_PROPOSALS.md`, item 6), so the fingerprints never line up. The parity
+gate `tools/conversation_cache_parity.py` is a different thing: an A/B/A test that loads its own engines one after another in one process and compares
+the engine's `STATE_HASH` lines for its own scenarios; it neither needs nor replaces a sweep-wide gate.
+
+A full sweep with three rounds is 39 launches for the 13 arms of `adapt-kv`; use `--noise-floor 3` first (three launches) to see whether any difference
+you are looking for is even resolvable.
