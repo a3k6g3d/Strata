@@ -1349,7 +1349,7 @@ also paste as it is (key `"mcpServers"`):
 
 ```json
 "mcp_servers": {
-  "files": {"command": "python", "args": ["tools/strata_files_mcp.py", "C:\\Users\\me\\Documents\\notes"]},
+  "files": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "C:\\Users\\me\\Documents\\notes"]},
   "search": {"url": "http://127.0.0.1:3000/mcp", "headers": {"Authorization": "Bearer ..."}}
 },
 "mcp": {"timeout_s": 60, "max_result_chars": 20000, "max_rounds": 8}
@@ -1422,20 +1422,23 @@ this one skips those folders and files while it walks, so a blocked name never r
 junctions, skips binary files, files over 5 MB and `.git`, `node_modules`, `__pycache__` and virtual environments,
 stops a search after 25 s and cuts an answer at 30,000 characters.
 
-**The file tools.** `tools/strata_files_mcp.py` reads and changes files inside folders you name on its command line (one
-argument per folder, and it refuses to start without one):
+**Your own file tools, without Node.js.** The official server above is what most people use. `tools/strata_files_mcp.py`
+does the same job with three tools and no Node, and adds the two rules at the end; name the folders it may use on its
+command line, one per folder (it refuses to start without one) - a whole drive works as well as a folder, so you can
+give it the same reach:
 
 ```json
-"mcp_servers": {"files": {"command": "python", "args": ["tools/strata_files_mcp.py", "C:\\Users\\me\\Documents\\notes"]}}
+"mcp_servers": {"files": {"command": "python", "args": ["tools/strata_files_mcp.py", "C:\\Users\\me\\Documents\\notes", "J:\\\\"]}}
 ```
 
 Three tools: `read_file` (the whole file, or its first `head` / last `tail` lines), `write_file` (create or replace) and
-`edit_file` (change text that must match exactly, and only once, unless `replace_all`). The names are what they are so
-the permission model works out of the box without a `tool_classes` entry: `read_file` counts as a read, the two changes
-as writes - Read-only refuses them, Allow edits lets them, Ask about every change asks for each one, and a protected
-place asks again even in Full access. (The official server's names are classed correctly too - `read_file` a read,
-`move_file` a danger - so this is not about the classifier; it is about needing Node.js, and about the rules below.) Its
-own rules, on top of Strata's:
+`edit_file` (change text that must match exactly, and only once, unless `replace_all`). The official server has fourteen
+tools, including directories, moving and information; this one has three and no folders, so a new file needs a folder
+that already exists. The names are what they are so the permission model works out of the box without a `tool_classes`
+entry: `read_file` counts as a read, the two changes as writes - Read-only refuses them, Allow edits lets them, Ask about
+every change asks for each one, and a protected place asks again even in Full access. (The official server's names are
+classed correctly too - `read_file` a read, `move_file` a danger - so this is not about the classifier; it is about
+needing Node.js, and about the rules below.) Its own rules, on top of Strata's:
 
 - a file you never read in this session cannot be replaced - `write_file` refuses it, so a guess cannot overwrite real
   content (`edit_file` needs an exact match, which is the same guard in a stronger form);

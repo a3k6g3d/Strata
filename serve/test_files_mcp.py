@@ -46,6 +46,18 @@ class Files(unittest.TestCase):
                 tool()
             self.assertIn("outside the folders", str(cm.exception))
 
+    def test_a_whole_drive_as_a_root_reaches_the_files_under_it(self):
+        # A drive root ends with a separator, which is exactly where a "root + separator" check goes wrong: the
+        # path under it has one backslash after the colon, so a root kept as "C:\\" matches nothing.
+        drive = os.path.splitdrive(self.base)[0] + os.sep
+        x.configure([], [], [drive])
+        self.assertIn("buy milk", x.read_file(self.f))
+        # another drive is outside it (a letter that does not exist here: no filesystem is touched)
+        other = os.path.join("Z:" + os.sep, "__strata_not_here__", "x.txt")
+        with self.assertRaises(x.FilesError) as cm:
+            x.read_file(other)
+        self.assertIn("outside the folders", str(cm.exception))
+
     def test_dot_dot_cannot_step_outside(self):
         self.assertRaises(x.FilesError, x.read_file, os.path.join(self.inside, "..", "elsewhere", "secret.txt"))
 

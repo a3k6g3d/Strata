@@ -59,7 +59,9 @@ def configure(prefixes, globs, roots) -> None:
     """The no-read list and the allow-list (tests; the server reads them from the environment and the command line)."""
     PREFIXES[:] = prefixes
     GLOBS[:] = globs
-    ROOTS[:] = [os.path.normcase(os.path.realpath(r)) for r in roots]
+    # A drive root is stored without its trailing separator, so the `root + os.sep` below is one backslash and not two:
+    # "J:\\" as it stands would match nothing at all, because a real path under it has a single backslash after the colon.
+    ROOTS[:] = [os.path.normcase(os.path.realpath(r)).rstrip("\\/") or r for r in roots]
     READ.clear()
 
 
