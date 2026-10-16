@@ -73,8 +73,10 @@ Two things follow that are worth having written down.
 (`src/core/expert_source.cpp:3603`), so the runtime refusal of a larger window (`:3641`, "a verify window routes more
 entries than the expert pool's window tables hold") cannot fire while `MAXT` is 8: a full window is 80 entries, 48 short
 of the cap.  The comment there says such a window is "refused at run time", which reads like a live path; it is a guard
-for a `MAXT` nobody has raised yet.  Raise it past 12 and their cliff becomes ours, which would make this question one
-to measure again instead of one to read.
+for a `MAXT` nobody has raised yet.  The `static_assert` is what keeps this note true: raise `MAXT` past 12 and the
+build fails rather than the cliff arriving quietly, so their cliff only becomes ours when someone raises both numbers on
+purpose - and then this question has to be measured again instead of read.  `tests/core/batch_rows_test.cpp` holds the
+other half, that a batch window cannot have more rows than the window holds.
 
 **The video's comparison is not on this axis.**  llama.cpp's batch is its server's concurrent decode batch, which grows
 past 8 as requests arrive; ours is one window of at most 8 tokens.  "They drop to 18% at large batches and we do not"
