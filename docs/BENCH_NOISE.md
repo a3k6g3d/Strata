@@ -122,6 +122,43 @@ rate is nearly nothing: +0.11 across arms, +0.15 within a sweep, and it climbs w
 almost as hard as speed does. The PCIe figure (-0.60) is largely the cold region again: the arms with the
 largest PCIe share are the early ones.
 
+## Where the warm-up actually sits: each launch, not the boot
+
+Everything above says "the session's first ~20 minutes", which is what an arm's position in the sweep suggested. It is the
+wrong axis, and `tools/check_cold_axis.py` says so from the records already on disk - 25 arms, 510 turns, 360 run-vs-run
+pairs of the *same turn* inside one launch:
+
+| run N against run 0 of the same turn | n | median |
+|---|---|---|
+| run 1 | 150 | +8.8% |
+| run 2 | 150 | +13.9% |
+| runs 3-7 (the two 8-run arms) | 300 | +23.5% to +39.8% |
+
+That is as large as the drift between arms, and it is the machine rather than the prompt cache - three controls:
+
+* **turn 0 gains +5.5%** (n=60). Turn 0 is the first prompt of a conversation; it has nothing to reuse in any run, so the
+  cache cannot explain its second run being faster.
+* **a base run that had already reused over half its prompt tokens still gains +13.0%** (n=240), against +15.4% for a cold
+  base (n=120). The cache was already doing its job in the slower sample.
+* **`prompt_tps`, the quantity the cache actually moves, gains only +2.2%** (n=360). If the gain were cache warming, this
+  is the number that would move.
+
+Each arm starts its own server and reloads a 12 GiB model, and the first thing it does afterwards is slow. The session
+looks warm only because its first arm was also the coldest launch. Two consequences:
+
+* **The cold sample is run 0 of every launch**, not the first arm of a session. `summarize_ab_sweep.py` now reports
+  `decode_warm` next to `decode` - the same median with that run removed - and drops it wherever a launch ran more than
+  once. It matters between arms: the effect reaches +30% inside an 8-run arm against +14% inside a 3-run arm, so pooling
+  all runs makes an 8-run arm and a 3-run arm incomparable.
+* **The noise floor no longer needs a run of its own.** Every arm already repeats the same turns, so warm runs of one turn
+  against each other *are* the machine's resolution: **10.1% at the median, 27.0% at the p90, 51.9% worst**, over 78 pairs
+  in `ab-adapt-kv-sweep`. (The 12.1%/29.3% figures above came from all runs, warm-up included.) `--noise DIR` is still
+  accepted, and still the better figure when it exists, but a sweep with repeats now judges itself.
+
+Applied to the sweep that started all this, the verdict is flat: **all twelve arms sit inside that 10.1%**, from
+`kv-resident 32768` at +6.5% down to `adapt-swaps 16` at -4.7%. No flag in that sweep moves decode, and the ranking of
+those numbers is noise read as order.
+
 ## What to do about it
 
 In the order I would do them, cheapest first. None of these need a re-run to write down; all of them need a

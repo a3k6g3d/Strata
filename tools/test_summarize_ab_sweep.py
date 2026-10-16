@@ -286,5 +286,65 @@ class Interleaved(unittest.TestCase):
             self.assertIn("per round, against the reference arm 'as configured'", out)
 
 
+class WarmAxis(unittest.TestCase):
+    """The warm-up belongs to each launch, not to the machine's boot (tools/check_cold_axis.py).
+
+    Every arm reloads a 12 GiB model, so run 0 of EVERY launch is the slow one.  The summarizer has to drop it per arm,
+    and the noise floor can then come out of the sweep's own repeats instead of a separate noise-floor run.
+    """
+
+    @staticmethod
+    def write_multi(root: Path, arm: str, runs: list[list[float]], t0: float, launch: str) -> None:
+        """One arm, several runs of the same turns: sessions are runs, and each turn carries its run number."""
+        d = root / arm.replace(" ", "-")
+        d.mkdir(parents=True, exist_ok=True)
+        sessions = [[{"turn": i, "run": r, "ok": True, "decode_tps": t, "ttft_s": 1.0,
+                      "prompt_tokens": 200, "generated_tokens": 100} for i, t in enumerate(tps)]
+                    for r, tps in enumerate(runs)]
+        body = {"elapsed_s": t0 + 60.0, "machine": {"launch": launch},
+                "params": {"arm": arm, "engine_arg": list(BASE)},
+                "results": {"phases": [{"name": "agent session", "from_s": t0}],
+                            "agent": {"sessions": sessions},
+                            "engine": {"per_test": {"agent session": {}}}}}
+        (d / "results.json").write_text(json.dumps(body), encoding="utf-8")
+
+    def test_run_zero_is_the_cold_sample_of_every_launch(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            # run 0 is slow in both arms; the flags differ, so the difference between the WARM medians is the finding
+            self.write_multi(root, "as configured", [[16.0, 17.0], [24.0, 25.0]], 100.0, "strata --pack p --spec 4")
+            self.write_multi(root, "flag x", [[16.0, 17.0], [26.0, 27.0]], 110.0, "strata --pack p --spec 4 --flag-x")
+            rows = {r["arm"]: r for r in S.collect(str(root))}
+            base, flag = rows["as configured"], rows["flag x"]
+            self.assertAlmostEqual(base["decode"], 20.5, places=1)      # dragged down by the warm-up run
+            self.assertAlmostEqual(base["decode_warm"], 24.5, places=1)  # the launch at temperature
+            self.assertAlmostEqual(flag["decode_warm"], 26.5, places=1)
+            self.assertEqual(base["warm_n"], 2)
+
+    def test_a_single_run_arm_is_kept_as_measured(self):
+        turns = [{"turn": 0, "run": 0, "ok": True, "decode_tps": 20.0}]
+        kept, dropped = S.warm_turns(turns)
+        self.assertFalse(dropped)
+        self.assertEqual(kept, turns)
+
+    def test_the_noise_floor_comes_from_the_sweeps_own_warm_repeats(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            # three runs each: run 0 is half speed (the launch warming up), so it must not reach the floor, and only
+            # runs 1 and 2 can be paired with each other.
+            self.write_multi(root, "a", [[10.0, 10.0], [20.0, 20.0], [20.0, 20.0]], 100.0, "strata --pack p --spec 4")
+            self.write_multi(root, "b", [[10.0, 10.0], [21.0, 19.0], [19.0, 21.0]], 1400.0,
+                             "strata --pack p --spec 4 --flag-b")
+            rows = S.collect(str(root))
+            n = S.noise_within(rows)
+            self.assertEqual(n["n"], 4, "one pair per turn per arm, warm runs only")
+            self.assertAlmostEqual(n["pct"], 10.0, places=1)   # arm b's turns: 21 vs 19 over their mean
+            self.assertLess(n["pct"], 25.0, "run 0 must not inflate the floor")
+            # and the verdict line now has a figure without being handed a --noise folder
+            out = summary_text(str(root))
+            self.assertIn("noise floor from this sweep's own repeats", out)
+            self.assertIn("inside noise", out)
+
+
 if __name__ == "__main__":
     unittest.main()

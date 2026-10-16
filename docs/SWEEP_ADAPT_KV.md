@@ -134,3 +134,32 @@ Worse than noise, the arms in this sweep are not independent: position in the se
 and with hit rate at +0.46, and the drift stops after ~20 minutes. See `BENCH_NOISE.md` for the cold region, for what
 does carry the speed instead (draft acceptance, +0.44 within an arm where the flags are identical; hit rate +0.11 across
 arms), and for the five things to change so the next sweep can resolve what this one could not.
+
+## Correction, 2026-10-16: the axis was wrong, and the verdict is flatter than that
+
+`tools/check_cold_axis.py` re-read the same folders and found the warm-up inside each launch rather than at the start of the
+session: run 1 of one turn beats run 0 of that same turn by +8.8%, run 2 by +13.9%, and turn 0 - which has no cache to warm
+in any run - still gains +5.5%, so it is the machine reloading a 12 GiB model and not the prompt cache. The 12.1%/29.3%
+figures above pool the warm-up run in; with run 0 removed from every launch the floor is **10.1% at the median, 27.0% at the
+p90**. `summarize_ab_sweep.py` now prints that floor itself, and the paired table now carries a verdict on every line:
+
+```
+noise floor from this sweep's own repeats (same turn, warm runs, no extra launches needed):
+  n=78 pairs, median 10.1%, p90 27.0%, worst 51.9%
+
+  +6.5  kv-resident 32768   inside noise      -2.5  vram-reserve 512    inside noise
+  +3.2  kv-resident 24576   inside noise      -4.7  adapt-swaps 16      inside noise
+  +1.2  adapt-decay 0.65    inside noise      -5.8  adapt-swaps 4       *cold
+  +0.6  adapt-decay 0.80    inside noise     -10.2  adapt-swaps 0       *cold
+  0.0   vram-reserve 768    inside noise     -39.9  as configured       *cold
+  -1.3  vram-reserve 600    inside noise
+  -1.9  kv-resident 20480   inside noise
+```
+
+So the conclusion the doc reached the first two times holds a third time, but for a stronger reason than "one decode median
+per arm is not enough": the machine's own resolution is 10.1%, and every arm in the sweep is inside it. The `kv-resident
+32768` +6.5% that looked like the winner is not a candidate for anything - it is smaller than what two warm runs of the same
+turn differ by. Nothing here says the flags do nothing (the hit-rate moves they cause are real and large: 24.9% to 56.9%); it
+says decode on this machine cannot be resolved at that scale by this design. A re-run worth doing would drop the arms that
+never move the hit rate, keep the two that do, run each arm at least 5 times interleaved (`--rounds 5`), and compare only
+warm runs.

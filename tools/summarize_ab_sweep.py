@@ -35,6 +35,13 @@ import sys
 COLS = ("arm", "arm args", "decode", "eng dec", "ttft s", "hit %", "pcie %", "reuse %", "draft %", "n", "t+min")
 COLD_MIN = 20.0  # minutes of a session the machine is still warming up in; docs/BENCH_NOISE.md
 
+# 2026-10-16: tools/check_cold_axis.py measured where the warm-up actually sits, and it is NOT only the session.  Inside one
+# launch, run 1 of the SAME turn beats run 0 by +8.8% and run 2 by +13.9% (n=150 each) - as large as the across-launch drift -
+# and three controls say that is the machine, not the prompt cache: turn 0, which has no cache to warm, still gains +5.5%; a
+# base run that had already reused over half its prompt tokens still gains +13.0%; and prompt_tps, the quantity the cache
+# actually moves, gains only +2.2%.  Every arm reloads a 12 GiB model, and the first thing it does after that is slow.  So
+# the cold sample is run 0 of EVERY launch, not the first arm of the session, and every median below drops it when it can.
+
 
 def med(xs):
     return round(statistics.median(xs), 2) if xs else None
@@ -69,12 +76,18 @@ def collect(root):
         turns = [t for s in agent.get("sessions") or [] for t in s if t.get("ok")]
         eng = ((j.get("results") or {}).get("engine") or {}).get("per_test") or {}
         a = eng.get("agent session") or {}
+        warm, dropped = warm_turns(turns)
         rows.append(
             {
                 "arm": prm.get("arm") or os.path.basename(d),
                 "args": " ".join(prm.get("engine_arg") or []) or "(none)",
                 "launch": (j.get("machine") or {}).get("launch") or "",
                 "decode": med([t["decode_tps"] for t in turns if t.get("decode_tps")]),
+                # the same median with this launch's warm-up run taken out; where it differs from `decode` by more than a
+                # point or two, the arm's own first run is pulling it down and no arm-vs-arm table of `decode` is fair to
+                # the arms that ran more times (warm_turns).
+                "decode_warm": med([t["decode_tps"] for t in warm if t.get("decode_tps")]) if dropped else None,
+                "warm_n": len(warm) if dropped else len(turns),
                 "eng_dec": a.get("decode_tok_s_median"),
                 "ttft": med([t["ttft_s"] for t in turns if t.get("ttft_s")]),
                 "hit": a.get("cache_hit_pct"),
@@ -112,6 +125,51 @@ def position(rows):
         base = min(r["t0"] for r in members)
         for r in members:
             r["tmin"] = round((r["t0"] - base) / 60.0, 1)
+
+
+def warm_turns(turns):
+    """The turns of one arm minus its launch's first run, when that launch ran more than once.
+
+    Run 0 is the launch warming up (see COLD_MIN above), so a median over all runs understates every arm by roughly the same
+    amount - which mostly cancels between arms, except that the arms with more runs sit further up the curve.  On the two
+    8-run arms the within-arm run effect reaches +30%, against +14% on a 3-run arm, so pooling all runs makes an 8-run arm
+    and a 3-run arm incomparable.  With one run there is nothing to drop and the arm is kept as measured.
+    """
+    runs = {t.get("run") for t in turns if t.get("run") is not None}
+    if len(runs) < 2:
+        return turns, False
+    return [t for t in turns if t.get("run") != 0], True
+
+
+def noise_within(rows):
+    """The noise floor out of the sweep itself: two runs of one arm's one turn, both warm, against each other.
+
+    Nothing extra has to be run.  Every arm already repeats the same turns, so the spread between them at the same turn
+    number IS the machine's resolution - the figure docs/BENCH_NOISE.md had to compute by hand after the fact (12.1% at the
+    median, 29.3% at the 90th percentile).  Only warm runs are used, for the reason in warm_turns.
+    """
+    percents = []
+    for r in rows:
+        turns, dropped = warm_turns(r.get("turns") or [])
+        if not dropped:
+            continue
+        by_turn = {}
+        for t in turns:
+            if t.get("decode_tps"):
+                by_turn.setdefault(t.get("turn"), []).append(t["decode_tps"])
+        for values in by_turn.values():
+            if len(values) < 2:
+                continue
+            mean = statistics.mean(values)
+            if mean > 0:
+                percents.append(100.0 * (max(values) - min(values)) / mean)
+    if not percents:
+        return {"pct": None, "n": 0, "median": None, "p90": None, "worst": None}
+    percents.sort()
+    return {"pct": round(percents[len(percents) // 2], 1), "n": len(percents),
+            "median": round(percents[len(percents) // 2], 1),
+            "p90": round(percents[min(int(len(percents) * 0.9), len(percents) - 1)], 1),
+            "worst": round(percents[-1], 1)}
 
 
 def is_cold(r):
@@ -295,6 +353,15 @@ def main(argv=None):
             print(line)
         print("  (* = started inside the machine's first %.0f minutes of the session; docs/BENCH_NOISE.md)" % COLD_MIN)
         print()
+        # the noise floor the sweep already contains: warm runs of one turn against each other
+        within = noise_within(rows)
+        if within["n"]:
+            print("  noise floor from this sweep's own repeats (same turn, warm runs, no extra launches needed): "
+                  "n=%d pairs, median %s%%, p90 %s%%, worst %s%%"
+                  % (within["n"], within["median"], within["p90"], within["worst"]))
+            print("     a gap between two arm medians smaller than the median line is not a finding; "
+                  "docs/BENCH_NOISE.md")
+            print()
         # noise floor: arms that ran the identical experiment
         for launch, group in by_launch(rows).items():
             dec = [g["decode"] for g in group if g["decode"]]
@@ -314,7 +381,7 @@ def main(argv=None):
         if ref:
             print("  paired by turn number against %r at t+%s min (median of per-turn differences; + means faster):"
                   % (ref["arm"], fmt(ref.get("tmin"), 5)))
-            noise = external["pct"] if external and external.get("pct") is not None else None
+            noise = external["pct"] if external and external.get("pct") is not None else within["pct"]
             for r, d, n in sorted(paired(rows, ref), key=lambda x: -x[1]):
                 mark = " *cold" if is_cold(r) else ""
                 said = "  " + verdict(d, noise) if noise is not None and not is_cold(r) else ""
