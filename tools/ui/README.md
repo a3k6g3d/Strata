@@ -18,6 +18,7 @@ server, and a few seconds each. `py -I tools/ui/<file>.py` (selenium is not in t
 | `ui-guard-check.py` | the "Still writing" notice: asking a second question while another chat's answer writes has to be held and named, not swallowed - and one button has to stop that answer and ask here instead. |
 | `ui-stream-check.py` | an answer arriving in the background: it stays in the chat that asked for it, the list marks that chat, opening it shows the live answer rather than the older copy on the server, and a half-typed question stays in the chat it was typed in. |
 | `ui-tabs-check.py` | the header tabs: centred at wide widths, and still not overlapping the brand or the controls down to phone width. |
+| `ui-composer-check.py` | how tall the message box is at three widths, and whether its controls are still a fingertip on touch. Its height is subtracted from the answer above it, so a slow creep back to a two-line box is invisible until it is complained about. |
 | `ui-monitor-check.py` | the request monitor page: a request's card still shows the figures it had, and the expert cache's hit rate is among them. It starts its own mock server with the monitor on, because the live app is usually started without `--api-monitor` and the page answers 404. |
 | `ui-webconsole-check.py` | the web console page (`/console`) - the server's output, not the browser's: `ui-console-check.py` reads the browser's own console, this one reads the page.  A line the server prints while the page is open arrives, a line already shown is never shown twice, Pause holds the view and Resume catches up, and nothing hangs off the side at phone width. It starts its own mock server and installs the stdout tee `main()` installs, since that is what fills the buffer. |
 | `ui-run-check.py` | the clock on a running command: while a tool call is out, the page has to say how long it has been taking and against which limit - and go quiet once the result lands. The answer is a stubbed stream, so it runs in seconds and needs no model. |
@@ -27,6 +28,9 @@ panel check); `STRATA_UI_SHOTS` where the pictures go (default `tools/ui/shots/`
 
 Traps these harnesses fell into once, and the reason they are written the way they are:
 
+* `mobile: true` in `Emulation.setDeviceMetricsOverride` makes the viewport a phone width, but it does not make
+  `(pointer: coarse)` match on its own - without `Emulation.setTouchEmulationEnabled` the phone row measures the
+  desktop branch, so a rule that only exists for a fingertip reads as passing while never being applied.
 * `offsetParent` is null for `position: fixed`, so a naive "is it on screen" test calls every overlay invisible.
   They measure the rectangle instead.
 * Chrome will not make its window narrower than ~500px, so resizing the window is not a phone. Phone checks use

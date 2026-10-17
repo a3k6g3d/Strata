@@ -107,9 +107,17 @@ main { flex: 1; min-height: 0; display: flex; }
                   border: 1px solid var(--st-line-soft); border-radius: var(--st-r-sm); }
 
 .composer-wrap { flex: none; padding: 0 calc(var(--st-s-6) + var(--sbw, 0px)) var(--st-s-6); }   /* --sbw: the scrollbar gutter the messages leave on each side (app.js) */
-.st-composer { max-width: 860px; margin: 0 auto; }
-.st-composer textarea { max-height: 40vh; }
+.st-composer { max-width: 860px; margin: 0 auto; gap: var(--st-s-1); padding: var(--st-s-2); }
+.st-composer textarea { max-height: 40vh; min-height: 26px; padding: 2px 8px; }
+/* The box is the one thing you look at all day, so it is sized to a line of text and not to a
+   dialog: 80px instead of 132px, which is two lines of the answer you were reading. The controls
+   shrink with it (they are icons with a tooltip, not buttons you hunt for); the touch layout below
+   puts them back at a fingertip. Measured by tools/ui/ui-composer-check.py, not by arithmetic. */
+.st-composer .st-btn { height: 30px; font-size: var(--st-fs-sm); }
+.st-composer .st-btn--icon { width: 30px; height: 30px; }
+.st-composer .perm { height: 30px; }
 .st-btn--send { width: 42px; padding: 0; }
+.st-composer .st-btn--send { width: 34px; }
 /* the permission drop-down beside the composer's buttons; its colour says how much the model may do */
 .perm { display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 4px 0 10px; border-radius: var(--st-r-pill);
         background: var(--st-surface-2); border: 1px solid var(--st-line); color: var(--st-ink-soft); font-size: var(--st-fs-xs); }
@@ -397,6 +405,8 @@ main { flex: 1; min-height: 0; display: flex; }
   .st-toggle { position: relative; }
   .st-toggle::before { content: ""; position: absolute; inset: -11px -4px; }   /* the switch stays small; the touch area does not */
   .st-composer textarea { min-height: 46px; }
+  .st-composer .st-btn, .st-composer .st-btn--icon, .st-composer .st-btn--send { width: 44px; height: 44px; }
+  .st-composer .perm { height: 44px; }
 }
 
 /* --------------------------------------------------- the shortcut sheet */
