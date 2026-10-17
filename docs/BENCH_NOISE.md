@@ -162,6 +162,54 @@ Applied to the sweep that started all this, the verdict is flat: **all twelve ar
 `kv-resident 32768` at +6.5% down to `adapt-swaps 16` at -4.7%. No flag in that sweep moves decode, and the ranking of
 those numbers is noise read as order.
 
+## The disk is at its ceiling, and it is a lower ceiling than the label says
+
+A monitor screenshot taken mid-prefill read **1.58 GB/s** of disk reads against a 21,588-token prompt, which looked
+like slow I/O. It is not slow I/O, and the paging alternative the number suggests has already been taken.
+
+The tile is `psutil.disk_io_counters()`, summed over every disk: system-wide **physical** reads, so bytes that
+genuinely came off the media, not pagefile traffic and not a software rate (`serve/telemetry.py:367-372`, rendered at
+`serve/web/app.js:75`). The model sits on `J:`, which is disk 5, a Sandisk Optimus 5100 500 GB (a WD SN740 OEM part).
+Measured on it with the engine idle:
+
+| pattern on J: | result |
+|---|---|
+| sequential 8 MiB, one stream | **2.00 GB/s** |
+| sequential 4 MiB, two streams | 2.65 GB/s |
+| four / eight streams | 2.49 / 2.56 GB/s |
+| random 4 KiB, one at a time | 5,884 IOPS = **23 MB/s** |
+
+So the whole-drive ceiling is ~2.5 GB/s and one stream gets 2.0. The 1.58 GB/s in the screenshot is **79% of a single
+stream and 63% of the whole drive**, with at most a quarter left in it - and the spec sheet's 4.9 GB/s is not what this
+500 GB OEM part does. The engine's own file tier is already the fast path, not mmap: `FILE_FLAG_NO_BUFFERING |
+FILE_FLAG_OVERLAPPED` at `src/core/expert_source.cpp:1596` (Linux gets `O_DIRECT` at :1612, one `io_submit` per batch),
+and the console says which side of the memory budget it is on - "the file tier reads unbuffered (49.1 GiB available,
+40.0 GiB of it still to be taken by the RAM copy, 6.8 GiB of experts read from the files: the file cache cannot keep
+them)". With a 36 GiB resident budget on a 64 GB box the OS cache cannot hold the model, so leaning on it would trade
+2,000 MB/s for the 23 MB/s fault rate above.
+
+Pagefile contention, which is what "shared with C:" raises, measured at 2%: 4 KiB random traffic (6,330 IOPS, the shape
+of page-fault traffic) running against a 1 GiB sequential read **on the same disk** cost 2.02 against 2.06 GB/s. The
+NVMe has enough queue depth that pagefile-shaped traffic barely dents a big sequential stream, so paging is not a
+speed problem here - it is a RAM-headroom problem, and it is set by the resident budget rather than by pagefile size.
+
+Changed anyway, on 2026-10-17, for space and commit reasons: `J:\pagefile.sys` **96 GB fixed -> 48 GB fixed**,
+`C:\pagefile.sys` left at 2 GB (it is what `CrashDumpEnabled = 3`, a small dump, requires on the boot volume). Before:
+pagefile use on disk was 407 MB + 946 MB, peak 1,096 MB - about 90x less than the allocation - and
+`Memory\Page Reads/sec` during a live generation was 7-239/s, under 1 MB/s, while Strata held 56 GB of pagefile-backed
+*commit* (a reservation, not I/O) split across both pagefiles. The commit limit goes 161.8 GB -> **113.8 GB** against
+73.2 GB committed, leaving **40.6 GB** of headroom, which is the number that matters: exceeding the commit limit is an
+allocation failure rather than a slowdown, so a bigger `--resident-budget-gib` than 36 eats that headroom. 48 GB frees
+48 GB on the model disk and keeps paging on the fast one. Needs a reboot; until then the 98,304 MB allocation stays
+live. `J:\Strata-work\set-pagefile.ps1` and `pagefile-change.log` hold the change and its before/after.
+
+The consequence for reading benchmarks: a disk-backed path on this machine cannot go past ~2.0-2.6 GB/s, so decode
+speed on a model whose experts do not fit is bounded by **bytes pulled per token**, not by how the reads are issued.
+The engine's own line - "expert cache ~50% hit (+5-6% of the routed experts over PCIe)" - is the number to attack. It
+agrees with `CACHE_VS_DRAFTS.md:97-102`, which found only 9.1% of routed experts crossing the bus against 61.0%
+already resident: most of what the cache misses comes from the copy of the model in system RAM, so the disk is a
+smaller share of the traffic than the monitor tile makes it look.
+
 ## What to do about it
 
 In the order I would do them, cheapest first. None of these need a re-run to write down; all of them need a
