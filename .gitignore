@@ -70,3 +70,6 @@ desktop/electron/dist/
 desktop/tauri/node_modules/
 desktop/tauri/src-tauri/target/
 desktop/tauri/src-tauri/gen/
+
+# local Windows HIP packaging output
+dist-hip/
