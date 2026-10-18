@@ -36,6 +36,10 @@ dated, and the fork's releases follow [SemVer](https://semver.org) once it tags 
   every `results.json` (`state`); `tools/bench_record.py`: one line per run in `runs.jsonl`; `tools/wait_for.py`: block until a log pattern, a process
   exit or a timeout. 8 + 5 + 11 + 10 + 7 new tests; the benchmark's own tests now look at result folders only.
 
+### Measured (2026-10-18, `--adapt-swaps` with a faster CPU and PCIe 4.0)
+- Against the setting's old value of 8, 24 to 48 are faster on decode (about +8-10%); 64 ties with 48 and 96 and 128 are 8-9% slower than 48. The
+  configuration of this fork now uses 48. Sweeps: `strata_ab.py --sweep adapt-swaps`, `adapt-swaps-high` and `adapt-swaps-top`; see docs/TUNING_LOG.md.
+
 ### Changed (2026-10-18, the conversation store checks RAM and remembers which setup saved a file)
 - A save or a restore now needs `min_free_mib` (default 2560, 0 = off) of RAM to stay free after it: the PC runs close to full with the model's pinned
   experts, and a state write that pushes it into paging costs more than reading the conversation again. When there is no room the request reads its

@@ -280,7 +280,20 @@ in round 2; `strata_ab.py --sweep adapt-swaps` and `adapt-swaps-high`):
 | 48 | 34.2, 33.9 | 58-60% | +15.0%, the tightest pair (0.9%) |
 
 Decode rises up to about 24 and is flat between 24 and 48 (about +8-10% over 8); the cache hit rate keeps rising to 48. Two launches per arm and some
-cold ones, so "24 to 48 beats 8" holds and "48 beats 24" does not. 48 is the setting; values above it are not measured.
+cold ones, so "24 to 48 beats 8" holds and "48 beats 24" does not. 48 is the setting.
+
+**Above 48** (`adapt-swaps-top`, 48 as the baseline, chat and an agent session, two launches per arm):
+
+| `--adapt-swaps` | chat decode (launches) | cache hit | against 48, paired per round |
+|---|---|---|---|
+| 48 | 35.3, 35.25 | 56-57% | the baseline's two launches agree to 0.1% |
+| 64 | 34.0, 37.2 | 61-63% | -1.6% in the warm round, +8% in the cold one: a tie |
+| 96 | 33.7, 30.9 | 64% | -8.8% |
+| 128 | 33.1, 30.7 | 64-68% | -8.1% (-3% and -13% in the two rounds) |
+
+The cache hit rate keeps rising with the setting (57% to 66%) while decode stops following at about 64 and falls beyond it, so more cache changes per step
+cost more than the extra hits return. Our reading is that the extra copies over PCIe are the cost; we did not measure that. The curve on this machine:
+decode rises from 8 to about 24, is flat to about 64 and falls after that.
 
 **Method notes:** `tools/strata_bench.py` in v0.1.45 crashes with a `NameError` when it has to start the server (the change that added `server_base` removed
 the `port` line and three uses remain); fixed here. The built-in summary of a sweep reads agent turns only, so a chat-only sweep comes out empty and has to
