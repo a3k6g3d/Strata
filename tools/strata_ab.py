@@ -106,6 +106,15 @@ SWEEPS = {
     },
     # 2026-10-18: 4 was slower than 8 and 16 looked slightly faster with a clearly higher cache hit rate, so the next
     # question is where the gain stops.
+    # 48 became the configuration's own value; this asks whether going further still helps or starts to cost.
+    "adapt-swaps-top": {
+        "note": ("Is there more above --adapt-swaps 48, the configuration's own value?  --adapt-swaps 64, 96 and 128 against "
+                 "it, the arms taking turns."),
+        "arms": [("as configured", []),
+                 ("adapt-swaps 64", ["--adapt-swaps 64"]),
+                 ("adapt-swaps 96", ["--adapt-swaps 96"]),
+                 ("adapt-swaps 128", ["--adapt-swaps 128"])],
+    },
     "adapt-swaps-high": {
         "note": ("Where do returns stop as the expert cache is allowed to change more per adaptation step?  "
                  "--adapt-swaps 16, 24, 32 and 48 against the configuration's own 8, the arms taking turns."),
