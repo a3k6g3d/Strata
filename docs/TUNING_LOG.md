@@ -6,7 +6,8 @@ read the numbers as "what this box did", and see [Noise](#noise-and-method) befo
 
 **The machine:** RTX 5070 12 GB on PCIe 2.0 x16 (about 7 GB/s measured), Intel Core i5-10600K (6 cores, AVX2, no AVX-512), 64 GB DDR4-2666
 (four DIMMs), a SATA-class budget NVMe for the model files, Windows 11. The model is the IQ3_S GSQ-RCO build (two GGUF shards, about 78 GiB,
-experts about 53 GiB) with its MTP draft layer, run through Strata 0.1.42, then 0.1.43 and 0.1.44.1.
+experts about 53 GiB) with its MTP draft layer, run through Strata 0.1.42, then 0.1.43 and 0.1.44.1. From 2026-10-18 the CPU is an i7-11700K with PCIe 4.0, the engine
+0.1.45 and the model Swift 1.5; the first sections describe the i5 machine ([what changed](#a-faster-cpu-0145-and-swift-15)).
 
 ## The short version
 
@@ -45,6 +46,7 @@ Almost everything else we tried was inside the noise. Those results are listed t
 - [The RAM incident and the 64K window](#the-ram-incident-and-the-64k-window)
 - [Cold start and the warm-up](#cold-start-and-the-warm-up)
 - [Conversations on the NVMe](#conversations-on-the-nvme)
+- [A faster CPU, 0.1.45 and Swift 1.5](#a-faster-cpu-0145-and-swift-15)
 - [Ideas we looked at and did not do](#ideas-we-looked-at-and-did-not-do)
 - [Noise and method](#noise-and-method)
 
@@ -225,6 +227,70 @@ skipped the restore after a restart: the warm-up requests leave a short live con
 short live conversation looked like it was being continued. The rule is now to compare matches (restore whenever a saved conversation matches better
 than the live one), and the store logs why a lookup missed. The files are the engine's state of your private chats, so keep the folder out of backups
 and repositories.
+
+## A faster CPU, 0.1.45 and Swift 1.5 (2026-10-18)
+
+What changed on the machine: the i5-10600K became an **i7-11700K** (8 cores, 16 threads, same board and same four DIMMs), so the link to the
+card is PCIe 4.0 x16 under load (`nvidia-smi` shows Gen1 at idle and Gen4 while the model runs; the i5 could not run Gen3 stably). The BIOS reset the
+memory to 2133 MT/s after the swap; enabling the profile brought it back to 2666. Engine 0.1.45 was built and run on the same files, then the model
+was changed to the Swift 1.5 GSQ-RCO abliterated IQ3_S (same size class, 77.8 GB), with the Basalt draft layer unchanged.
+
+**The suite (`tools/strata_bench.py`, 3 runs per test, medians):**
+
+| | chat decode | 4K prompt | 16K prompt | agent decode | agent first token |
+|---|---|---|---|---|---|
+| 0.1.43 engine, SC117 model | 33.7 tok/s | 254.7 | 330.1 | 32.9 | 14.59 s |
+| 0.1.45 engine, same model | 33.4 | 254.8 | 329.4 | 33.9 | 14.63 s |
+| 0.1.45 + `STRATA_PIN_BY_NEED=1` | 33.9 | 254.9 | 330.0 | 33.9 | 14.59 s |
+| 0.1.45, **Swift 1.5** (the SC117 profile) | 36.0 | 263.3 | **472.3** | 35.4 | 13.97 s |
+
+- **The engine alone moved nothing** that is outside the noise: 0.1.45 keeps fewer experts in VRAM (hit rate 53% against 59%) and sends fewer over PCIe
+  (20% against 30%) for the same speed. `STRATA_PIN_BY_NEED=1` changed nothing either; its author's +4.4% came from a machine that could lock only
+  about half its RAM, and the 36 GiB budget here is below that.
+- **Prompt reading did not follow the link:** 255 tok/s at 4K and 330 tok/s at 16K, the same on Gen4 as on Gen2, so on this machine it is not limited by
+  PCIe. Swift reads a 16K prompt 43% faster (472 tok/s); we did not find out why.
+- **The measurement we can compare with the i5:** held-out agent prompts, greedy, the script that produced the profile table in
+  [Expert profiles](#expert-profiles): about 40 tok/s at 6.0 file reads per token, against 31.6 tok/s at 7.4 before (a different engine, model and prompt
+  count, so a rough comparison; the suite's lower figures are longer contexts).
+
+**Expert profile for Swift** (learned on 125 replayed prompts, then three passes over held-out sets, the first dropped):
+
+| profile | agent | Claude-style | general |
+|---|---|---|---|
+| the SC117 profile | 40.3 tok/s, 6.0 reads | 40.2, 7.6 | 40.0, 6.1 |
+| learned on Swift | 42.2, 5.9 | 40.5, 8.1 | 40.0, 5.5 |
+
+A small gain on agent prompts and a wash elsewhere (inside the 3-10% noise); both profiles' file reads are about the same, so the profile carries over
+between two models of one base. We use the Swift one.
+
+**Thinking tokens:** the Swift card claims 35-50% fewer on coding benchmarks. Ten requests (5 short prompts, 2 samples, thinking on): 6,425 tokens for
+SC117 and 5,893 for Swift (-8%), medians 465 and 477. One model's own spread was larger than the gap (1,919 and 1,031 tokens for the same prompt), so
+this test cannot see a difference under about 15-20%; it did not reproduce the claim on short prompts.
+
+**`--adapt-swaps`, once the link was faster** (how many cache entries may change per adaptation step; the arms took turns and the order was reversed
+in round 2; `strata_ab.py --sweep adapt-swaps` and `adapt-swaps-high`):
+
+| `--adapt-swaps` | chat decode (launches) | cache hit | note |
+|---|---|---|---|
+| 4 | 31.0, 31.6, 33.7 | 38-40% | slower than 8 in 3 of 3 rounds; 4K prompt reading about 22% slower in its one launch |
+| 8 (the setting until now) | 31.5, 30.3 and 32.7, 32.2, 35.2 | 42-45% | |
+| 16 | 34.4, 35.4, 34.9 and 32.8, 30.2 | 48-50% | two sweeps disagree: +6% and +0.4% |
+| 24 | 32.9, 35.5 | 50-53% | +17.6% in the one warm paired round |
+| 32 | 33.8, 32.8 | 54% | +4.6% |
+| 48 | 34.2, 33.9 | 58-60% | +15.0%, the tightest pair (0.9%) |
+
+Decode rises up to about 24 and is flat between 24 and 48 (about +8-10% over 8); the cache hit rate keeps rising to 48. Two launches per arm and some
+cold ones, so "24 to 48 beats 8" holds and "48 beats 24" does not. 48 is the setting; values above it are not measured.
+
+**Method notes:** `tools/strata_bench.py` in v0.1.45 crashes with a `NameError` when it has to start the server (the change that added `server_base` removed
+the `port` line and three uses remain); fixed here. The built-in summary of a sweep reads agent turns only, so a chat-only sweep comes out empty and has to
+be read from the results files. Benchmark runs against a server with the conversation store on fill the store's folder with benchmark conversations;
+the benchmark config copy turns it off.
+
+Other machines' reports are not comparable: a Ryzen 5 7600 with DDR5-5200 and the same card is reported at 53 tok/s for short chat on IQ3_S (an older
+engine's figures), and a 16 GB 5070 Ti with 80 GiB of DDR4-3200 at 78-80 tok/s on the same Swift file. They differ from this machine in memory size and
+speed, VRAM and CPU together, so they do not say how much of the gap more RAM would close; the budget test above (36 against 40 GiB, flat) does not
+support assuming much.
 
 ## Ideas we looked at and did not do
 

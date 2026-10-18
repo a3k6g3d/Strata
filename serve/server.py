@@ -7742,7 +7742,7 @@ def main() -> int:
         if getattr(engine, "batch", 0) or not hasattr(engine, "session_file"):
             print("[strata] conversation store: not started - this engine has no session save/restore (or runs parallel requests)", flush=True)
         else:
-            svc.conv_store = conversation_store.create(cfg["conversation_store"], Path(a.config).resolve().parent)
+            svc.conv_store = conversation_store.create(cfg["conversation_store"], Path(a.config).resolve().parent, server_cfg=cfg)
     if isinstance(cfg.get("warmup"), dict):             # the optional warm-up requests after the load (serve/warmup.py)
         from serve import warmup
         keys = key_list(svc.api_key) if svc.api_key else []

@@ -36,6 +36,13 @@ dated, and the fork's releases follow [SemVer](https://semver.org) once it tags 
   every `results.json` (`state`); `tools/bench_record.py`: one line per run in `runs.jsonl`; `tools/wait_for.py`: block until a log pattern, a process
   exit or a timeout. 8 + 5 + 11 + 10 + 7 new tests; the benchmark's own tests now look at result folders only.
 
+### Changed (2026-10-18, the conversation store checks RAM and remembers which setup saved a file)
+- A save or a restore now needs `min_free_mib` (default 2560, 0 = off) of RAM to stay free after it: the PC runs close to full with the model's pinned
+  experts, and a state write that pushes it into paging costs more than reading the conversation again. When there is no room the request reads its
+  prompt as usual and the save is tried again on the next request (logged once per ten minutes). Idea taken from the park gate of upstream PR #2915.
+- Every file carries a fingerprint of the model files, the pack and draft folders, the context size, the KV format and the engine build's folder; files
+  saved under another setup are removed at start, older files without one are kept, and a file the engine refuses twice is dropped. 10 new tests.
+
 ### Added (2026-10-16, an opt-in conversation store on the disk)
 - `"conversation_store": {"enabled": true}` (`serve/conversation_store.py`) saves the engine's conversation to disk when a request for another conversation
   arrives and again as it grows (every 6,000 tokens), and restores it when a prompt continues a saved one, using the engine's `SAVE` / `RESTORE`. A 25K-token

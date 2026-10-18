@@ -94,6 +94,27 @@ SWEEPS = {
                  ("vram-reserve 768", ["--vram-reserve-mib 768"]),
                  ("as configured (repeat)", [])],
     },
+    # The one setting worth asking again after a hardware change (a faster CPU and a PCIe Gen4 link): how often the GPU
+    # expert cache is updated.  The configuration's own --adapt-swaps 8 is the baseline; run it with --rounds so the
+    # arms take turns and the baseline's own spread says what a difference has to beat.
+    "adapt-swaps": {
+        "note": ("Does a faster link or CPU change how often the expert cache should adapt?  Same model, same prompts, "
+                 "same runs; --adapt-swaps 4 and 16 against the configuration's own 8, the arms taking turns."),
+        "arms": [("as configured", []),
+                 ("adapt-swaps 4", ["--adapt-swaps 4"]),
+                 ("adapt-swaps 16", ["--adapt-swaps 16"])],
+    },
+    # 2026-10-18: 4 was slower than 8 and 16 looked slightly faster with a clearly higher cache hit rate, so the next
+    # question is where the gain stops.
+    "adapt-swaps-high": {
+        "note": ("Where do returns stop as the expert cache is allowed to change more per adaptation step?  "
+                 "--adapt-swaps 16, 24, 32 and 48 against the configuration's own 8, the arms taking turns."),
+        "arms": [("as configured", []),
+                 ("adapt-swaps 16", ["--adapt-swaps 16"]),
+                 ("adapt-swaps 24", ["--adapt-swaps 24"]),
+                 ("adapt-swaps 32", ["--adapt-swaps 32"]),
+                 ("adapt-swaps 48", ["--adapt-swaps 48"])],
+    },
 }
 
 

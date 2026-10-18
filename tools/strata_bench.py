@@ -1276,7 +1276,8 @@ def main(argv=None) -> int:
     if a.url:
         base = a.url.rstrip("/")
     else:
-        base = server_base(cfg.get("host"), a.port or int(cfg.get("port", 8080)))
+        port = a.port or int(cfg.get("port", 8080))        # 0.1.45 dropped this line and still used `port` below
+        base = server_base(cfg.get("host"), port)
     red = redactor(key=key)
     started = False
     try:
