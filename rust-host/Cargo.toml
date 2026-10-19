@@ -1,0 +1,9 @@
+[workspace]
+resolver = "2"
+members = ["crates/strata-abi"]
+
+# Dependency-free on purpose: the first milestones must build on a machine with no crates.io access,
+# and every guard this crate needs is std-only.
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
