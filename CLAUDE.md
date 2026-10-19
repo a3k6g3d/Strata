@@ -61,6 +61,10 @@ Normal start is `J:\Strata-work\Start-Strata.bat` (calls `run-strata.ps1`, logs 
 
 ## Gotchas learned on this machine
 
+- **Bound every walk in a probe command.** A `while ($dev)` over a device-tree parent chain ran to the 600 s tool timeout
+  on 2026-10-14: `DEVPKEY_Device_Parent` resolves through the ACPI tree, which cycles, so "stop when it's null" never
+  fires. Cap the hops (say 6), keep a visited set, and put a timeout on exploratory queries. Prefer `nvidia-smi -q` /
+  `Win32_PnPSignedDriver` over walking `Win32_PnPEntity` node by node — one call, no chain.
 - **RAM is the limit.** With a 65,536-token context a 40 GiB resident budget left under 1 GiB free and Windows thrashed (page-ins over 8,000/s, generation stalled). The config uses 36 GiB. Check `\Memory\Pages Input/sec` and free RAM before raising the budget or the context; a larger context also shrinks the GPU expert cache (2,205 -> 1,951 slots at 64K) with no measurable decode cost, because decode here is CPU-bound.
 - **Benchmarking:** use the `bench\overnight*.py` pattern (restart the server per variant, three passes with the first dropped, repeat the control at the end). Run-to-run noise is about 1%; do not call a smaller difference a win. Never run two benchmarks or heavy tests at once, and keep the RAM and page-in guard in any new script.
 - **Tuning already settled** (see `CHANGELOG.md` and `bench\results\`): `--adapt-swaps 8`, `--ple-io direct`, `--vram-reserve-mib 640`, spec 4 / min-p 0.5. No gain from `--kv k8v4`, `--prefill auto:16384`, a smaller VRAM reserve, or `--adapt-async`.
