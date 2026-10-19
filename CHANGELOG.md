@@ -36,6 +36,13 @@ dated, and the fork's releases follow [SemVer](https://semver.org) once it tags 
   every `results.json` (`state`); `tools/bench_record.py`: one line per run in `runs.jsonl`; `tools/wait_for.py`: block until a log pattern, a process
   exit or a timeout. 8 + 5 + 11 + 10 + 7 new tests; the benchmark's own tests now look at result folders only.
 
+### Changed (2026-10-18, a message can be queued while another chat is writing)
+- Pressing Enter in one chat while another chat's answer was still being written only showed a "Still writing" notice; the text stayed in the box and the
+  message had to be sent again by hand. It is now queued in the chat it was typed in and goes out there when the other answer ends (a notice offers "Stop it and
+  send now"; the bar over the box says which chat it waits for). The queue holds one entry per chat, so messages typed in two chats are no longer merged into
+  one, and the hint under the box is refreshed when another chat is opened (it said "Enter: queue" when Enter did not queue). 4 tests in
+  `serve/test_web_queue.py`, which run the queue functions of `app.js` in node (skipped without it).
+
 ### Changed (2026-10-18, the tool loop asks once when the model stops without a word)
 - A round that ends right after a tool result with no tool call and no text used to end the turn, and the chat sat at "Idle" in the middle of the work. The
   server now adds one "carry on, or say it is finished" message and generates again, once per turn and only after a tool was used; a cut-off round or a stop by
