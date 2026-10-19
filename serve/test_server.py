@@ -6180,6 +6180,83 @@ class ConsoleRoutes(unittest.TestCase):
             server._console, server._console_seq = saved
 
 
+class EndsBeforeAMarkerEngine(ThinkingEngine):
+    """An answer about chat markers: it stops on the end token where it was about to write `<|im_end|>` as text.  A prompt that
+    ends with the marker put in as plain text gets the rest of the answer."""
+    FIRST = "</think>\n\nA tokenizer has `<|im_start|>` or `"
+    REST = "` and that is all."                       # the model closes the span after the marker
+    always_cut = False
+
+    def generate(self, ids, max_new, sampling, cancel, embeddings=None):
+        self.prompts.append(list(ids))
+        continued = self.tok.decode(ids).endswith("`<|im_end|>")
+        text = (self.REST if not self.always_cut else self.REST + " `<|im_start|>` or `") if continued else self.FIRST
+        for t in (self.tok.encode(text) + self.tok.encode("<|im_end|>", parse_special=True))[:max_new]:
+            if cancel.is_set():
+                return
+            yield t
+
+
+class AnswerMarkerRetry(unittest.TestCase):
+    """(opt-in) an answer that ends inside a code span right after naming a chat marker gets the marker as plain text and goes on."""
+
+    def setUp(self):
+        self.tok = ByteTokenizer()
+        self.engine = EndsBeforeAMarkerEngine(self.tok)
+        self.svc = Service(self.engine, self.tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        self.httpd = serve(self.svc, port=0)
+        self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+
+    def tearDown(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+    def chat(self):
+        body = {"model": "m", "messages": [{"role": "user", "content": "How do tokenizers treat chat markers?"}], "max_tokens": 600}
+        req = urllib.request.Request(self.base + "/v1/chat/completions", data=json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return json.loads(r.read().decode())["choices"][0]
+
+    def test_off_by_default_the_answer_stays_cut(self):
+        c = self.chat()
+        self.assertEqual(len(self.engine.prompts), 1)
+        self.assertTrue(c["message"]["content"].endswith("or `"))
+
+    def test_on_the_marker_is_put_in_and_the_answer_continues(self):
+        self.svc.answer_marker_retry = True
+        c = self.chat()
+        self.assertEqual(len(self.engine.prompts), 2)
+        self.assertTrue(self.tok.decode(self.engine.prompts[1]).endswith("`<|im_end|>"))
+        self.assertEqual(c["message"]["content"], "A tokenizer has `<|im_start|>` or `<|im_end|>` and that is all.")
+        self.assertEqual(c["finish_reason"], "stop")
+
+    def test_it_goes_on_at_most_three_times(self):
+        self.svc.answer_marker_retry = True
+        self.engine.always_cut = True
+        self.chat()
+        self.assertEqual(len(self.engine.prompts), 1 + server.MARKER_RETRIES)
+
+    def test_an_ordinary_answer_is_not_touched(self):
+        self.svc.answer_marker_retry = True
+        self.engine.FIRST = "</think>\n\nFour."
+        c = self.chat()
+        self.assertEqual((len(self.engine.prompts), c["message"]["content"]), (1, "Four."))
+
+
+class MarkerCutOff(unittest.TestCase):
+    def test_which_marker_was_about_to_come(self):
+        cut = server.marker_cut_off
+        self.assertEqual(cut("If a tokenizer has `<|im_start|>` or `"), "<|im_end|>")
+        self.assertEqual(cut("Chat markers are special.\n\nA tokenizer has `"), None)            # no marker named yet
+        self.assertEqual(cut("It maps `<|im_end|>` and then `"), "<|im_start|>")
+        self.assertEqual(cut("Both `<|im_start|>` and `<|im_end|>` are control tokens, e.g. `"), "<|im_end|>")
+        self.assertEqual(cut('The marker named `<|im_start|>` is written as "'), "<|im_end|>")
+        self.assertIsNone(cut("The marker `<|im_start|>` is a control token."))                   # closed span: an ordinary end
+        self.assertIsNone(cut("Plain text with `code` and no marker `"))
+        self.assertIsNone(cut(""))
+
+
 if __name__ == "__main__":
     unittest.main()
 

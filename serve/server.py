@@ -155,6 +155,25 @@ ANSWER_RESERVE_MIN = 512      # #984: the tokens kept for the answer when a thin
 # #1053 (opt-in "reasoning_close_retry": true): a reply that ends on its stop token still inside <think>, with no answer
 # and no call, is continued once with the thinking closed (the same way the budget's wrap-up closes it)
 REASONING_CLOSE = "\n</think>\n\n"
+# (opt-in "answer_marker_retry": true): a model that wants to write a chat marker as plain text (an answer about tokenizers and
+# <|im_start|> / <|im_end|>) samples the real end token instead, and the answer stops inside a code span: "...has `<|im_start|>` or `".
+# The marker it was about to write is put in as ordinary text and the answer goes on, at most MARKER_RETRIES times per request.
+CHAT_MARKERS = ("<|im_start|>", "<|im_end|>")
+MARKER_RETRIES = 3
+
+
+def marker_cut_off(text: str):
+    """The chat marker an answer that ended on its stop token was about to write, or None when it did not end like that: the answer must
+    already name a marker, and its last line must end inside an open code span or quote."""
+    if not any(m in text for m in CHAT_MARKERS):
+        return None
+    line = text.rsplit("\n", 1)[-1]
+    if line.count("`") % 2 == 0 and line.count('"') % 2 == 0:
+        return None
+    missing = [m for m in CHAT_MARKERS if m not in line]
+    return missing[0] if missing else CHAT_MARKERS[1]
+
+
 REASONING_WRAP_UP = "\n\nI have thought about this long enough; time to give my answer.\n</think>\n\n"
 # #728: opt-in handling of reasoning that repeats whole passages (which the single-token guard above cannot see).
 # "reasoning_loop_recovery": "stop" ends the reply there; "recover" (or true) goes on from the same output with the
@@ -3181,6 +3200,7 @@ class Service:
         self.aliases: list[str] = []                  # #297: other names of the model (the config's `aliases`)
         self.answer_room = True                       # 0.1.45: see ANSWER_ROOM_MIN_CAP (the config's "answer_room": false turns it off)
         self.reasoning_close_retry = False            # #1053 (opt-in): close the thinking once when a reply ends inside it
+        self.answer_marker_retry = False              # (opt-in) put in the chat marker an answer was about to write and go on
         self.codex_compaction_cache = False           # #924 (opt-in): a Codex compaction is rendered with its conversation's tools
         self.codex_thread_titles = False              # #923 (opt-in): answer Codex's thread-title turns without the engine
         self.sampling_defaults = dict(sampling_defaults or {})   # the run config's `sampling` block
@@ -4322,6 +4342,7 @@ class Service:
             opening, force = parser.feed(force), None
         tail = ""                                       # the last characters written (the newlines before a call)
         answered, close_retried = False, False          # #1053: content or a call came out; the thinking was closed
+        answer_text, marker_retries = "", 0             # the answer so far; the chat markers put in as plain text
         nf_retried = False                              # #879: the request was sent again after non-finite logits
         timings, before = None, None                    # this request's timings; the engine's `last` before it
         recovery_count, reasoning_text, repeat_coverage = 0, "", 0.0
@@ -4464,6 +4485,8 @@ class Service:
                                         reasoning_text += ev.text or ""
                                     if ev.kind in ("content", "tool_start", "tool_call"):
                                         answered = True
+                                    if ev.kind == "content" and self.answer_marker_retry:
+                                        answer_text += ev.text or ""
                                     yield "event", ev
                                 if evs:
                                     last_out = time.perf_counter()
@@ -4584,6 +4607,27 @@ class Service:
                                     evs = cut(parser.feed(detok.push(t)))
                                     self._note(n, evs, st, rate)
                                     for ev in evs:
+                                        yield "event", ev
+                                prompt = prompt + seg + extra
+                                finish = "length"
+                                continue
+                        if (self.answer_marker_retry and finish == "stop" and answered and not wrap and not opens
+                                and marker_retries < MARKER_RETRIES and parser.state == "content"
+                                and (stops is None or stops.hit is None) and not cancel.is_set()):
+                            marker = marker_cut_off(answer_text)
+                            extra = self.tok.encode(marker, parse_special=False) if marker else []
+                            if extra and max_new - n - len(extra) >= 1:
+                                marker_retries += 1
+                                print(f"[strata] the answer ended where it was about to write {marker}: putting it in as plain "
+                                      f"text and continuing ({marker_retries} of {MARKER_RETRIES}, answer_marker_retry)", flush=True)
+                                for t in extra:
+                                    n += 1
+                                    raw_ids.append(t)
+                                    evs = cut(parser.feed(detok.push(t)))
+                                    self._note(n, evs, st, rate)
+                                    for ev in evs:
+                                        if ev.kind == "content":
+                                            answer_text += ev.text or ""
                                         yield "event", ev
                                 prompt = prompt + seg + extra
                                 finish = "length"
@@ -7608,6 +7652,7 @@ def main() -> int:
         svc.model_arch = cfg.get("arch") or "qwen4exp"
     svc.answer_room = cfg.get("answer_room") is not False
     svc.reasoning_close_retry = cfg.get("reasoning_close_retry") is True    # #1053: opt-in, off by default
+    svc.answer_marker_retry = cfg.get("answer_marker_retry") is True        # opt-in, off by default
     if cfg.get("images"):                               # image generation (serve/images.py), set up by setup --images
         icfg = {k: (os.path.abspath(os.path.join(cfg.get("cwd") or ".", v))
                     if k in ("exe", "diffusion_model", "vae", "llm", "out_dir") and isinstance(v, str)
