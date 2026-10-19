@@ -766,6 +766,13 @@ print(r.choices[0].message.content)
   end-of-turn token with no `</think>`: the content is empty and an agent stops. `"reasoning_close_retry": true` in
   `strata-<model>.json` closes the thinking once (as the thinking budget does) and continues, once per request, only for
   a reply that ended that way with no answer and no tool call. Off by default.
+- **An end token sampled where a marker was meant as text is dropped and resampled (opt-in).** A model writing about
+  tokenizers wants to spell `<|im_start|>` or `<|im_end|>` out as plain text, and can sample the real end token at exactly
+  that spot: the reply stops in the middle of its thinking, a code span, or a fenced block. Only an end token can stop a
+  reply, so nothing has to be guessed there. `"eos_resample": true` in `strata-<model>.json` drops that token, samples the
+  next 48 with the end tokens banned (the model then writes the marker as text), and goes back to what the request asked,
+  at most 3 times per request. It only fires when the end genuinely looks cut off - an open fenced block, or a last line
+  ending inside an open code span or quote - so an answer that ends on its own is left alone. Off by default.
 - **A reply stuck on one token is ended (0.1.39, #606).** When a reply repeats the same token 256 times in a row, the
   server ends it there with `finish_reason` `"length"` and says so in its window: a model in a loop, or a broken
   state that answers one token forever (#606 saw 36,689 tokens of `!`). `"repeat_stop_tokens": N` in

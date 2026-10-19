@@ -150,11 +150,12 @@ ANSWER_RESERVE_MIN = 512      # #984: the tokens kept for the answer when a thin
 # #1053 (opt-in "reasoning_close_retry": true): a reply that ends on its stop token still inside <think>, with no answer
 # and no call, is continued once with the thinking closed (the same way the budget's wrap-up closes it)
 REASONING_CLOSE = "\n</think>\n\n"
-# (opt-in "eos_resample": true): a model that wants to write a chat marker (<|im_start|>, <|im_end|>) as plain text - an answer about
-# tokenizers - can sample the real end token where the text belongs, and the reply stops in the middle of its thinking, a code span or a
-# fenced block.  Only an end token can stop a reply, so nothing has to be guessed: that token is dropped, the next EOS_BAN_TOKENS tokens are
-# sampled with the end tokens banned (the model then spells the marker out as ordinary text), and sampling goes back to what the request
-# asked.  At most EOS_RESAMPLES times per request.  Measured: with the end tokens banned the model spells the marker and carries on.
+# (opt-in "eos_resample": true): a model that wants to write a chat marker (<|im_start|>, <|im_end|>) as plain text - an
+# answer about tokenizers - can sample the real end token where the text belongs, and the reply stops in the middle of its
+# thinking, a code span or a fenced block.  Only an end token can stop a reply, so nothing has to be guessed: that token is
+# dropped, the next EOS_BAN_TOKENS tokens are sampled with the end tokens banned (the model then spells the marker out as
+# ordinary text), and sampling goes back to what the request asked.  At most EOS_RESAMPLES times per request.  Measured:
+# with the end tokens banned the model spells the marker and carries on.
 EOS_BAN_TOKENS = 48
 EOS_RESAMPLES = 3
 CHAT_MARKERS = ("<|im_start|>", "<|im_end|>")
