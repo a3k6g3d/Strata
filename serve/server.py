@@ -4826,6 +4826,18 @@ def _debug_req(api, req, messages, tools, max_new, thinking, prompt_tokens):
 
 
 # ------------------------------------------------------------------------------------------------ MCP tool loop
+NUDGE_PROMPT = ("You stopped without a reply right after the last tool result. If the work is finished, say so in a "
+                "sentence or two and summarize what you did; if it is not, carry on with the next step.")
+
+
+def needs_nudge(rounds: int, nudged: bool, calls, own_calls: int, finish: str, cancelled: bool, text: str) -> bool:
+    """A round that ends right after a tool result with no tool call and not a word of text is not an answer: the model
+    stopped by itself (the chat then sits at "Idle" in the middle of the work).  Ask it once to carry on or to say it is
+    finished.  Never in a chat that has not used a tool yet, after a cut-off or a stop by the user, or twice in one turn."""
+    return bool(rounds >= 1 and not nudged and not calls and not own_calls and finish == "stop" and not cancelled
+                and not text.strip())
+
+
 def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new, max_req, sampling, cancel,
                  mcp_names, mode="ask"):
     """Service.run with the MCP tools executed here: the model writes a call to an MCP tool, the server runs it, adds
@@ -4842,6 +4854,7 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
     refused after `approval_timeout_s`), or is refused with a result the model reads and can react to."""
     max_rounds = int(hub.settings["max_rounds"])
     total, rounds, done = 0, 0, None
+    nudged = False                                       # the one automatic "carry on" of this turn (needs_nudge)
     messages = list(messages)
     # Once the model has used a local tool (read a file, listed a folder ...) in this chat, a request to the internet
     # asks first: a web page could otherwise talk it into putting what it read into an address.
@@ -4888,6 +4901,19 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
             yield "mcp", {"event": "limit", "max_rounds": max_rounds}
             run_them, why = False, "limit"
         if not run_them:
+            if needs_nudge(rounds, nudged, calls, own_calls, done["finish"], cancel.is_set(), "".join(text)):
+                nudged = True
+                print("[strata] tool loop: the model ended its turn right after a tool result without a word; "
+                      "asking it once to carry on", flush=True)
+                messages.append({"role": "assistant", "content": ""})
+                messages.append({"role": "user", "content": NUDGE_PROMPT})
+                shrunk, summarized = yield from fit_context_live(svc, messages, tools, kw, max_req, cancel)
+                if shrunk or summarized:
+                    yield "mcp", {"event": "compact", "shrunk": shrunk, "summarized": summarized}
+                if cancel.is_set():
+                    break
+                ids, thinking, max_new = svc.prepare(messages, tools, kw, max_req, cancel=cancel)
+                continue
             if calls and not why:                        # stopped, or the answer was cut off before the call ended
                 # The engine's finish_reason "stop" means the model ended the answer on its own.  Passing that through
                 # as "stop" made the page read it as the user pressing Stop, and blamed the user for the model's own
