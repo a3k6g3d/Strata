@@ -4297,6 +4297,18 @@ def _debug_req(api, req, messages, tools, max_new, thinking, prompt_tokens):
 
 
 # ------------------------------------------------------------------------------------------------ MCP tool loop
+NUDGE_PROMPT = ("You stopped without a reply right after the last tool result. If the work is finished, say so in a "
+                "sentence or two and summarize what you did; if it is not, carry on with the next step.")
+
+
+def needs_nudge(rounds: int, nudged: bool, calls, own_calls: int, finish: str, cancelled: bool, text: str) -> bool:
+    """A round that ends right after a tool result with no tool call and not a word of text is not an answer: the model
+    stopped by itself (the chat then sits at "Idle" in the middle of the work).  Ask it once to carry on or to say it is
+    finished.  Never in a chat that has not used a tool yet, after a cut-off or a stop by the user, or twice in one turn."""
+    return bool(rounds >= 1 and not nudged and not calls and not own_calls and finish == "stop" and not cancelled
+                and not text.strip())
+
+
 def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new, max_req, sampling, cancel,
                  mcp_names, mode="ask"):
     """Service.run with the MCP tools executed here: the model writes a call to an MCP tool, the server runs it, adds
@@ -4313,6 +4325,7 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
     refused after `approval_timeout_s`), or is refused with a result the model reads and can react to."""
     max_rounds = int(hub.settings["max_rounds"])
     total, rounds, done = 0, 0, None
+    nudged = False                                       # the one automatic "carry on" of this turn (needs_nudge)
     messages = list(messages)
     # Once the model has used a local tool (read a file, listed a folder ...) in this chat, a request to the internet
     # asks first: a web page could otherwise talk it into putting what it read into an address.
@@ -4355,6 +4368,19 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
             yield "mcp", {"event": "limit", "max_rounds": max_rounds}
             run_them, why = False, "limit"
         if not run_them:
+            if needs_nudge(rounds, nudged, calls, own_calls, done["finish"], cancel.is_set(), "".join(text)):
+                nudged = True
+                print("[strata] tool loop: the model ended its turn right after a tool result without a word; "
+                      "asking it once to carry on", flush=True)
+                messages.append({"role": "assistant", "content": ""})
+                messages.append({"role": "user", "content": NUDGE_PROMPT})
+                shrunk, summarized = yield from fit_context_live(svc, messages, tools, kw, max_req, cancel)
+                if shrunk or summarized:
+                    yield "mcp", {"event": "compact", "shrunk": shrunk, "summarized": summarized}
+                if cancel.is_set():
+                    break
+                ids, thinking, max_new = svc.prepare(messages, tools, kw, max_req)
+                continue
             if calls and not why:                        # stopped, or the answer was cut off before the call ended
                 # The engine's finish_reason "stop" means the model ended the answer on its own.  Passing that through
                 # as "stop" made the page read it as the user pressing Stop, and blamed the user for the model's own
@@ -4539,11 +4565,17 @@ def fit_tool_results(svc: Service, messages: list, tools, kw, max_req) -> int:
 
 SUMMARY_MAX_TOKENS = 800                # the most a summary of the older conversation may take (a minute at ~15 tok/s)
 SUMMARY_KEEP_TAIL = 4                  # the newest messages kept word for word when the older ones are summarized
+SUMMARY_ROLLUP_CHARS = 6000            # a summary grown this long (the ~3 chars-per-token below) is rewritten whole
 SUMMARY_PROMPT = ("Below is the earlier part of a conversation between a user and you, an AI assistant working with "
                   "tools. Write a summary that lets you continue the work without the original text: the user's goal "
                   "and instructions, what has been done so far, which files, commands and results mattered (exact "
                   "paths, names, numbers, errors), decisions made, and what remains to be done. Be complete but "
                   "compact, in plain text.\n\n")
+SUMMARY_EXT_PROMPT = ("Below is a summary of the earlier part of a conversation between a user and you, an AI "
+                      "assistant working with tools, and then what has been said since it. Write only what to add at "
+                      "the end of the summary for the new part - the user's new instructions, what was done, which "
+                      "files, commands and results mattered (exact paths, names, numbers, errors), decisions made, "
+                      "and what remains to be done - in the same style, without repeating what it already says.\n\n")
 
 
 def _plain_text(m: dict) -> str:
@@ -4630,6 +4662,22 @@ def _digest(messages: list) -> str:
     return hashlib.sha256(json.dumps(messages, sort_keys=True, default=str).encode()).hexdigest()
 
 
+def _write_summary(svc: Service, prompt: str, cancel) -> str | None:
+    """One generation by the same model (thinking off, at most SUMMARY_MAX_TOKENS) over `prompt`: the summary text, or
+    None when it failed - the caller's own error for a prompt that still does not fit follows, as before."""
+    ids = svc.encode_prompt([{"role": "user", "content": prompt}], None, {"enable_thinking": False})
+    svc.embeddings.path = None
+    parts = []
+    try:
+        for kind, x in svc.run(ids, False, None, SUMMARY_MAX_TOKENS, {"temperature": 0.3}, cancel):
+            if kind == "event" and x.kind == "content":
+                parts.append(x.text)
+    except Exception as ex:
+        print(f"[strata] summarizing the earlier conversation failed: {ex}", flush=True)
+        return None
+    return "".join(parts).strip()
+
+
 def prompt_fits(svc: Service, messages: list, tools, kw) -> bool:
     ctx = svc.engine.max_context or getattr(svc.engine, "known_ctx", 0)
     if ctx <= 0:
@@ -4645,6 +4693,9 @@ def compact_history(svc: Service, messages: list, tools, kw, cancel, orig: list 
     `orig`: the messages as the client sent them (before any shortening).  A summary is remembered by the digest of
     the first N of them, so the next turn of the same chat - which only adds messages at the end - finds it again
     and does not summarize the same text twice; it is summarized further only when the prompt is still too long.
+    When it is, and the found summary covers the old part, only what has been said *since* it is summarized and
+    added to it (the whole summary is rewritten once it has grown past SUMMARY_ROLLUP_CHARS): a chat that keeps
+    growing pays for the new messages each turn, not for its whole history.
     Returns how many messages were replaced."""
     ctx = svc.engine.max_context or getattr(svc.engine, "known_ctx", 0)
     if ctx <= 0 or prompt_fits(svc, messages, tools, kw):
@@ -4679,26 +4730,25 @@ def compact_history(svc: Service, messages: list, tools, kw, cancel, orig: list 
     start = max(head, len(messages) - SUMMARY_KEEP_TAIL)
     while start > head and messages[start].get("role") == "tool":     # a result stays with the call that asked for it
         start -= 1
+    new = messages[head + 1:start] if replaced else messages[head:start]   # what the cached summary does not cover
     middle = messages[head:start]
     if len(middle) < 2:
         return replaced
-    text = SUMMARY_PROMPT + _transcript(middle, max(4000, (ctx - 4000 - SUMMARY_MAX_TOKENS) * 3))
-    ids = svc.encode_prompt([{"role": "user", "content": text}], None, {"enable_thinking": False})
-    svc.embeddings.path = None
-    parts = []
+    budget = max(4000, (ctx - 4000 - SUMMARY_MAX_TOKENS) * 3)
     t0 = time.monotonic()
     if on_summary is not None:
         on_summary()                                 # only now is the model really going to write a summary
-    try:
-        for kind, x in svc.run(ids, False, None, SUMMARY_MAX_TOKENS, {"temperature": 0.3}, cancel):
-            if kind == "event" and x.kind == "content":
-                parts.append(x.text)
-    except Exception as ex:                          # no summary: the caller's own error for a too-long prompt follows
-        print(f"[strata] summarizing the earlier conversation failed: {ex}", flush=True)
-        return replaced
-    summary = "".join(parts).strip()
-    if not summary or cancel.is_set():
-        return replaced
+    extended = bool(replaced) and len(summary) <= SUMMARY_ROLLUP_CHARS
+    if extended:                                     # the chat has grown past the cached summary: add what is new to
+        delta = _write_summary(svc, SUMMARY_EXT_PROMPT + "SUMMARY SO FAR:\n" + summary   # it, instead of rewriting
+                                + "\n\nWHAT HAS BEEN SAID SINCE THEN:\n" + _transcript(new, budget), cancel)    # the whole thing
+        if not delta or cancel.is_set():             # no delta: the summary stands as it was, as after a failed one
+            return replaced
+        summary = summary + "\n" + delta
+    else:
+        summary = _write_summary(svc, SUMMARY_PROMPT + _transcript(middle, budget), cancel)
+        if not summary or cancel.is_set():
+            return replaced
     n_orig = covered + (start - head - (1 if covered else 0))       # client messages this summary stands for
     if len(orig) == len(messages) + max(0, covered - 1) and head + n_orig <= len(orig):
         cache.append((n_orig, _digest(orig[head:head + n_orig]), summary, _previews(orig[head:head + n_orig])))
@@ -4706,9 +4756,10 @@ def compact_history(svc: Service, messages: list, tools, kw, cancel, orig: list 
         del cache[:-16]
         _summary_cache_save(svc, cache)
     messages[head:start] = [_summary_message(summary)]
-    print(f"[strata] summarized {len(middle)} earlier message(s) in {time.monotonic() - t0:.0f} s to keep the "
-          f"conversation inside the context", flush=True)
-    return replaced + len(middle) - (1 if covered else 0)
+    print(f"[strata] summarized {len(new)} earlier message(s) in "
+          f"{time.monotonic() - t0:.0f} s to keep the conversation inside the context"
+          f"{', added to the cached summary' if extended else ''}", flush=True)
+    return replaced + len(new)
 
 
 def fit_context(svc: Service, messages: list, tools, kw, max_req, cancel, on_summary=None) -> tuple[int, int]:
@@ -7039,7 +7090,7 @@ def main() -> int:
         if getattr(engine, "batch", 0) or not hasattr(engine, "session_file"):
             print("[strata] conversation store: not started - this engine has no session save/restore (or runs parallel requests)", flush=True)
         else:
-            svc.conv_store = conversation_store.create(cfg["conversation_store"], Path(a.config).resolve().parent)
+            svc.conv_store = conversation_store.create(cfg["conversation_store"], Path(a.config).resolve().parent, server_cfg=cfg)
     if isinstance(cfg.get("warmup"), dict):             # the optional warm-up requests after the load (serve/warmup.py)
         from serve import warmup
         keys = key_list(svc.api_key) if svc.api_key else []

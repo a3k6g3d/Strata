@@ -7,6 +7,21 @@ dated, and the fork's releases follow [SemVer](https://semver.org) once it tags 
 
 ## Unreleased - 2026-10-10
 
+### Fixed (2026-10-18, a long chat summarized its whole history every turn)
+- A chat that has outgrown the context pays for it every turn, and until now it paid in full: the summary cache found
+  last turn's summary, but when that summary no longer fitted on its own the code re-summarized the entire middle -
+  including the summary it had just found - a minute of model time per turn, forever (the logs show chats at 800 and
+  4,000 messages, a cache of exactly the 16 kept entries, all of them growth series of the same chats). The docs
+  promised better: "the same history gives the same summary from a cache, so a long chat is summarized once" - true
+  only when the cached summary fits alone, which stops being true as soon as the chat grows.
+  Now a cache hit that does not fit summarizes only what has been said *since* the cached summary and adds it to the
+  end of it, so a turn costs the new messages and nothing else. Once the rolling summary has itself grown past
+  6,000 characters it is rewritten whole, so it cannot grow for ever (that rewrite is the one case that still costs a
+  full minute, and it happens about every 20 turns). A failed extension leaves the old summary alone, as a failed
+  summary always did. Two tests: one that grew a chat past its cached summary and checked the prompt sent
+  (the extension prompt, the new messages in it, the old goal *not* in it, the newest four kept word for word), one
+  for the rollup. The bug had no test because nothing exercised the "cached summary no longer fits" path.
+
 ### Added (2026-10-16, file tools of Strata's own: eleven tools under the official server's names)
 - `tools/strata_files_mcp.py` is a file server for the folders you name on its command line, so the chat can change a file
   and not only find one. Until now changing something meant `npx @modelcontextprotocol/server-filesystem` (Node.js on

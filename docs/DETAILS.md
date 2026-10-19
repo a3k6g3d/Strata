@@ -1520,7 +1520,10 @@ results down to their first 1,500 characters (with a note that says how much was
 whole). If that is not enough, the model summarizes the older part of the conversation: the system messages and the
 newest four messages stay word for word, everything between becomes one message with the summary (thinking off,
 at most 1,500 tokens). The same history gives the same summary from a cache, so a long chat is summarized once. The
-answer's footer says "summarized N earlier messages" when it happened; a summary can lose detail. Only requests that use
+answer's footer says "summarized N earlier messages" when it happened; a summary can lose detail. A chat that keeps growing
+pays for the new messages each turn, not for its whole history: the next turn adds what has been said since to the
+summary it found (the whole thing is rewritten once the summary has grown past 6,000 characters, so it cannot grow for
+ever). Only requests that use
 MCP tools are changed this way; any other request that is too long still fails with "requests are never truncated".
 
 **Separate chats.** With a run config, the chat page lists your chats on the left (new chat, open, rename by

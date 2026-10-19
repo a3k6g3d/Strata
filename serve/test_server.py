@@ -387,6 +387,71 @@ class CompactHistory(unittest.TestCase):
         self.assertIn("SUMMARY OF WORK", later[1]["content"])
         self.assertEqual(later[-2:], grown[-2:])
 
+    def test_a_chat_that_grew_past_its_summary_adds_to_it(self):
+        """The bug: the cache found the old summary, it no longer fitted on its own, and the code rewrote the whole
+        history from scratch - every turn of a long chat.  It should summarize only what has been said since."""
+        from serve.server import compact_history
+        svc, calls = self.svc(12000)
+        prompts = self.prompts(svc)
+        compact_history(svc, self.msgs(), None, {}, threading.Event(), orig=self.msgs())
+        grown = self.msgs() + self.grown()
+        later = list(grown)
+        n = compact_history(svc, later, None, {}, threading.Event(), orig=grown)
+        self.assertEqual(len(calls), 2)                              # a second summary was really written
+        self.assertIn("a summary of the earlier part", prompts[1])   # the extension prompt, not the full one
+        self.assertIn("SUMMARY SO FAR:\nSUMMARY OF WORK", prompts[1])
+        self.assertIn("note 0", prompts[1])                          # what is new since the summary
+        self.assertIn("note 7", prompts[1])
+        self.assertNotIn("note 8", prompts[1])                       # the newest four stay word for word
+        self.assertNotIn("g" * 5000, prompts[1])                     # the old goal: already summarized, not re-read
+        self.assertEqual(n, 9 + 12)
+        self.assertIn("SUMMARY OF WORK\nSUMMARY OF WORK", later[1]["content"])   # the old one, plus the new part
+        self.assertEqual(later[-4:], grown[-4:])
+        self.assertEqual([e[0] for e in svc.summary_cache], [9, 21])             # the next turn finds 21
+
+    def test_a_summary_that_has_grown_is_rewritten_whole(self):
+        """Past SUMMARY_ROLLUP_CHARS the rolling summary is written again from the top, so it cannot grow for ever."""
+        import serve.server as server
+        from serve.server import compact_history
+        svc, calls = self.svc(12000)
+        prompts = self.prompts(svc)
+        texts = iter(["S" * (server.SUMMARY_ROLLUP_CHARS + 1), "REWRITTEN FROM THE TOP"])
+        def run(*a):
+            calls.append(len(a[0]))
+            yield "event", SimpleNamespace(kind="content", text=next(texts))
+            yield "done", {"finish": "stop", "completion_tokens": 3}
+        svc.run = run
+        compact_history(svc, self.msgs(), None, {}, threading.Event(), orig=self.msgs())
+        grown = self.msgs() + self.grown()
+        later = list(grown)
+        n = compact_history(svc, later, None, {}, threading.Event(), orig=grown)
+        self.assertEqual(len(calls), 2)
+        self.assertIn("Below is the earlier part of a conversation", prompts[1])   # the full prompt again
+        self.assertIn("SSSS", prompts[1])                                # the old summary, re-read this time
+        self.assertIn("note 0", prompts[1])
+        self.assertNotIn("note 8", prompts[1])
+        self.assertEqual(n, 13 + 8)
+        self.assertIn("REWRITTEN FROM THE TOP", later[1]["content"])     # written again, not added to
+
+    def prompts(self, svc):
+        """The test service, wrapped so each summary prompt it sends is recorded as text (it recorded its length).
+        A summary is always one message; the chat itself is many, and that is the fit check, not a prompt."""
+        from serve.server import _plain_text
+        seen, enc = [], svc.encode_prompt
+
+        def wrapped(messages, tools, kw):
+            ids = enc(messages, tools, kw)
+            if len(messages) == 1:                     # a summary prompt is one message; the chat is many
+                seen.append(_plain_text(messages[0]))
+            return ids
+        svc.encode_prompt = wrapped
+        return seen
+
+    def grown(self):
+        """Twelve messages said after the chat was last summarized: eight to summarize, four kept."""
+        return [{"role": "user" if i % 2 == 0 else "assistant", "content": f"note {i} " + "x" * 800}
+                for i in range(12)]
+
     def test_a_summary_survives_a_restart(self):
         import tempfile
         from serve.server import compact_history
