@@ -70,3 +70,4 @@ desktop/electron/dist/
 desktop/tauri/node_modules/
 desktop/tauri/src-tauri/target/
 desktop/tauri/src-tauri/gen/
+/rust-host/target/
