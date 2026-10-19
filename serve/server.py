@@ -155,23 +155,23 @@ ANSWER_RESERVE_MIN = 512      # #984: the tokens kept for the answer when a thin
 # #1053 (opt-in "reasoning_close_retry": true): a reply that ends on its stop token still inside <think>, with no answer
 # and no call, is continued once with the thinking closed (the same way the budget's wrap-up closes it)
 REASONING_CLOSE = "\n</think>\n\n"
-# (opt-in "answer_marker_retry": true): a model that wants to write a chat marker as plain text (an answer about tokenizers and
-# <|im_start|> / <|im_end|>) samples the real end token instead, and the answer stops inside a code span: "...has `<|im_start|>` or `".
-# The marker it was about to write is put in as ordinary text and the answer goes on, at most MARKER_RETRIES times per request.
+# (opt-in "eos_resample": true): a model that wants to write a chat marker (<|im_start|>, <|im_end|>) as plain text - an answer about
+# tokenizers - can sample the real end token where the text belongs, and the reply stops in the middle of its thinking, a code span or a
+# fenced block.  Only an end token can stop a reply, so nothing has to be guessed: that token is dropped, the next EOS_BAN_TOKENS tokens are
+# sampled with the end tokens banned (the model then spells the marker out as ordinary text), and sampling goes back to what the request
+# asked.  At most EOS_RESAMPLES times per request.  Measured: with the end tokens banned the model spells the marker and carries on.
+EOS_BAN_TOKENS = 48
+EOS_RESAMPLES = 3
 CHAT_MARKERS = ("<|im_start|>", "<|im_end|>")
-MARKER_RETRIES = 3
 
 
-def marker_cut_off(text: str):
-    """The chat marker an answer that ended on its stop token was about to write, or None when it did not end like that: the answer must
-    already name a marker, and its last line must end inside an open code span or quote."""
+def ends_in_open_structure(text: str) -> bool:
+    """An answer that stopped on its end token in the middle of something: it already names a chat marker, and it ends inside an open fenced
+    block, or its last line ends inside an open code span or quote.  Any other end of an answer is the model's own and is left alone."""
     if not any(m in text for m in CHAT_MARKERS):
-        return None
+        return False
     line = text.rsplit("\n", 1)[-1]
-    if line.count("`") % 2 == 0 and line.count('"') % 2 == 0:
-        return None
-    missing = [m for m in CHAT_MARKERS if m not in line]
-    return missing[0] if missing else CHAT_MARKERS[1]
+    return text.count("```") % 2 == 1 or line.count("`") % 2 == 1 or line.count('"') % 2 == 1
 
 
 REASONING_WRAP_UP = "\n\nI have thought about this long enough; time to give my answer.\n</think>\n\n"
@@ -3200,7 +3200,7 @@ class Service:
         self.aliases: list[str] = []                  # #297: other names of the model (the config's `aliases`)
         self.answer_room = True                       # 0.1.45: see ANSWER_ROOM_MIN_CAP (the config's "answer_room": false turns it off)
         self.reasoning_close_retry = False            # #1053 (opt-in): close the thinking once when a reply ends inside it
-        self.answer_marker_retry = False              # (opt-in) put in the chat marker an answer was about to write and go on
+        self.eos_resample = False                     # (opt-in) an end token in the middle of something is dropped and sampled again
         self.codex_compaction_cache = False           # #924 (opt-in): a Codex compaction is rendered with its conversation's tools
         self.codex_thread_titles = False              # #923 (opt-in): answer Codex's thread-title turns without the engine
         self.sampling_defaults = dict(sampling_defaults or {})   # the run config's `sampling` block
@@ -4342,7 +4342,7 @@ class Service:
             opening, force = parser.feed(force), None
         tail = ""                                       # the last characters written (the newlines before a call)
         answered, close_retried = False, False          # #1053: content or a call came out; the thinking was closed
-        answer_text, marker_retries = "", 0             # the answer so far; the chat markers put in as plain text
+        answer_text, eos_resamples, ban_until = "", 0, 0    # the answer so far; end tokens dropped; the count the ban lasts to
         nf_retried = False                              # #879: the request was sent again after non-finite logits
         timings, before = None, None                    # this request's timings; the engine's `last` before it
         recovery_count, reasoning_text, repeat_coverage = 0, "", 0.0
@@ -4438,8 +4438,13 @@ class Service:
                     while True:
                         segment_before = getattr(self.engine, "last", None)
                         segments_before = len(segments)     # (#879: a pass sent again leaves no segment)
-                        gen = self.engine.generate(prompt, max_new - n, sampling, cancel, embeddings=emb) if emb \
-                            else self.engine.generate(prompt, max_new - n, sampling, cancel)
+                        banned = ban_until > n              # (eos_resample) this pass may not end on an end token
+                        pass_sampling, pass_max = sampling, max_new - n
+                        if banned:
+                            ban = {**bias_api.normalize((sampling or {}).get("logit_bias")), **{i: -100.0 for i in self.stop_ids}}
+                            pass_sampling, pass_max = {**(sampling or {}), "logit_bias": ban}, ban_until - n
+                        gen = self.engine.generate(prompt, pass_max, pass_sampling, cancel, embeddings=emb) if emb \
+                            else self.engine.generate(prompt, pass_max, pass_sampling, cancel)
                         recover_prompt = None
                         seg, wrap, leaving = [], False, False   # this pass's tokens; the budget is reached; closed
                         nonfinite = False               # #879: the engine ended this pass on non-finite logits
@@ -4485,7 +4490,7 @@ class Service:
                                         reasoning_text += ev.text or ""
                                     if ev.kind in ("content", "tool_start", "tool_call"):
                                         answered = True
-                                    if ev.kind == "content" and self.answer_marker_retry:
+                                    if ev.kind == "content" and self.eos_resample:
                                         answer_text += ev.text or ""
                                     yield "event", ev
                                 if evs:
@@ -4589,6 +4594,28 @@ class Service:
                                   f"(coverage={repeat_coverage:.3f}); resuming the same output with the low-effort "
                                   "instruction (reasoning_loop_recovery)", flush=True)
                             continue
+                        thinking_open = parser.state == "reasoning" and parser.buf != THINK_END     # #537: not after a held </think>
+                        if (self.eos_resample and finish == "stop" and not wrap and not opens and not force
+                                and eos_resamples < EOS_RESAMPLES and n + 2 < max_new
+                                and getattr(self.engine, "info", {}).get("logit_bias") == 1    # the ban needs an engine that applies it
+                                and not getattr(self.engine, "batch", 0)
+                                and (stops is None or stops.hit is None) and not cancel.is_set()
+                                and (thinking_open or (answered and parser.state == "content"
+                                                       and ends_in_open_structure(answer_text)))):
+                            # The reply stopped on an end token in the middle of its thinking or of an open code span: the
+                            # model sampled the end token where it meant to write a chat marker as text.  Drop it and sample
+                            # the next tokens with the end tokens banned; the pass after that samples as asked.
+                            eos_resamples += 1
+                            ban_until = min(n + EOS_BAN_TOKENS, max_new - 1)
+                            if raw_ids and raw_ids[-1] in self.stop_ids:
+                                raw_ids.pop()                       # not part of the output: the model did not get to keep it
+                            print(f"[strata] the reply ended on its end token in the middle of "
+                                  f"{'its thinking' if thinking_open else 'an open code span'}: sampling the next "
+                                  f"{ban_until - n} tokens without the end tokens ({eos_resamples} of {EOS_RESAMPLES}, "
+                                  "eos_resample)", flush=True)
+                            prompt = prompt + seg
+                            finish = "length"
+                            continue
                         if (self.reasoning_close_retry and thinking and finish == "stop" and not close_retried
                                 and not answered and not wrap and not opens and parser.state == "reasoning"
                                 and parser.buf != THINK_END         # #537: not after a held </think>, the end
@@ -4611,27 +4638,13 @@ class Service:
                                 prompt = prompt + seg + extra
                                 finish = "length"
                                 continue
-                        if (self.answer_marker_retry and finish == "stop" and answered and not wrap and not opens
-                                and marker_retries < MARKER_RETRIES and parser.state == "content"
-                                and (stops is None or stops.hit is None) and not cancel.is_set()):
-                            marker = marker_cut_off(answer_text)
-                            extra = self.tok.encode(marker, parse_special=False) if marker else []
-                            if extra and max_new - n - len(extra) >= 1:
-                                marker_retries += 1
-                                print(f"[strata] the answer ended where it was about to write {marker}: putting it in as plain "
-                                      f"text and continuing ({marker_retries} of {MARKER_RETRIES}, answer_marker_retry)", flush=True)
-                                for t in extra:
-                                    n += 1
-                                    raw_ids.append(t)
-                                    evs = cut(parser.feed(detok.push(t)))
-                                    self._note(n, evs, st, rate)
-                                    for ev in evs:
-                                        if ev.kind == "content":
-                                            answer_text += ev.text or ""
-                                        yield "event", ev
-                                prompt = prompt + seg + extra
-                                finish = "length"
-                                continue
+                        if (banned and finish == "length" and n >= ban_until and n < max_new and not (wrap or opens)
+                                and not looped and not repeated and not nonfinite and recover_prompt is None
+                                and not cancel.is_set()):
+                            # (eos_resample) the banned pass reached its own limit, not the request's: go on sampling as asked
+                            ban_until = 0
+                            prompt = prompt + seg
+                            continue
                         if not (wrap or opens) or cancel.is_set():
                             break
                         # #123: the thinking reached reasoning_budget_tokens.  Close it the way the model would (a
@@ -7652,7 +7665,7 @@ def main() -> int:
         svc.model_arch = cfg.get("arch") or "qwen4exp"
     svc.answer_room = cfg.get("answer_room") is not False
     svc.reasoning_close_retry = cfg.get("reasoning_close_retry") is True    # #1053: opt-in, off by default
-    svc.answer_marker_retry = cfg.get("answer_marker_retry") is True        # opt-in, off by default
+    svc.eos_resample = cfg.get("eos_resample") is True                      # opt-in, off by default
     if cfg.get("images"):                               # image generation (serve/images.py), set up by setup --images
         icfg = {k: (os.path.abspath(os.path.join(cfg.get("cwd") or ".", v))
                     if k in ("exe", "diffusion_model", "vae", "llm", "out_dir") and isinstance(v, str)

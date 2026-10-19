@@ -6180,81 +6180,130 @@ class ConsoleRoutes(unittest.TestCase):
             server._console, server._console_seq = saved
 
 
-class EndsBeforeAMarkerEngine(ThinkingEngine):
-    """An answer about chat markers: it stops on the end token where it was about to write `<|im_end|>` as text.  A prompt that
-    ends with the marker put in as plain text gets the rest of the answer."""
-    FIRST = "</think>\n\nA tokenizer has `<|im_start|>` or `"
-    REST = "` and that is all."                       # the model closes the span after the marker
-    always_cut = False
+class EndsWhereAMarkerGoesEngine(ThinkingEngine):
+    """Plays SCRIPT (it starts inside the thinking).  Where SCRIPT has a chat marker as text, it samples the end token instead - unless the
+    end token is banned through logit_bias, and then it writes the marker as text.  Records every prompt and every sampling dict."""
+    SCRIPT = "Let me think: it has `<|im_end|>` as text.</think>\n\nThe answer is plain."
+
+    def __init__(self, tok):
+        super().__init__(tok)
+        self.samplings, self.base = [], None
+        self.info = {**(getattr(self, "info", None) or {}), "logit_bias": 1}      # an engine that applies token biases
 
     def generate(self, ids, max_new, sampling, cancel, embeddings=None):
         self.prompts.append(list(ids))
-        continued = self.tok.decode(ids).endswith("`<|im_end|>")
-        text = (self.REST if not self.always_cut else self.REST + " `<|im_start|>` or `") if continued else self.FIRST
-        for t in (self.tok.encode(text) + self.tok.encode("<|im_end|>", parse_special=True))[:max_new]:
+        self.samplings.append(dict(sampling or {}))
+        if self.base is None:
+            self.base = len(ids)
+        at = len(self.tok.decode(ids[self.base:]))
+        eos = self.tok.encode("<|im_end|>", parse_special=True)
+        banned = any(int(k) in eos for k in ((sampling or {}).get("logit_bias") or {}))
+        out = []
+        while at < len(self.SCRIPT) and len(out) < max_new:
+            if not banned and self.SCRIPT.startswith("<|im_end|>", at):      # only an end token can stop a reply
+                out += eos
+                break
+            out += self.tok.encode(self.SCRIPT[at])
+            at += 1
+        else:
+            if at >= len(self.SCRIPT) and not banned and len(out) < max_new:
+                out += eos
+        for t in out:
             if cancel.is_set():
                 return
             yield t
 
 
-class AnswerMarkerRetry(unittest.TestCase):
-    """(opt-in) an answer that ends inside a code span right after naming a chat marker gets the marker as plain text and goes on."""
+class EosResample(unittest.TestCase):
+    """(opt-in) an end token sampled in the middle of the thinking or of an open code span is dropped and the next tokens are sampled
+    with the end tokens banned."""
 
     def setUp(self):
         self.tok = ByteTokenizer()
-        self.engine = EndsBeforeAMarkerEngine(self.tok)
+        self.engine = EndsWhereAMarkerGoesEngine(self.tok)
         self.svc = Service(self.engine, self.tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
         self.httpd = serve(self.svc, port=0)
         self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+        self.eos = self.tok.encode("<|im_end|>", parse_special=True)[0]
 
     def tearDown(self):
         self.httpd.shutdown()
         self.httpd.server_close()
 
-    def chat(self):
-        body = {"model": "m", "messages": [{"role": "user", "content": "How do tokenizers treat chat markers?"}], "max_tokens": 600}
+    def chat(self, **extra):
+        body = {"model": "m", "messages": [{"role": "user", "content": "How do tokenizers treat chat markers?"}], "max_tokens": 600, **extra}
         req = urllib.request.Request(self.base + "/v1/chat/completions", data=json.dumps(body).encode(),
                                      headers={"Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=30) as r:
             return json.loads(r.read().decode())["choices"][0]
 
-    def test_off_by_default_the_answer_stays_cut(self):
+    def banned(self, s):
+        return float((s.get("logit_bias") or {}).get(self.eos, 0)) == -100.0
+
+    def test_off_by_default_the_reply_ends_inside_its_thinking(self):
         c = self.chat()
         self.assertEqual(len(self.engine.prompts), 1)
-        self.assertTrue(c["message"]["content"].endswith("or `"))
+        self.assertFalse(c["message"].get("content"))
 
-    def test_on_the_marker_is_put_in_and_the_answer_continues(self):
-        self.svc.answer_marker_retry = True
+    def test_on_the_thinking_goes_on_past_the_marker_and_the_answer_comes(self):
+        self.svc.eos_resample = True
         c = self.chat()
-        self.assertEqual(len(self.engine.prompts), 2)
-        self.assertTrue(self.tok.decode(self.engine.prompts[1]).endswith("`<|im_end|>"))
-        self.assertEqual(c["message"]["content"], "A tokenizer has `<|im_start|>` or `<|im_end|>` and that is all.")
+        self.assertEqual(c["message"]["content"], "The answer is plain.")
+        self.assertIn("it has `<|im_end|>` as text.", c["message"]["reasoning_content"])
         self.assertEqual(c["finish_reason"], "stop")
+        self.assertEqual([self.banned(s) for s in self.engine.samplings], [False, True, False])   # one banned pass, then as asked
+        self.assertTrue(self.tok.decode(self.engine.prompts[1]).endswith("it has `"))              # the end token was dropped
 
-    def test_it_goes_on_at_most_three_times(self):
-        self.svc.answer_marker_retry = True
-        self.engine.always_cut = True
-        self.chat()
-        self.assertEqual(len(self.engine.prompts), 1 + server.MARKER_RETRIES)
+    def test_an_answer_cut_inside_an_open_code_span_goes_on(self):
+        self.svc.eos_resample = True
+        self.engine.SCRIPT = "ok.</think>\n\nA tokenizer has `<|im_start|>` or `<|im_end|>` as text."
+        c = self.chat()
+        self.assertEqual(c["message"]["content"], "A tokenizer has `<|im_start|>` or `<|im_end|>` as text.")
 
-    def test_an_ordinary_answer_is_not_touched(self):
-        self.svc.answer_marker_retry = True
-        self.engine.FIRST = "</think>\n\nFour."
+    def test_an_answer_that_ends_on_its_own_is_left_alone(self):
+        self.svc.eos_resample = True
+        self.engine.SCRIPT = "ok.</think>\n\nFour."
         c = self.chat()
         self.assertEqual((len(self.engine.prompts), c["message"]["content"]), (1, "Four."))
 
+    def test_at_most_three_times_per_request(self):
+        self.svc.eos_resample = True
+        gap = "x" * 60                                               # longer than the ban, so every marker is reached again
+        self.engine.SCRIPT = ("a <|im_end|> " + gap) * 5 + "</think>\n\nDone."
+        c = self.chat(max_tokens=2000)
+        self.assertEqual(sum(self.banned(s) for s in self.engine.samplings), server.EOS_RESAMPLES)
+        self.assertFalse(c["message"].get("content"))                # the fourth end token is the reply's end
 
-class MarkerCutOff(unittest.TestCase):
-    def test_which_marker_was_about_to_come(self):
-        cut = server.marker_cut_off
-        self.assertEqual(cut("If a tokenizer has `<|im_start|>` or `"), "<|im_end|>")
-        self.assertEqual(cut("Chat markers are special.\n\nA tokenizer has `"), None)            # no marker named yet
-        self.assertEqual(cut("It maps `<|im_end|>` and then `"), "<|im_start|>")
-        self.assertEqual(cut("Both `<|im_start|>` and `<|im_end|>` are control tokens, e.g. `"), "<|im_end|>")
-        self.assertEqual(cut('The marker named `<|im_start|>` is written as "'), "<|im_end|>")
-        self.assertIsNone(cut("The marker `<|im_start|>` is a control token."))                   # closed span: an ordinary end
-        self.assertIsNone(cut("Plain text with `code` and no marker `"))
-        self.assertIsNone(cut(""))
+    def test_the_requests_own_logit_bias_is_kept_in_the_banned_pass(self):
+        self.svc.eos_resample = True
+        self.chat(logit_bias={"65": 5})
+        banned = [s for s in self.engine.samplings if self.banned(s)]
+        self.assertEqual(len(banned), 1)
+        self.assertEqual(float(banned[0]["logit_bias"].get(65, banned[0]["logit_bias"].get("65", 0))), 5.0)
+
+    def test_no_resample_on_an_engine_without_token_biases(self):
+        self.svc.eos_resample = True
+        self.engine.info = {k: v for k, v in self.engine.info.items() if k != "logit_bias"}
+        c = self.chat()
+        self.assertEqual(len(self.engine.prompts), 1)                # as with the setting off: the ban could not be applied
+        self.assertFalse(c["message"].get("content"))
+
+    def test_no_resample_without_room_left(self):
+        self.svc.eos_resample = True
+        c = self.chat(max_tokens=16)                                 # the cut comes at token 16 of 16
+        self.assertEqual(sum(self.banned(s) for s in self.engine.samplings), 0)
+
+
+class EndsInOpenStructure(unittest.TestCase):
+    def test_which_ends_count_as_cut_off(self):
+        f = server.ends_in_open_structure
+        self.assertTrue(f("If a tokenizer has `<|im_start|>` or `"))
+        self.assertTrue(f("The marker `<|im_start|>` is written as \""))
+        self.assertTrue(f("A ChatML turn:\n\n```text\n<|im_start|>\n"))             # inside an open fenced block
+        self.assertFalse(f("A ChatML turn:\n\n```text\n<|im_start|>user\n```\n"))     # the block is closed
+        self.assertFalse(f("The marker `<|im_start|>` is a control token."))         # a closed span: an ordinary end
+        self.assertFalse(f("Plain text with `code` and no marker `"))                 # no marker named: the model's own end
+        self.assertFalse(f(""))
 
 
 if __name__ == "__main__":

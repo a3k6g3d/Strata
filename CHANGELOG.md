@@ -36,12 +36,14 @@ dated, and the fork's releases follow [SemVer](https://semver.org) once it tags 
   every `results.json` (`state`); `tools/bench_record.py`: one line per run in `runs.jsonl`; `tools/wait_for.py`: block until a log pattern, a process
   exit or a timeout. 8 + 5 + 11 + 10 + 7 new tests; the benchmark's own tests now look at result folders only.
 
-### Added (2026-10-19, opt-in `answer_marker_retry`: an answer that ends where it was about to write a chat marker)
-- A model asked about chat markers (`<|im_start|>`, `<|im_end|>`) samples the real end token where it wants to write the marker as text, and the answer stops
-  there (in about 1 of 8 runs of one such prompt; with `reasoning_close_retry` on the thinking-only variant, which left no answer at all, no longer happens).
-  With `"answer_marker_retry": true` an answer that ended on its stop token, names a marker and ends inside an open code span or quote gets the marker it was
-  about to write as plain text and goes on, at most 3 times per request. It covers only that shape: answers that end inside a fenced block, or in text that
-  already starts mid-span, are not caught, and a request that sets the marker as a stop string still stops there by design. 9 tests in `serve/test_server.py`.
+### Added (2026-10-19, opt-in `eos_resample`: an end token in the middle of the thinking or an open code span is sampled again)
+- A model asked about chat markers (`<|im_start|>`, `<|im_end|>`) samples the real end token where it wants to write the marker as text, and the reply
+  stops inside its thinking (an empty answer: 3 of 5 runs of one such prompt) or inside an open code span or fenced block (about 1 in 4 to 1 in 8 runs).
+  Only an end token can stop a reply, so nothing has to be guessed: with `"eos_resample": true` that end token is dropped and the next 48 tokens are
+  sampled with the end tokens banned through the engine's token biases, then sampling is as the request asked; at most 3 times per request, only on an
+  engine that applies token biases, never after a stop string or without room left. An answer's own end is left alone unless the answer names a marker
+  and ends inside an open span, quote or fence. Measured first: with the end tokens banned the model spells the marker out and carries on (3 of 3 runs).
+  Replaces a first attempt that put a guessed marker in as text. 9 tests in `serve/test_server.py`.
 
 ### Changed (2026-10-18, a message can be queued while another chat is writing)
 - Pressing Enter in one chat while another chat's answer was still being written only showed a "Still writing" notice; the text stayed in the box and the
