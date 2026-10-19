@@ -1,0 +1,6 @@
+[package]
+name = "strata-abi"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
