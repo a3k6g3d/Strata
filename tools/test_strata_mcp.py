@@ -157,6 +157,10 @@ class FakeRoot(unittest.TestCase):
         (self.root / "serve" / "server.py").write_text(FAKE_SERVER)
         self.env_backup = {k: os.environ.get(k) for k in ("APPDATA", "XDG_CONFIG_HOME")}
         os.environ["APPDATA"] = os.environ["XDG_CONFIG_HOME"] = str(base / "config")
+        # ports() always probes DEFAULT_PORT, so a Strata really running on this PC would show up in
+        # strata_status and break every test that expects an empty scan. Point it at a free port.
+        self.default_port_backup = M.DEFAULT_PORT
+        M.DEFAULT_PORT = free_port()
         self.strata = M.Strata(self.root)
         self.strata.python_override = sys.executable
         self.strata.health_timeout = 1.0
@@ -188,6 +192,7 @@ class FakeRoot(unittest.TestCase):
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
+        M.DEFAULT_PORT = self.default_port_backup
         for _ in range(20):                             # Windows: a log may still be closing
             try:
                 self.tmp.cleanup()
