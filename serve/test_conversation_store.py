@@ -1,3 +1,4 @@
+import json
 import os
 import tempfile
 import unittest
@@ -32,7 +33,8 @@ def conv(tag, n=1000):
 
 def store(d, **kw):
     log = kw.pop("log_list", [])
-    return C.ConversationStore(Path(d), kw.get("max_bytes", 10 ** 9), kw.get("min_tokens", 500), kw.get("grow_tokens", 400), log=log.append), log
+    return C.ConversationStore(Path(d), kw.get("max_bytes", 10 ** 9), kw.get("min_tokens", 500), kw.get("grow_tokens", 400), log=log.append,
+                               min_free_bytes=kw.get("min_free_bytes", 0), fp=kw.get("fp", ""), ram=kw.get("ram", lambda: None)), log
 
 
 class Settings(unittest.TestCase):
@@ -167,6 +169,116 @@ class Flow(unittest.TestCase):
         with mock.patch.object(C.shutil, "disk_usage", return_value=mock.Mock(free=10 * 2 ** 20)):
             self.finish(conv(1, 900))
         self.assertEqual(self.svc.calls, [])
+
+
+GIB = 2 ** 30
+
+
+class RamFloor(unittest.TestCase):
+    """The PC runs near full with the model pinned: a save or a restore must leave the floor free, or the request reads its prompt as usual."""
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.svc = FakeService()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_a_save_is_skipped_below_the_floor_and_tried_again_later(self):
+        free = {"n": 1 * GIB}
+        s, log = store(self.tmp.name, min_free_bytes=2 * GIB, ram=lambda: free["n"])
+        s.after_request(self.svc, conv(1, 900), "stop")
+        self.assertEqual(self.svc.calls, [])
+        self.assertEqual(s.saved_n, 0)                                    # not remembered as saved
+        self.assertTrue(any("skipped a save" in x for x in log))
+        free["n"] = 8 * GIB
+        s.after_request(self.svc, conv(1, 900), "stop")
+        self.assertEqual(self.svc.calls, [("save", self.svc.calls[0][1])])
+
+    def test_the_skip_is_logged_once_per_ten_minutes(self):
+        s, log = store(self.tmp.name, min_free_bytes=2 * GIB, ram=lambda: 1 * GIB)
+        for _ in range(3):
+            s.after_request(self.svc, conv(1, 900), "stop")
+        self.assertEqual(sum("skipped a save" in x for x in log), 1)
+
+    def test_a_restore_is_skipped_below_the_floor(self):
+        s, _ = store(self.tmp.name)
+        s.after_request(self.svc, conv(1, 900), "stop")                   # saved while there was room
+        free = {"n": 8 * GIB}
+        s2, log = store(self.tmp.name, min_free_bytes=2 * GIB, ram=lambda: free["n"])
+        self.svc.calls.clear()
+        free["n"] = 1000                                                  # the file is 1000 bytes: it needs it and the floor
+        s2.before_request(self.svc, conv(1, 950))
+        self.assertEqual(self.svc.calls, [])
+        self.assertTrue(any("skipped a restore" in x for x in log))
+        free["n"] = 8 * GIB
+        s2.before_request(self.svc, conv(1, 950))
+        self.assertEqual([c[0] for c in self.svc.calls], ["restore"])
+
+    def test_unknown_ram_and_a_zero_floor_never_block(self):
+        for kw in ({"min_free_bytes": 2 * GIB, "ram": lambda: None}, {"min_free_bytes": 0, "ram": lambda: 0}):
+            s, _ = store(tempfile.mkdtemp(dir=self.tmp.name), **kw)
+            s.after_request(self.svc, conv(1, 900), "stop")
+        self.assertEqual([c[0] for c in self.svc.calls], ["save", "save"])
+
+    def test_the_default_floor_is_read_from_the_config_block(self):
+        self.assertEqual(C.settings({"enabled": True})["min_free_mib"], 2560)
+        self.assertEqual(C.settings({"enabled": True, "min_free_mib": 0})["min_free_mib"], 0)
+        self.assertEqual(C.settings({"enabled": True, "min_free_mib": -5})["min_free_mib"], 2560)
+
+
+class Fingerprint(unittest.TestCase):
+    def cfg(self, **kw):
+        d = {"exe": "J:/x/build-0145/strata.exe", "args": ["--native", "m-00001-of-00002.gguf", "--ple-gguf", "m-00001-of-00002.gguf", "--pack", "J:/p/pack",
+                                                           "--mtp", "J:/p/mtp", "--max-context", "65536", "--kv", "int8", "--expert-profile", "a.bin"]}
+        d.update(kw)
+        return d
+
+    def test_the_things_a_state_depends_on_change_it(self):
+        base = C.fingerprint(self.cfg())
+        self.assertEqual(base, C.fingerprint(self.cfg()))
+        self.assertNotEqual(base, C.fingerprint(self.cfg(exe="J:/x/build-0143/strata.exe")))
+        for old, new in (("65536", "32768"), ("int8", "k8v4"), ("m-00001-of-00002.gguf", "other.gguf")):
+            a = [new if x == old else x for x in self.cfg()["args"]]
+            self.assertNotEqual(base, C.fingerprint(self.cfg(args=a)), old)
+
+    def test_the_expert_profile_does_not_change_it(self):
+        a = [("b.bin" if x == "a.bin" else x) for x in self.cfg()["args"]]
+        self.assertEqual(C.fingerprint(self.cfg()), C.fingerprint(self.cfg(args=a)))
+
+    def test_a_config_that_cannot_be_read_gives_no_fingerprint(self):
+        self.assertEqual(C.fingerprint({"args": 5}), "")
+
+    def test_files_from_another_setup_are_removed_at_start_and_older_rows_are_kept(self):
+        with tempfile.TemporaryDirectory() as d:
+            svc = FakeService()
+            mine, _ = store(d, fp="aaaa")
+            mine.after_request(svc, conv(1, 900), "stop")
+            mine.live, mine.saved_n = None, 0
+            mine.after_request(svc, conv(2, 900), "stop")
+            self.assertEqual({r["fp"] for r in mine.index}, {"aaaa"})
+            other_rows = json.loads((Path(d) / "index.json").read_text())
+            other_rows[0]["fp"] = "bbbb"                                    # saved under another model
+            legacy = dict(other_rows[1])
+            legacy.pop("fp")                                               # saved before fingerprints existed
+            (Path(d) / "index.json").write_text(json.dumps([other_rows[0], legacy]))
+            again, log = store(d, fp="aaaa")
+            self.assertEqual([r["name"] for r in again.index], [legacy["name"]])
+            self.assertFalse((Path(d) / other_rows[0]["name"]).exists())
+            self.assertTrue(any("another model or setup" in x for x in log))
+
+    def test_a_file_the_engine_refuses_twice_is_dropped(self):
+        with tempfile.TemporaryDirectory() as d:
+            svc = FakeService()
+            s, _ = store(d)
+            s.after_request(svc, conv(1, 900), "stop")
+            name = s.index[0]["name"]
+            svc.fail = "restore"
+            s.live, s.saved_n = None, 0
+            s.before_request(svc, conv(1, 950))
+            self.assertTrue((Path(d) / name).exists())                      # one refusal: kept
+            s.before_request(svc, conv(1, 950))
+            self.assertFalse((Path(d) / name).exists())                     # the second: removed
+            self.assertEqual(s.index, [])
 
 
 if __name__ == "__main__":

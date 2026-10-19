@@ -964,6 +964,7 @@ async function openSession(id) {
   } catch (e) {
     toast("error", "That chat could not be opened", e.message, 6000);
   }
+  setBusy(!!busy);                                             // another chat may still be writing: the hint says which
   renderQueued();
   takeDraft();
   maybeSendQueued();
@@ -1522,24 +1523,31 @@ function setBusy(on) {
   // that one, so the name has to be on show, not left to be guessed)
   const other = on && !writingHere() ? writingTitle() : "";
   $("stop-btn").title = on ? (other ? `Stop the answer writing in “${other}”` : "Stop this answer (Esc)") : "";
-  $("input").placeholder = on ? (other ? `“${other}” is still writing\u2026` : "Type here and Enter queues it for the next turn\u2026") : "Ask anything\u2026";
-  $("composer-hint").textContent = on ? (other ? "Enter: waits for the other chat" : "Enter: queue") : "Shift+Enter: new line";
+  $("input").placeholder = on ? (other ? `“${other}” is still writing - Enter queues this for after it\u2026` : "Type here and Enter queues it for the next turn\u2026") : "Ask anything\u2026";
+  $("composer-hint").textContent = on ? (other ? "Enter: queues behind the other chat" : "Enter: queue") : "Shift+Enter: new line";
 }
 
 // A message typed while the model is still answering waits here and goes out when the answer ends (or at once with
 // "Send now", which stops the answer where it is).  One message waits; a second one is added to it.  It waits in
 // the chat it was typed in: another chat's answer must not pick it up, and it is not sent while you are reading a
 // different chat - it goes out when you come back to that chat and nothing is writing there.
-let queued = null;
+// One entry per chat (a message typed in one chat is never merged into another's), and it may be typed while ANOTHER chat is
+// writing: it then waits for that answer to end and goes out here, if this chat is the one on screen.
+const queuedBy = new Map();
 function renderQueued() {
-  const mine = queued && queued.id === current.id;
-  $("queued").hidden = !mine;
-  if (mine) $("queued-text").textContent = queued.text || `${queued.images.length + queued.files.length} attachment(s)`;
+  const q = queuedBy.get(current.id);
+  $("queued").hidden = !q;
+  if (!q) return;
+  $("queued-text").textContent = q.text || `${q.images.length + q.files.length} attachment(s)`;
+  const other = busy && !writingHere() ? writingTitle() : "";
+  $("queued").querySelector(".queued__label").textContent = other ? `Waits for “${other}”` : "Queued";
+  $("queued-now").title = other ? `Stop the answer writing in “${other}” and send this now` : "Stop the answer here and send this now";
 }
 function queueMessage(text) {
+  const had = queuedBy.get(current.id);
   const add = {id: current.id, text, images: attachments.filter((a) => a.kind !== "file"), files: attachments.filter((a) => a.kind === "file")};
-  queued = queued ? {id: queued.id, text: [queued.text, text].filter(Boolean).join(" "), images: [...queued.images, ...add.images],
-                     files: [...queued.files, ...add.files]} : add;
+  queuedBy.set(current.id, had ? {id: had.id, text: [had.text, text].filter(Boolean).join(" "), images: [...had.images, ...add.images],
+                                  files: [...had.files, ...add.files]} : add);
   attachments = [];
   renderAttachments();
   $("input").value = "";
@@ -1547,9 +1555,9 @@ function queueMessage(text) {
   renderQueued();
 }
 function sendQueued() {
-  if (!queued || busy || queued.id !== current.id) return;
-  const q = queued;
-  queued = null;
+  const q = queuedBy.get(current.id);
+  if (!q || busy) return;
+  queuedBy.delete(current.id);
   renderQueued();
   send(q);
 }
@@ -1557,7 +1565,7 @@ function sendQueued() {
 // a held message waits even across a change of chat: it is sent in the chat it was held in, once nothing writes
 // there (coming back to that chat is what releases it)
 function maybeSendQueued() {
-  if (queued && !busy && queued.id === current.id) setTimeout(sendQueued, 0);
+  if (queuedBy.has(current.id) && !busy) setTimeout(sendQueued, 0);
 }
 
 async function send(ready) {
@@ -1566,6 +1574,13 @@ async function send(ready) {
   // writing is not refused, it is held - and the notice names that chat, with one button that stops it and asks
   if (busy && !writingHere()) {
     if (!ready && !typed && !attachments.length) return;
+    if (!ready) {
+      const title = writingTitle();
+      queueMessage(typed);
+      toast("info", `Queued behind “${title}”`, "It goes out here when that answer ends. The button stops that answer and sends this now.", 7000,
+            {label: "Stop it and send now", run: () => { if (busy) busy.controller.abort(); }});
+      return;
+    }
     stillWriting(() => send(ready));
     return;
   }
@@ -1700,13 +1715,13 @@ async function send(ready) {
   busy = null;
   setBusy(false);
   if (frame) cancelAnimationFrame(frame);
-  if (queued && here) setTimeout(sendQueued, 0);              // the message typed meanwhile goes out now
+  if (queuedBy.has(current.id)) setTimeout(sendQueued, 0);    // the message typed meanwhile goes out now (in the chat on screen)
 }
 
 $("composer").onsubmit = (e) => { e.preventDefault(); send(); };
 $("stop-btn").onclick = () => { if (busy) busy.controller.abort(); };
 $("queued-now").onclick = () => { if (busy) busy.controller.abort(); else sendQueued(); };   // the end of send() sends it
-$("queued-cancel").onclick = () => { queued = null; renderQueued(); };
+$("queued-cancel").onclick = () => { queuedBy.delete(current.id); renderQueued(); };
 $("input").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.isComposing && (e.ctrlKey || e.metaKey || !e.shiftKey)) { e.preventDefault(); send(); }
   // Escape is the fastest way to say "that is going wrong", and it keeps everything written so far

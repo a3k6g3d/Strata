@@ -17,14 +17,21 @@ already held, and a failure of any kind is logged once and the request carries o
 """
 from __future__ import annotations
 
+import ctypes
+import hashlib
 import json
 import os
 import shutil
+import sys
 import time
 from array import array
 from pathlib import Path
 
 MIN_FREE_BYTES = 5 * 2 ** 30
+DEFAULT_MIN_FREE_MIB = 2560   # RAM that must stay free around a save or a restore (the engine's own floor for parking is the same)
+STATE_BASE_BYTES = 300 * 2 ** 20   # what a save needs in RAM beside the tokens: measured 270 MB of state, a checkpoint and the write buffer
+STATE_PER_TOKEN = 16 * 2 ** 10     # measured 14 KB per token
+STALE_AFTER_FAILURES = 2           # a file that failed to restore this many times is removed: it cannot be used
 CONTINUES = 0.5           # a prompt that shares this much of the live conversation's prompt is the same conversation
 RESTORE_IF = 0.9          # a saved conversation is restored when this much of its prompt is at the start of the new prompt
 
@@ -35,6 +42,49 @@ def common_prefix(a, b) -> int:
     while i < n and a[i] == b[i]:
         i += 1
     return i
+
+
+def available_ram() -> int | None:
+    """Bytes of RAM the system can hand out without paging, or None when it cannot be read."""
+    try:
+        if sys.platform == "win32":
+            class MemoryStatus(ctypes.Structure):
+                _fields_ = [("length", ctypes.c_ulong), ("load", ctypes.c_ulong)] + [(n, ctypes.c_ulonglong) for n in ("total", "avail", "ptotal", "pavail", "vtotal", "vavail", "ext")]
+            m = MemoryStatus()
+            m.length = ctypes.sizeof(MemoryStatus)
+            ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m))
+            return int(m.avail)
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            if line.startswith("MemAvailable:"):
+                return int(line.split()[1]) * 1024
+    except (OSError, ValueError, AttributeError):
+        pass
+    return None
+
+
+def fingerprint(cfg) -> str:
+    """What a saved state depends on, from the server's config: the model files (name, size), the pack and draft layer folders, the context
+    size, the KV format and the engine build's folder.  A file saved under another fingerprint is not tried (the engine refuses it too,
+    but only after the attempt, and every attempt with a state that does not belong costs a second of disk).  The expert profile is left
+    out on purpose: it moves experts between memories, not what the conversation's state holds."""
+    parts = []
+    try:
+        args = [str(x) for x in (cfg.get("args") or [])]
+
+        def after(flag):
+            return args[args.index(flag) + 1] if flag in args and args.index(flag) + 1 < len(args) else ""
+        for flag in ("--native", "--ple-gguf"):
+            p = after(flag)
+            try:
+                parts.append(f"{flag}={Path(p).name}:{Path(p).stat().st_size}")
+            except OSError:
+                parts.append(f"{flag}={p}")
+        for flag in ("--pack", "--mtp", "--max-context", "--kv", "--kv-resident"):
+            parts.append(f"{flag}={Path(after(flag)).name if flag in ('--pack', '--mtp') else after(flag)}")
+        parts.append("exe=" + Path(str(cfg.get("exe") or "")).parent.name)
+    except Exception:  # noqa: BLE001
+        return ""
+    return hashlib.sha1("|".join(parts).encode()).hexdigest()[:16]
 
 
 def settings(cfg, config_dir: Path | None = None) -> dict | None:
@@ -49,17 +99,47 @@ def settings(cfg, config_dir: Path | None = None) -> dict | None:
     if not folder.is_absolute():
         folder = (config_dir or Path(".")) / folder
     return {"folder": folder, "max_bytes": int(num("max_gib", 20, 1, 2000) * 2 ** 30), "min_tokens": int(num("min_tokens", 4000, 256, 10 ** 6)),
-            "grow_tokens": int(num("grow_tokens", 6000, 500, 10 ** 6))}
+            "grow_tokens": int(num("grow_tokens", 6000, 500, 10 ** 6)), "min_free_mib": int(num("min_free_mib", DEFAULT_MIN_FREE_MIB, 0, 10 ** 6))}
 
 
 class ConversationStore:
-    def __init__(self, folder: Path, max_bytes: int, min_tokens: int, grow_tokens: int, log=print):
+    def __init__(self, folder: Path, max_bytes: int, min_tokens: int, grow_tokens: int, log=print, min_free_bytes: int = DEFAULT_MIN_FREE_MIB * 2 ** 20,
+                 fp: str = "", ram=available_ram):
         self.folder, self.max_bytes, self.min_tokens, self.grow_tokens, self.log = Path(folder), max_bytes, min_tokens, grow_tokens, log
+        self.min_free_bytes, self.fp, self.ram = min_free_bytes, fp, ram
         self.live: array | None = None          # the prompt of the conversation the engine holds
         self.saved_n = 0                        # its length when it was last saved (0: never)
         self.failed = False                     # one log line per kind of failure is enough
+        self.skipped_at: dict = {}              # when each kind of RAM skip was last logged
         self.folder.mkdir(parents=True, exist_ok=True)
         self.index = self._load_index()
+        self._purge_foreign()
+
+    def _ram_ok(self, need: int, what: str) -> bool:
+        """The system must keep `min_free_bytes` of RAM free after this save or restore uses `need`: the PC runs close to full with the model's
+        pinned experts, and a state write that pushes it into paging is slower than reading the conversation again.  Unknown RAM does not block."""
+        if self.min_free_bytes <= 0:
+            return True
+        avail = self.ram()
+        if avail is None or avail >= need + self.min_free_bytes:
+            return True
+        if time.time() - self.skipped_at.get(what, 0) > 600:
+            self.skipped_at[what] = time.time()
+            self.log(f"[strata] conversation store: skipped a {what} (needs {need / 2 ** 20:,.0f} MiB and {self.min_free_bytes / 2 ** 20:,.0f} MiB must stay free; "
+                     f"{avail / 2 ** 20:,.0f} MiB are available)")
+        return False
+
+    def _foreign(self, row) -> bool:
+        """Saved under another model or setup: only a row that carries a fingerprint different from this server's counts (older rows have none)."""
+        return bool(self.fp) and bool(row.get("fp")) and row["fp"] != self.fp
+
+    def _purge_foreign(self):
+        gone = [r for r in self.index if self._foreign(r)]
+        for r in gone:
+            self._drop(r)
+        if gone:
+            self._save_index()
+            self.log(f"[strata] conversation store: removed {len(gone)} conversation(s) saved under another model or setup")
 
     # ---- the index: one entry per saved conversation, kept in a small JSON file beside the states
     def _index_path(self):
@@ -116,11 +196,20 @@ class ConversationStore:
                 closest = max(closest, (n, len(saved)))
                 if n >= RESTORE_IF * len(saved) and n >= self.min_tokens and n > best_len:
                     best, best_len = row, n
+            if best is not None and not self._ram_ok(int(best.get("bytes", 0)), "restore"):
+                best = None                                               # no room to read it in: the prompt is read as usual
             if best is not None and not (live_ok and best_len <= n_live):
                 if self.live is not None:
                     self._save_live(svc)                                  # leaving this one: keep what the engine holds
                 t = time.perf_counter()
-                svc.store_session_file("restore", str(self.folder / best["name"]))
+                try:
+                    svc.store_session_file("restore", str(self.folder / best["name"]))
+                except Exception:
+                    best["failures"] = best.get("failures", 0) + 1       # a file the engine will not take is dropped on its second refusal
+                    if best["failures"] >= STALE_AFTER_FAILURES:
+                        self._drop(best)
+                    self._save_index()
+                    raise
                 self.live, self.saved_n = self._ids_of(best), best["n"]
                 self.log(f"[strata] conversation store: restored a conversation of {best['n']:,} tokens in {time.perf_counter() - t:.1f} s")
                 return
@@ -155,6 +244,8 @@ class ConversationStore:
             return
         if shutil.disk_usage(self.folder).free < MIN_FREE_BYTES:
             return
+        if not self._ram_ok(STATE_BASE_BYTES + STATE_PER_TOKEN * len(live), "save"):
+            return                                                        # saved_n stays: the next request tries again
         name = f"conv-{int(time.time() * 1000):x}.bin"
         t = time.perf_counter()
         try:
@@ -173,7 +264,7 @@ class ConversationStore:
             old = self._ids_of(row)
             if old is None or common_prefix(old, live) >= RESTORE_IF * len(old):
                 self._drop(row)
-        row = {"name": name, "n": len(live), "saved_at": time.time(), "bytes": (self.folder / name).stat().st_size}
+        row = {"name": name, "n": len(live), "saved_at": time.time(), "bytes": (self.folder / name).stat().st_size, "fp": self.fp}
         self.index.append(row)
         self.saved_n = len(live)
         self._evict()
@@ -190,12 +281,13 @@ class ConversationStore:
             self._drop(row)
 
 
-def create(cfg, config_dir: Path | None, log=print) -> ConversationStore | None:
+def create(cfg, config_dir: Path | None, log=print, server_cfg=None) -> ConversationStore | None:
     s = settings(cfg, config_dir)
     if s is None:
         return None
     try:
-        store = ConversationStore(s["folder"], s["max_bytes"], s["min_tokens"], s["grow_tokens"], log)
+        store = ConversationStore(s["folder"], s["max_bytes"], s["min_tokens"], s["grow_tokens"], log, s["min_free_mib"] * 2 ** 20,
+                                  fingerprint(server_cfg) if server_cfg else "")
     except OSError as e:
         log(f"[strata] conversation store: not started - {e}")
         return None
