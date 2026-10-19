@@ -1105,6 +1105,21 @@ endif()
 add_library(strata_spec STATIC src/spec/suffix_drafter.cpp src/spec/controller.cpp src/spec/draft_policy.cpp
             src/spec/draft_source.cpp)
 target_include_directories(strata_spec PUBLIC include)
+
+# ---- strata_facade (docs/RUST_HOST.md, milestone 2) -----------------------------------------------
+# The repo's first shared library, and the first thing here that has ever had to produce a DLL.  It is the seam:
+# the Rust host calls the C ABI in include/strata/c/abi.h, and this shim is what MSVC compiles and links the
+# existing static libs into.  The probes in src/facade/abi.cpp call strata_spec (and cudart, when CUDA is on)
+# rather than returning constants, so the linker has to actually pull those libraries in - a shim that referenced
+# nothing would link, and the Rust test that links it would prove nothing.
+add_library(strata_facade SHARED src/facade/abi.cpp)
+target_include_directories(strata_facade PRIVATE include)
+target_link_libraries(strata_facade PRIVATE strata_spec strata_warnings)
+target_compile_definitions(strata_facade PRIVATE STRATA_FACADE_BUILD)
+if(STRATA_ENABLE_CUDA AND TARGET CUDA::cudart)
+  target_link_libraries(strata_facade PRIVATE ${_strata_gpu_runtime_target})
+  target_compile_definitions(strata_facade PRIVATE STRATA_FACADE_WITH_CUDART=1)
+endif()
 if(STRATA_BUILD_TESTS)
   add_executable(arch_defaults_test src/core/arch_defaults_test.cpp src/core/arch_defaults.cpp)
   target_include_directories(arch_defaults_test PRIVATE include)

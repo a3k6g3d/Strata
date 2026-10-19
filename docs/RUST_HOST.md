@@ -54,9 +54,18 @@ hand-written `extern "C"` header (`include/strata/c/abi.h`). Rust binds to that 
 ## Milestones, cheapest decision first
 
 1. **Skeleton** (this commit): the workspace, the ABI contract, the ring as a type, tests in pure Rust. No CUDA.
-2. **Link test**: the facade DLL built from the existing static libs, one Rust test that calls
+2. **Link test** (done): the facade DLL built from the existing static libs, one Rust test that calls
    `strata_abi_version()` through it. Proves the toolchain question (MSVC + cudart + cargo) on day one, because that
-   is the assumption this whole plan rests on.
+   is the assumption this whole plan rests on.  **It answers yes on this machine, both arms.**
+   `strata_facade` is the repo's first shared library; the probes in `src/facade/abi.cpp` call into `strata_spec`
+   (and cudart when CUDA is on) rather than returning constants, so the linker has to have actually pulled them in.
+   Built and run both ways: the CPU arm answers `choose(3, 4, 6) = lookup, window 4` out of `strata_spec` and
+   declines the CUDA call with `DEVICE_UNAVAILABLE`; the CUDA arm (nvcc 13.4) answers the same policy question
+   identically and reports a real runtime version.  `cargo test -p strata-abi` is 11 tests, and runs green on a
+   machine where the facade has never been built — build.rs is a finder, not a builder, and the tests say so.
+   The DLL is loaded by absolute path rather than linked through the import library: the link works, but Windows
+   then resolves the DLL at process start from the exe's directory or PATH, and cargo prunes anything in `deps/`
+   that it did not put there itself.  `extern "system"` against the header is unchanged either way.
 3. **One vertical slice**: Rust serves a single decode turn — reads one expert from NVMe through its own ring, hands
    it to the existing kernels, returns the token — with the Python server unchanged.
 4. **Fingerprint parity**: the existing engine and the Rust host, same prompt, same seed, byte-identical output. This
