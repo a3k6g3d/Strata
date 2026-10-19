@@ -125,6 +125,58 @@ The interesting consequence for us is the opposite of a threat: an 80B-total, fe
 the most expert-cache-shaped thing there is, and native MTP is precisely the axis the
 [cache-vs-drafts measurement](CACHE_VS_DRAFTS.md) separates.  These models are our best demo, provided the quant fits.
 
+## Three papers that do the prefetch half of Strata properly
+
+All three are 2025-2026 work on the same problem from the academic side, and all three reach the same conclusion the
+engine reached: the way to pay for a data-dependent expert load is to predict it a step ahead and overlap the transfer.
+What they add is three levers Strata does not have.
+
+- **Pre-Attention Expert Prediction** (arXiv:2511.10676, Nov 2025, ETH): predicts a layer's routing from the
+  activation *before that same layer's attention*, with two linear functions and a ranking-aware loss, because "some
+  functions in LLMs are ranking-preserving" - matching the *order* of the selected experts is enough, and a linear
+  map can do it.  93.03% on DeepSeek V2 Lite, 94.69% on Qwen3-30B, 97.62% on Phi-mini-MoE, about 15 points above the
+  previous best, and it covers the first layer, which the previous-best method cannot.
+- **MoE-SpeQ** (arXiv:2511.14102, Nov 2025): a small on-device draft model predicts the *sequence* of experts the
+  next tokens will need, and a runtime orchestrator prefetches them so the transfer sits behind useful computation.
+  An adaptive governor, guided by an "Amortization Roofline Model", tunes the speculation strategy to the hardware.
+  Up to 2.34x over a state-of-the-art offloading framework, on Phi-MoE, on edge devices.
+- **SPICE** (arXiv:2608.21240, Aug 2026, ASP-DAC 2027): a lightweight draft model plus a *confidence-aware* adaptive
+  lookahead that prefetches the high-confidence predictions, and on a miss decides what to do per case - a
+  low-confidence miss is approximated by the resident shared expert with low-rank (LoRE) surrogates, and the exact
+  residual work goes to the CPU, asynchronously, in parallel with the GPU.  Up to 3.12x on time-per-output-token
+  with minimal quality loss, on DeepSeek V2 Lite and Qwen2-57B-A14B.
+
+### What Strata already does, and where these papers say we are short
+
+`RouterLookahead` (`include/strata/core/expert_source.hpp:240`) applies layer l+1's router to layer l's MoE input -
+the residual stream changes little in one layer - takes each token's top `k` (default 10), drops the experts the GPU
+cache or the RAM copy holds, and asks the source to warm the rest.  So Strata is squarely in the family those papers
+call the weak one: the *exact* router applied to a *stale* input, one layer behind, with the first layer unpredictable
+because it has no predecessor to read.  The paper's claim is that a trained head on the same layer's pre-attention
+activation buys about 15 points of accuracy over exactly that.  Strata has no training pipeline and will not grow one
+for a prefetch hint, so the part of their result that transfers without one is the *loss*: score by rank, not by value.
+The vote-ranked ladder in `STRATA_LOOKAHEAD_STATS` (top 4 / 8 / 12, `kVoteN = 16`) is already that estimator, sitting
+beside the top-k / k+4 / k+10 one in the same log line - so the question "should the window be filled by per-token
+top-k or by the vote across the window" is answerable from counters the engine already writes, and if the vote column
+wins on the PCIe-cover column then `k` is the thing to move.
+
+**The lever worth building is the confidence gate.**  `warm()` is unconditional today: every predicted expert that no
+tier holds gets its pages asked for.  On this machine that is not free - the whole drive tops out near 2.5 GB/s and a
+single stream at 2.0 ([BENCH_NOISE.md](BENCH_NOISE.md), "The disk is at its ceiling"), so a wrong guess spends I/O a
+real miss will want, and the file tier is already on the fast path (`NO_BUFFERING | OVERLAPPED`) with nothing left to
+win there.  SPICE's answer is to prefetch only what the predictor is confident about; a rank-margin gate (warm the
+experts whose score clears the k-th by some margin) costs one comparison and is measurable against the PCIe-cover
+column that already exists.  MoE-SpeQ's governor says the same thing about `k` and depth: both are static
+environment knobs here (`STRATA_IO_PREFETCH_DEPTH` 1..4, default 1, and the predictor's `k`), and the paper's position
+is that they should track the measured balance rather than be set once.  `tools/replay_cache_policy.py` already
+replays a `--dump-routing` trace through the swap policy offline, which is the harness for a (k, depth, threshold)
+sweep that touches no engine code.
+
+**Not worth borrowing:** SPICE's low-rank surrogates.  Approximating a missed expert with a resident surrogate changes
+the answer, and this engine's invariant is that a prediction only ever *warms* - which experts are computed, and how,
+is never changed by a guess.  Their other half, sending exact residual work to the CPU beside the GPU, is what Strata
+already is.
+
 ## So, do you still need Strata?
 
 For the one case the video compares - a big MoE on one card, decoding short fresh prompts - llama.cpp's expert cache
