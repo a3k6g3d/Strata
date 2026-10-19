@@ -47,6 +47,18 @@ Normal start is `J:\Strata-work\Start-Strata.bat` (calls `run-strata.ps1`, logs 
 - **Sessions and chat clients:** `serve/sessions.py` stores web chats as files in `J:\Strata-work\sessions` (with a custom order file); `serve/discord_bot.py` talks to the local server over HTTP and saves each Discord chat as a session through the same `/sessions` routes, so chats are shared with the web and desktop apps (`desktop/tauri`). The web UI is `serve/web/{index.html,app.css,app.js}`.
 - **Expert tiers (engine):** GPU expert cache -> pinned RAM tier (`--resident-budget-gib`) -> model file on NVMe. Decode misses are split between a CPU pool and PCIe (`pcie_frac`, automatic). MTP speculative decoding (`--spec 4 --spec-min-p 0.5`) uses the draft layer in `--mtp`. Prompt reading streams every expert layer by layer, so it is bound by PCIe and NVMe speed.
 
+## Working rules for the agent
+
+- **A compaction is not the end of the turn.** When the history gets summarized mid-turn, the summary lands as the model's
+  own last message and reads like "report where you got to", so the model answers with the summary and stops - which is
+  how a session left running overnight spends the night stopped with a Continue button under it. The tool loop nudges
+  once in that case (`needs_nudge`, `NUDGE_AFTER_SUMMARY`); the matching habit is to re-issue the pending lookups after
+  a compaction boundary rather than answer from the summary, and to keep a research turn to a few tool calls so the
+  ceiling is reached less often.
+- **Write state to disk, not to context.** Findings go into `docs/` and `CHANGELOG.md` as they are found, and a
+  completed piece of work is committed before starting the next - a session that loses its context can then be picked
+  up cold, which is the only defence that has ever worked here.
+
 ## Gotchas learned on this machine
 
 - **RAM is the limit.** With a 65,536-token context a 40 GiB resident budget left under 1 GiB free and Windows thrashed (page-ins over 8,000/s, generation stalled). The config uses 36 GiB. Check `\Memory\Pages Input/sec` and free RAM before raising the budget or the context; a larger context also shrinks the GPU expert cache (2,205 -> 1,951 slots at 64K) with no measurable decode cost, because decode here is CPU-bound.

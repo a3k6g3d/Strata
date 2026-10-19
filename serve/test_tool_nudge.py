@@ -47,14 +47,25 @@ def fit_nothing(svc, messages, tools, kw, max_req, cancel):
     yield
 
 
+def fit_once(svc, messages, tools, kw, max_req, cancel):
+    # a real compaction, once: the next fit finds nothing more to summarize (the summary cache covers it), which is
+    # what keeps one compaction from earning a second nudge
+    yield "ping", None
+    fit_once.calls += 1
+    return (0, 1) if fit_once.calls == 1 else (0, 0)
+
+
+fit_once.calls = 0
+
 CALL = [Event("tool_call", call=ToolCall("t", {"path": "x"}))]
 WORDS = [Event("content", text="All done.")]
 
 
-def turn(rounds):
+def turn(rounds, fit=fit_nothing):
     svc = FakeService(rounds)
     text, mcp = [], []
-    with mock.patch.object(server, "fit_context_live", fit_nothing):
+    fit_once.calls = 0
+    with mock.patch.object(server, "fit_context_live", fit):
         for kind, x in server.run_with_mcp(svc, FakeHub(), [{"role": "user", "content": "go"}], [], {}, [1], False, 100, 100,
                                            {}, threading.Event(), {"t"}, mode="full"):
             if kind == "event" and x.kind == "content":
@@ -98,6 +109,29 @@ class Nudge(unittest.TestCase):
         for change in ({"rounds": 0}, {"nudged": True}, {"calls": [1]}, {"own_calls": 1}, {"finish": "length"},
                        {"cancelled": True}, {"text": "hi"}):
             self.assertFalse(server.needs_nudge(**{**base, **change}), change)
+
+    def test_needs_nudge_after_a_compaction_even_with_words(self):
+        base = dict(rounds=1, nudged=False, calls=[], own_calls=0, finish="stop", cancelled=False, text="a paragraph")
+        self.assertTrue(server.needs_nudge(**base, compacted=1))
+        for change in ({"rounds": 0}, {"calls": [1]}, {"own_calls": 1}, {"finish": "length"}, {"cancelled": True}):
+            self.assertFalse(server.needs_nudge(**{**base, "compacted": 1, **change}), change)
+
+    def test_a_compaction_mid_turn_then_a_paragraph_is_asked_to_carry_on(self):
+        # what happened overnight: tools, then the history summarized, then the summary read out as the answer
+        svc, text, mcp = turn([(CALL, "stop"), (WORDS, "stop"), (WORDS, "stop")], fit=fit_once)
+        self.assertEqual(len(svc.prepared), 2)                              # after the tool, after the nudge
+        self.assertIn(server.NUDGE_AFTER_SUMMARY, [m.get("content") for m in svc.prepared[-1]])
+        self.assertEqual(text, "All done.All done.")                       # the third round is the real answer
+        self.assertEqual([e["event"] for e in mcp if e["event"] == "compact"], ["compact"])
+
+    def test_one_compaction_earns_one_nudge(self):
+        svc, text, _ = turn([(CALL, "stop"), (WORDS, "stop"), ([], "stop")], fit=fit_once)
+        self.assertEqual(len(svc.prepared), 2)                              # the nudge, then the turn ends
+        self.assertEqual(sum(server.NUDGE_AFTER_SUMMARY in [m.get("content") for m in p] for p in svc.prepared), 1)
+
+    def test_no_nudge_from_a_compaction_before_any_tool_round(self):
+        svc, text, _ = turn([([], "stop")], fit=fit_once)                  # nothing ran: no fit, no nudge
+        self.assertEqual((text, svc.prepared), ("", []))
 
 
 if __name__ == "__main__":

@@ -4299,14 +4299,27 @@ def _debug_req(api, req, messages, tools, max_new, thinking, prompt_tokens):
 # ------------------------------------------------------------------------------------------------ MCP tool loop
 NUDGE_PROMPT = ("You stopped without a reply right after the last tool result. If the work is finished, say so in a "
                 "sentence or two and summarize what you did; if it is not, carry on with the next step.")
+NUDGE_AFTER_SUMMARY = ("The conversation was summarized while you were working, and what you just wrote reads like that "
+                       "summary rather than like the answer to what was asked.  If the work is not finished, carry on "
+                       "with the next step - re-issue any lookup whose result is no longer in front of you.  If it is "
+                       "finished, say so in a sentence or two.")
 
 
-def needs_nudge(rounds: int, nudged: bool, calls, own_calls: int, finish: str, cancelled: bool, text: str) -> bool:
+def needs_nudge(rounds: int, nudged: bool, calls, own_calls: int, finish: str, cancelled: bool, text: str,
+                compacted: int = 0) -> bool:
     """A round that ends right after a tool result with no tool call and not a word of text is not an answer: the model
     stopped by itself (the chat then sits at "Idle" in the middle of the work).  Ask it once to carry on or to say it is
-    finished.  Never in a chat that has not used a tool yet, after a cut-off or a stop by the user, or twice in one turn."""
-    return bool(rounds >= 1 and not nudged and not calls and not own_calls and finish == "stop" and not cancelled
-                and not text.strip())
+    finished.  Never in a chat that has not used a tool yet, after a cut-off or a stop by the user, or twice in one turn.
+
+    `compacted` is how many times this turn has summarized the older conversation since the last nudge.  A turn that
+    compacted and then answered in a paragraph is the same stall wearing words: the summary lands as the model's own
+    last message, the model reads it as "report where you got to", and the turn ends there - which is how a session
+    left running overnight spends the night stopped with a Continue button under it.  The silence rule cannot see it,
+    so a compaction earns one nudge of its own (NUDGE_AFTER_SUMMARY), and only after a tool round, so a chat that
+    compacts and then simply answers is left alone."""
+    if rounds < 1 or calls or own_calls or finish != "stop" or cancelled:
+        return False
+    return bool(compacted) or bool(not nudged and not text.strip())
 
 
 def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new, max_req, sampling, cancel,
@@ -4326,6 +4339,7 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
     max_rounds = int(hub.settings["max_rounds"])
     total, rounds, done = 0, 0, None
     nudged = False                                       # the one automatic "carry on" of this turn (needs_nudge)
+    compacted_since = 0                                  # compactions of this turn since the last nudge
     messages = list(messages)
     # Once the model has used a local tool (read a file, listed a folder ...) in this chat, a request to the internet
     # asks first: a web page could otherwise talk it into putting what it read into an address.
@@ -4334,6 +4348,7 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
     touched_local = any(n in hub.routes() and hub.kind_of(n) != "net" for n in used if n)
     if not ids:                                          # [] from the caller: the prompt did not fit the context as sent
         shrunk, summarized = yield from fit_context_live(svc, messages, tools, kw, max_req, cancel)
+        compacted_since += 1 if summarized else 0
         if shrunk or summarized:
             yield "mcp", {"event": "compact", "shrunk": shrunk, "summarized": summarized}
         if cancel.is_set():
@@ -4368,13 +4383,18 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
             yield "mcp", {"event": "limit", "max_rounds": max_rounds}
             run_them, why = False, "limit"
         if not run_them:
-            if needs_nudge(rounds, nudged, calls, own_calls, done["finish"], cancel.is_set(), "".join(text)):
+            if needs_nudge(rounds, nudged, calls, own_calls, done["finish"], cancel.is_set(), "".join(text),
+                           compacted_since):
+                prompt = NUDGE_AFTER_SUMMARY if compacted_since else NUDGE_PROMPT
+                compacted_since = 0
                 nudged = True
-                print("[strata] tool loop: the model ended its turn right after a tool result without a word; "
-                      "asking it once to carry on", flush=True)
+                print("[strata] tool loop: the model ended its turn right after a tool result "
+                      + ("with the summary as its answer; " if prompt is NUDGE_AFTER_SUMMARY else "without a word; ")
+                      + "asking it once to carry on", flush=True)
                 messages.append({"role": "assistant", "content": ""})
-                messages.append({"role": "user", "content": NUDGE_PROMPT})
+                messages.append({"role": "user", "content": prompt})
                 shrunk, summarized = yield from fit_context_live(svc, messages, tools, kw, max_req, cancel)
+                compacted_since += 1 if summarized else 0
                 if shrunk or summarized:
                     yield "mcp", {"event": "compact", "shrunk": shrunk, "summarized": summarized}
                 if cancel.is_set():
@@ -4511,6 +4531,7 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
                          "tool_calls": [{"function": {"name": c.name, "arguments": c.arguments}} for c in calls]})
         messages += [{"role": "tool", "content": r} for r in results]
         shrunk, summarized = yield from fit_context_live(svc, messages, tools, kw, max_req, cancel)
+        compacted_since += 1 if summarized else 0
         if shrunk or summarized:
             yield "mcp", {"event": "compact", "shrunk": shrunk, "summarized": summarized}
         if cancel.is_set():
