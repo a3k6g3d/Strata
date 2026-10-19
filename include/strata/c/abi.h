@@ -40,10 +40,34 @@ typedef struct strata_expert_ref {
     int source_tier;   /* 0 = pinned RAM, 1 = NVMe, 2 = SSD, 3 = model file */
 } strata_expert_ref;
 
-/* The version handshake, and the only entry point the skeleton needs. The real device calls are added at
- * milestone 2, when the facade DLL is built from the existing strata_core/strata_kernels static libs. */
-int strata_abi_version(void);
-const char *strata_abi_last_error(void);
+/* Milestone 1 needed only the handshake.  Milestone 2 is the DLL, so the calls below are the ones that make it a
+ * link test rather than a compile test: each reaches into an existing static library and returns what that code
+ * decided.  Without such a reference the linker drops the library and the test passes without ever having linked
+ * it - which is exactly the silent pass this whole seam is built to prevent. */
+#ifdef _WIN32
+  #ifdef STRATA_FACADE_BUILD
+    #define STRATA_API __declspec(dllexport)
+  #else
+    #define STRATA_API __declspec(dllimport)
+  #endif
+#else
+  #define STRATA_API __attribute__((visibility("default")))
+#endif
+
+STRATA_API int strata_abi_version(void);
+STRATA_API const char *strata_abi_last_error(void);
+
+/* The seam's first real call: the policy's own decision, pulled out of strata_spec (MSVC-built, no CUDA).
+ * `lookup_out` and `t_out` are the caller's; the facade writes them and owns nothing it writes.  On a policy with
+ * no measurements yet, choose(3, 4, 6) is decided by the priors alone, which makes it a fixed, checkable answer
+ * on both sides of the seam: lookup=1, t=4. */
+STRATA_API int strata_facade_probe_policy(int t_mtp, int lookup_k, int match,
+                                          int *lookup_out, int *t_out);
+
+/* The toolchain question this milestone exists to answer: can cudart be linked into something Rust calls?
+ * Built with CUDA, this returns STRATA_OK and the runtime version; built without it, STRATA_ERR_DEVICE_UNAVAILABLE
+ * - an honest answer, not a skipped test. */
+STRATA_API int strata_facade_cudart_version(int *runtime_version_out);
 
 #ifdef __cplusplus
 }
