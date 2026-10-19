@@ -1594,8 +1594,12 @@ if(STRATA_BUILD_TESTS)
     if(Python3_Interpreter_FOUND)
       if(MSVC)
         target_link_options(iq_avx2_parity PRIVATE /MAP)
+        # the only thing to disassemble here is the linked binary, so it also holds ggml-cpu, which a source build
+        # compiles for the build machine on purpose (this machine has AVX-512) -- the same scope the branch below
+        # gets by being handed the library.  Named explicitly, and counted in the summary, never silently dropped.
         add_test(NAME isa_guard_check COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/check_isa_guard.py
-                 $<TARGET_FILE:iq_avx2_parity> --map $<TARGET_FILE_DIR:iq_avx2_parity>/iq_avx2_parity.map)
+                 $<TARGET_FILE:iq_avx2_parity> --map $<TARGET_FILE_DIR:iq_avx2_parity>/iq_avx2_parity.map
+                 --exclude-owner ggml-cpu)
       else()
         # the library, not the binary: a Linux source build compiles ggml-cpu for the build machine on purpose
         add_test(NAME isa_guard_check COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/check_isa_guard.py

@@ -18,6 +18,11 @@ object file, and not a weak / COMDAT symbol.  MSVC's own auto-vectorizer guard (
   Linux : check_isa_guard.py libstrata_kernels_cpu.a  (needs objdump and nm from binutils)
   Windows: check_isa_guard.py EXE --map EXE.map      (link with /MAP; needs `pip install capstone pefile`)
 
+Scope: Strata's own code.  A third-party library compiled for the build machine on purpose is out of scope: the
+Linux path gets that for free by being handed the archive, and on Windows -- where the only thing to disassemble
+is the linked EXE -- say so with `--exclude-owner ggml-cpu`.  An excluded function is counted, never hidden: the
+summary line reports how many wide-ISA functions were in scope and how many were set aside.
+
 Exit 0 = clean, 1 = a violation, 77 = cannot run here (tools missing; ctest SKIP_RETURN_CODE).
 """
 import argparse
@@ -124,7 +129,7 @@ def run_elf(path):
 
 
 # ---------------------------------------------------------------- PE
-def run_pe(path, mapf):
+def run_pe(path, mapf, exclude=()):
     try:
         import pefile
         from capstone import Cs, CS_ARCH_X86, CS_MODE_64
@@ -168,7 +173,11 @@ def run_pe(path, mapf):
             sym, obj = base_sym[starts[i]] if i >= 0 else ("?", "?")
             wide[(b, sym, obj)] = (n, first, guarded)
     bad = []
+    set_aside = 0
     for (b, sym, obj), (n, first, guarded) in sorted(wide.items()):
+        if ":" in obj and obj.split(":")[0] in exclude:
+            set_aside += 1                       # a third-party library compiled for the build machine on purpose
+            continue
         why = judge(sym, obj.split(":")[-1], "", guarded, False, False)
         # an inline function defined in a header comes out of the map as `f i`; the wide-ISA files must have none
         in_wide_obj = any(o in obj for o in WIDE_OBJECTS)
@@ -176,12 +185,13 @@ def run_pe(path, mapf):
             why = "template / std:: instantiation inside a wide-ISA object (COMDAT: the linker may share it)"
         if why:
             bad.append((sym, n, first, why + " [rva %x, %s]" % (b, obj)))
-    return report(path, nfun, {k[1]: v for k, v in wide.items()}, bad)
+    return report(path, nfun, {k[1]: v for k, v in wide.items()}, bad, set_aside)
 
 
-def report(path, nfun, wide, bad):
-    print("check_isa_guard: %s: %s functions, %d hold wide-ISA instructions, %d not allowed"
-          % (path, nfun, len(wide), len(bad)))
+def report(path, nfun, wide, bad, set_aside=0):
+    print("check_isa_guard: %s: %s functions, %d hold wide-ISA instructions, %d not allowed%s"
+          % (path, nfun, len(wide), len(bad),
+             "" if not set_aside else " (%d set aside: out of scope)" % set_aside))
     for name, n, first, why in bad:
         print("  VIOLATION %s (%d wide instructions, first %s): %s" % (name[:160], n, first, why))
     return 1 if bad else 0
@@ -191,6 +201,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("binary")
     ap.add_argument("--map", help="MSVC linker map (PE)")
+    ap.add_argument("--exclude-owner", action="append", default=[], metavar="LIB",
+                    help="set aside wide-ISA functions whose object is owned by this library in the map (PE only; "
+                         "the ELF path gets the same scope by being handed the archive)")
     a = ap.parse_args()
     with open(a.binary, "rb") as f:
         magic = f.read(4)
@@ -198,8 +211,10 @@ def main():
         if not a.map:
             print("check_isa_guard: a PE binary needs --map (link with /MAP)")
             return 77
-        return run_pe(a.binary, a.map)
+        return run_pe(a.binary, a.map, set(a.exclude_owner))
     if magic == b"\x7fELF" or magic == b"!<ar":
+        if a.exclude_owner:
+            print("check_isa_guard: --exclude-owner does nothing on ELF; hand it the archive instead")
         return run_elf(a.binary)
     print("check_isa_guard: not a PE or ELF file")
     return 77
