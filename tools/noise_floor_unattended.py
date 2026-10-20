@@ -38,10 +38,21 @@ RESTART_WAIT = 240           # seconds to give the server to come back up
 
 
 def say(msg: str) -> None:
+    """One line to the log, flushed.
+
+    The log is the only thing that survives this run: the driver's stdout is whatever
+    launched it, and a WMI-launched process has no console at all.  The last run died
+    between two prints in the same second, which is why the fix is a print per step
+    rather than a summary at the end.
+    """
     line = time.strftime("%H:%M:%S  ") + msg
-    print(line, flush=True)
     with open(LOG, "a", encoding="utf-8") as fh:
         fh.write(line + "\n")
+        fh.flush()
+    try:
+        print(line, flush=True)
+    except Exception:
+        pass
 
 
 def answers(port: int, timeout: float = 5.0) -> bool:
@@ -56,15 +67,21 @@ def answers(port: int, timeout: float = 5.0) -> bool:
 
 
 def live_server(port: int):
-    """The process serving this port: a python running serve.server with --port <port>."""
+    """The process serving this port: a python running serve.server with --port <port>.
+
+    Returns (process, argv_list, display_string).  The argv list is what gets restarted:
+    re-splitting the display string would break on "C:\\Program Files\\..." at its space,
+    which is exactly this server's path.
+    """
     for p in psutil.process_iter(["name", "cmdline"]):
         try:
-            cmd = " ".join(p.info["cmdline"] or [])
+            argv = p.info["cmdline"] or []
         except Exception:
             continue
+        cmd = " ".join(argv)
         if "serve.server" in cmd and f"--port {port}" in cmd:
-            return p, cmd
-    return None, None
+            return p, argv, cmd
+    return None, [], None
 
 
 def mine() -> set:
@@ -88,6 +105,13 @@ def mine() -> set:
     return out
 
 
+def all_children(p) -> list:
+    try:
+        return p.children(recursive=True)
+    except Exception:
+        return []
+
+
 def children(p) -> list:
     """The server's descendants, minus this driver's own family.
 
@@ -97,32 +121,61 @@ def children(p) -> list:
     driver that kills the whole subtree kills the run it is driving.  Hence the exclusion.
     """
     keep = mine()
-    try:
-        return [c for c in p.children(recursive=True) if c.pid not in keep]
-    except Exception:
-        return []
+    return [c for c in all_children(p) if c.pid not in keep]
+
+
+def tree_of_me() -> list:
+    """This driver's own ancestry, written down before anything is killed.
+
+    The last run put pid 25444 - which was the session's own tool runner - on the kill
+    list, so the exclusion did not see it, so the driver was NOT under the session at
+    that moment; and it still died in the same second it killed that pid.  The log could
+    not tell those two apart.  So the driver writes its own parent chain down first.
+    """
+    out = []
+    d = psutil.Process()
+    while d is not None:
+        try:
+            out.append((d.pid, d.name()))
+            d = d.parent()
+        except Exception:
+            break
+    return out
 
 
 def main() -> int:
     say(f"driver up (pid {psutil.Process().pid}); log: {LOG}")
+    say("my process tree: " + " <- ".join(f"{n}({p})" for p, n in tree_of_me()))
 
-    p, cmd = live_server(PORT)
+    p, argv, cmd = live_server(PORT)
+    srv_cwd = None
     if p is None:
         say("no live server found on the port - nothing to stop; running anyway")
     else:
+        try:
+            srv_cwd = p.cwd()
+        except Exception:
+            srv_cwd = None
+        say(f"the server's working directory, to restart it in: {srv_cwd or 'unreadable'}")
+        keep = mine()
         kids = children(p)
         say(f"stopping pid {p.pid} ({p.name()}): {cmd}")
+        say("  spared (my own line): " + (", ".join(f"{c.pid}:{c.name()}" for c in all_children(p) if c.pid in keep) or "(none)"))
         for k in kids:
-            say(f"  child pid {k.pid} ({k.name()})")
+            say(f"  will kill pid {k.pid} ({k.name()})")
         # terminate the children first, then the server: the engine is the thing holding
         # 11.5 GiB of VRAM, and killing the parent first can leave it orphaned on the card
         for k in kids:
+            say(f"  killing pid {k.pid} ({k.name()}) ...")
             try:
                 k.terminate()
+                say(f"  pid {k.pid} terminated")
             except Exception as e:
                 say(f"  could not terminate pid {k.pid}: {e}")
+        say(f"  killing the server pid {p.pid} ...")
         try:
             p.terminate()
+            say(f"  server pid {p.pid} terminated")
         except Exception as e:
             say(f"  could not terminate pid {p.pid}: {e}")
         gone = psutil.wait_procs([p] + kids, timeout=60)
@@ -150,14 +203,17 @@ def main() -> int:
 
     say("running: " + " ".join(HARNESS[1:]))
     t = time.time()
-    rc = subprocess.call(HARNESS)
-    say(f"harness exited {rc} after {(time.time() - t) / 60:.1f} min")
+    # the harness's own printout has to go somewhere durable: a WMI-launched process has
+    # no console, so without this the run happens and its story is never told
+    out_path = LOG.with_name("noise-floor-harness-out.log")
+    with open(out_path, "w", encoding="utf-8") as out_fh:
+        rc = subprocess.call(HARNESS, stdout=out_fh, stderr=subprocess.STDOUT)
+    say(f"harness exited {rc} after {(time.time() - t) / 60:.1f} min; output: {out_path}")
 
-    if cmd:
+    if argv:
         say("bringing the live server back: " + cmd)
-        head, *rest = cmd.split()
         try:
-            subprocess.Popen([head, *rest])
+            subprocess.Popen(argv, cwd=srv_cwd)
         except Exception as e:
             say(f"  could not restart it: {e} - start it by hand")
             return 1
