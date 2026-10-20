@@ -232,6 +232,17 @@ re-run to be worth anything.
 4. **Record the machine during the run.** The README states plainly that background workloads and power limits
    are not recorded. One GPU clock and utilisation sample per arm would have separated the cold region from a
    real result without any statistics at all.
+   **Done 2026-10-19:** `tools/bench_state.py` takes the snapshots — uptime, free RAM, GPU clock, **utilisation**
+   (the field this item names; NVML answers it here, `nvmlDeviceGetUtilizationRates`), temperature, power, pstate,
+   throttle reasons, and any watched background process that took a core — at the start of a run, every 10 s on a
+   thread through the run, and at the end; the run's `results.json` and its `runs.jsonl` line carry them. They are
+   read through NVML in-process, not by starting `nvidia-smi`, because polling `nvidia-smi` costs about 1 tok/s of
+   decode and that is exactly the disturbance being measured. The README now has a section for them instead of
+   saying they were not recorded, and a field the machine could not read says so rather than going quiet — a
+   missing clock looks exactly like an idle one. What has **not** happened is a real run: none of the 89
+   `results.json` on disk has state, so this has never been rendered from measured data, only from the selftest's
+   fabricated snapshot. The cold region of this session is still read from an arm's position, as it was when the
+   section above was written; the next sweep is the first that can read it off the record.
 5. **Keep the output text, or a hash of it.** The current record holds no generated text and no output
    fingerprint: `digest()` ends at `drafts_accepted`, and `engine-log-excerpt.txt` holds 5 lines with nothing
    resembling a fingerprint in them. So nothing in `bench/results/` can show that two arms produced the same

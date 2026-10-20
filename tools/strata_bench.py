@@ -833,6 +833,60 @@ def results_table(out: dict) -> list[str]:
     return lines
 
 
+def machine_state_section(res: dict) -> list:
+    """What the machine was doing while this arm ran, as its own README section.
+
+    docs/BENCH_NOISE.md named this as the cheapest thing that would have separated the cold region from a real result:
+    one clock and utilisation sample per arm, no statistics needed.  The samples are taken by tools/bench_state.py
+    through NVML (polling nvidia-smi costs about 1 tok/s of decode, which is the disturbance being measured); the
+    run's own record keeps them, and this is where a reader who is not parsing results.json sees them.  A field the
+    machine could not read says so rather than going quiet, because a missing clock looks exactly like an idle one.
+    """
+    st = res.get("state") or {}
+    if not (st.get("start") or st.get("end") or st.get("during")):
+        return ["## What the machine was doing", "",
+                "Not recorded: this run predates the machine-state sampler, or NVML and psutil were not available "
+                "where it ran. Read its speeds with the cold-region warning of docs/BENCH_NOISE.md in mind.", ""]
+
+    def line(label: str, snap) -> str:
+        if not snap:
+            return f"- {label}: not read"
+        g = snap.get("gpu") or {}
+        clock = f"{g['sm_mhz']} MHz SM" if g.get("sm_mhz") is not None else "clock not read"
+        util = f"{g['util_gpu_pct']}% busy" if g.get("util_gpu_pct") is not None else "utilisation not read"
+        heat = f"{g['temp_c']} \u00b0C" if g.get("temp_c") is not None else "temperature not read"
+        power = f"{g['power_w']} W" if g.get("power_w") is not None else "power not read"
+        ps = f"P{g['pstate']}" if g.get("pstate") is not None else "pstate not read"
+        ram = f"{snap['free_ram_gib']} GiB free RAM" if snap.get("free_ram_gib") is not None else "free RAM not read"
+        up = f"up {snap['uptime_s'] / 3600:.1f} h" if snap.get("uptime_s") is not None else "uptime not read"
+        thr = ", throttled by: " + ", ".join(g["throttle_reasons"]) if g.get("throttle_reasons") else ""
+        busy = ", busy background: " + ", ".join(f"{n} {p}%" for n, p in snap.get("background_busy") or []) \
+            if snap.get("background_busy") else ""
+        return f"- {label}: {up}, {ram}; GPU {clock}, {util}, {heat}, {power}, {ps}{thr}{busy}"
+
+    L = ["## What the machine was doing", "",
+         line("at the start", st.get("start")), line("at the end", st.get("end"))]
+    d = st.get("during") or {}
+    if d.get("samples"):
+        sm = d.get("sm_mhz") or {}
+        band = f"{sm['min']}-{sm['max']} MHz (mean {sm['mean']})" if sm else "clock not read in any sample"
+        util = f"{d['util_gpu_pct_mean']}%" if d.get("util_gpu_pct_mean") is not None else "not read"
+        heat = f"{d['temp_c_max']} \u00b0C" if d.get("temp_c_max") is not None else "not read"
+        power = f"{d['power_w_max']} W" if d.get("power_w_max") is not None else "not read"
+        ram = f"{d['free_ram_gib_min']} GiB" if d.get("free_ram_gib_min") is not None else "not read"
+        thr = ", ".join(d["throttle_seen"]) if d.get("throttle_seen") else "none"
+        busy = ", ".join(f"{n} {p}%" for n, p in (d.get("background_busy") or {}).items()) or "none"
+        L += [f"- during: {d['samples']} samples, one every {d.get('interval_s', 10):g} s - GPU clock {band}, utilisation mean {util}, "
+              f"hottest {heat}, most power {power}, least free RAM {ram}; throttling seen: {thr}; background work that took a core: {busy}"]
+    elif st.get("start") or st.get("end"):
+        L += ["- during: no samples (the sampler did not run, or took none)"]
+    L += ["",
+          "The clock band and the utilisation are the two that matter: docs/BENCH_NOISE.md found the machine drifts on a "
+          "schedule, and an arm whose samples sit in a different band from its comparison arm is not the same machine "
+          "state, whatever the speeds say.", ""]
+    return L
+
+
 def render_readme(res: dict) -> str:
     mc, out, p = res["machine"], res["results"], res["params"]
     gpu = " + ".join(mc.get("gpu") or []) or "CPU only"
@@ -856,7 +910,8 @@ def render_readme(res: dict) -> str:
          f"- OS: {mc.get('os')}; GPU driver: {mc.get('gpu_driver') or 'not read'}; CUDA: {mc.get('cuda') or 'not read'}",
          f"- Strata: project {mc.get('strata_version') or '?'}, commit {mc.get('strata_commit') or 'not a git checkout'}; "
          f"engine {mc.get('engine_version') or 'not read'}",
-         "- Background workloads and power limits: not recorded", "",
+         "- What the machine was doing during the run: below", "",
+         "\n".join(machine_state_section(res)),
          "## Model and configuration", "",
          f"- Model and quantization: {model}",
          f"- Context: {mc.get('context') or 'not read'} tokens; parallel slots: {mc.get('parallel_slots') or 1}",
@@ -932,7 +987,8 @@ def render_readme(res: dict) -> str:
     L += ["", "Per-request data: `results.json`. Engine log lines from the start: `engine-log-excerpt.txt` (when this run started the server).", "",
           "## Correctness and limitations", "",
           "Not measured: this is a speed suite. The conversation uses the model's own replies, so token counts differ a little between runs. "
-          "Machine details come from the server, `nvidia-smi`/`rocm-smi` and the OS; background load and power limits are not recorded. "
+          "Machine details come from the server, `nvidia-smi`/`rocm-smi` and the OS, and what the machine was doing "
+          "during the run is the section above. "
           f"Total time of the suite: {res['elapsed_s']:.0f} s.", ""]
     return "\n".join(L)
 
@@ -1099,6 +1155,23 @@ def selftest() -> int:
     check("the report warns that PCIe share is not a score", "NOT a better run" in doc)
     check("the report says the model was not reset between tests", "deliberately not reset" in doc)
     check("the speed table has a row per test", all(s in doc for s in ("short chat", "4k prompt, fresh", "agent session")), doc[:400])
+    check("a run without machine state says so instead of printing an empty section",
+          "predates the machine-state sampler" in doc, doc[doc.find("## What the machine"):][:120])
+    with_state = dict(res, state={"start": {"uptime_s": 7200.0, "free_ram_gib": 41.2,
+                                            "gpu": {"sm_mhz": 1890, "util_gpu_pct": 99, "temp_c": 68, "power_w": 210.5,
+                                                    "pstate": 1, "throttle": 128, "throttle_reasons": ["hw power brake"]},
+                                            "background_busy": [["msmpeng", 88]]},
+                                  "end": {"uptime_s": 7500.0, "gpu": {"sm_mhz": 2910, "util_gpu_pct": 2, "throttle_reasons": []}},
+                                  "during": {"samples": 3, "interval_s": 10.0, "sm_mhz": {"min": 1890, "max": 2910, "mean": 2230},
+                                             "util_gpu_pct_mean": 66.3, "temp_c_max": 68, "power_w_max": 210.5,
+                                             "free_ram_gib_min": 40.9, "throttle_seen": ["hw power brake"],
+                                             "background_busy": {"msmpeng": 88}}})
+    doc2 = render_readme(with_state)
+    check("the clock band, the utilisation and the throttling are in the report",
+          all(s in doc2 for s in ("1890-2910 MHz (mean 2230)", "utilisation mean 66.3%", "hw power brake", "msmpeng 88%")),
+          doc2[doc2.find("## What the machine"):][:400])
+    check("a field that could not be read says so, rather than looking idle",
+          "utilisation not read" in render_readme(dict(res, state={"start": {"gpu": {"sm_mhz": 2910}}})), doc[:80])
 
     # 4. privacy: a stranger's paths, key and addresses must not survive
     red = redactor(key="sk-secret-1234567890")

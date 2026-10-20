@@ -58,7 +58,7 @@ def _uint(lib, fn, handle, *extra):
 
 
 def gpu_state(index: int = 0) -> dict | None:
-    """The first GPU's clocks, temperature, power and memory, or None when NVML is not available."""
+    """The first GPU's clocks, utilisation, temperature, power and memory, or None when NVML is not available."""
     lib = _nvml()
     if lib is None:
         return None
@@ -71,11 +71,16 @@ def gpu_state(index: int = 0) -> dict | None:
             _fields_ = [("total", ctypes.c_ulonglong), ("free", ctypes.c_ulonglong), ("used", ctypes.c_ulonglong)]
         mem = Mem()
         have_mem = lib.nvmlDeviceGetMemoryInfo(handle, ctypes.byref(mem)) == 0
+        class Util(ctypes.Structure):
+            _fields_ = [("gpu", ctypes.c_uint), ("mem", ctypes.c_uint)]
+        util = Util()
+        have_util = lib.nvmlDeviceGetUtilizationRates(handle, ctypes.byref(util)) == 0
         throttle = ctypes.c_ulonglong()
         have_throttle = lib.nvmlDeviceGetCurrentClocksThrottleReasons(handle, ctypes.byref(throttle)) == 0
         power = _uint(lib, "nvmlDeviceGetPowerUsage", handle)
         return {"sm_mhz": _uint(lib, "nvmlDeviceGetClockInfo", handle, 1), "mem_mhz": _uint(lib, "nvmlDeviceGetClockInfo", handle, 2),
                 "temp_c": _uint(lib, "nvmlDeviceGetTemperature", handle, 0), "power_w": round(power / 1000.0, 1) if power is not None else None,
+                "util_gpu_pct": util.gpu if have_util else None, "util_mem_pct": util.mem if have_util else None,
                 "mem_used_mib": round(mem.used / 2 ** 20) if have_mem else None,
                 "pstate": _uint(lib, "nvmlDeviceGetPerformanceState", handle),
                 "throttle": throttle.value if have_throttle else None}
@@ -159,9 +164,10 @@ def snapshot(background: bool = True) -> dict:
     return snap
 
 
-def summarize_samples(samples: list) -> dict:
-    """What a run's samples say: GPU clock range, the hottest and most power-hungry moments, throttling seen, the least free RAM, and every
-    watched background process that was busy at any sample."""
+def summarize_samples(samples: list, interval: float = 10.0) -> dict:
+    """What a run's samples say: GPU clock range and mean utilisation, the hottest and most power-hungry moments, throttling seen, the least free
+    RAM, and every watched background process that was busy at any sample.  A run whose samples sit in a different clock band from its
+    comparison arm is not the same machine state, whatever the speeds say."""
     def series(path):
         out = []
         for s in samples:
@@ -172,13 +178,19 @@ def summarize_samples(samples: list) -> dict:
                 out.append(v)
         return out
     sm, temp, power, ram = series(("gpu", "sm_mhz")), series(("gpu", "temp_c")), series(("gpu", "power_w")), series(("free_ram_gib",))
+    util = series(("gpu", "util_gpu_pct"))
     seen_throttle, seen_busy = set(), {}
     for s in samples:
         seen_throttle.update(((s.get("gpu") or {}).get("throttle_reasons")) or [])
         for name, pct in s.get("background_busy") or []:
             seen_busy[name] = max(seen_busy.get(name, 0), pct)
-    return {"samples": len(samples),
+    return {"samples": len(samples), "interval_s": interval,
             "sm_mhz": {"min": min(sm), "max": max(sm), "mean": round(sum(sm) / len(sm))} if sm else None,
+            # The utilisation is the mean, not the max: it is the field that says whether the arm ran while the GPU was
+            # busy with something else, and one sample of it (docs/BENCH_NOISE.md, "What to do about it" 4) is enough to
+            # tell the cold region apart from a result.  A mean over the samples says the same thing and does not hide a
+            # run that was busy throughout; the max would let a single 100% sample stand for an idle arm.
+            "util_gpu_pct_mean": round(sum(util) / len(util), 1) if util else None,
             "temp_c_max": max(temp) if temp else None, "power_w_max": max(power) if power else None,
             "free_ram_gib_min": min(ram) if ram else None,
             "throttle_seen": sorted(seen_throttle), "background_busy": seen_busy}
@@ -211,7 +223,7 @@ class Sampler:
         return self.summary()
 
     def summary(self) -> dict:
-        return summarize_samples(list(self.samples))
+        return summarize_samples(list(self.samples), self.interval)
 
 
 if __name__ == "__main__":
