@@ -102,6 +102,40 @@ were run twice, in different sweeps, on different days, across different commits
 sat past the cold region in both sweeps. Reproducible to 1.5% is possible; the sweeps that reported 5-13%
 differences were comparing arms that had not been given the same chance to warm up.
 
+## The first run that measured it, rather than reading it back
+
+On 2026-10-20 the harness ran the same arm three times on this machine - three launches, `--runs 2 --tests agent
+--config strata.json`, the live configuration, engine 0.1.45 at commit 181fe260, about two minutes a launch, driven
+by `tools/noise_floor.bat` because the driver cannot be launched by the thing it kills. It is the first run on disk
+with machine state recorded and the first to write `runs.jsonl` (0 lines before it, 3 now).
+
+| launch | median decode | utilisation mean | clock band | max temp | background work seen |
+|---|---|---|---|---|---|
+| 1 | 38.55 | 72.3% | 2542-2925 MHz | 50 °C | `searchindexer.exe` busy in 97 of 120 s of samples |
+| 2 | 32.1 | 54.8% | 2550-2910 MHz | 51 °C | `searchindexer.exe` in 20 |
+| 3 | 34.3 | 65.9% | 2550-2910 MHz | 54 °C | none |
+
+Twelve NVML samples per launch, 10 s apart, plus one at the start and one at the end; pstate P1 throughout and no
+throttle reason in any sample of any launch. The machine state on disk is what item 4 asked for. What it says is
+uncomfortable:
+
+* **The spread between the three launch medians is 20.1%, and it is exactly the number this document says not to
+  read.** With `--runs 2` a launch's median is half its cold run, so the three medians are not three warm samples of
+  the same thing; they are three cold-warm mixtures. Nothing here contradicts the reading above.
+* **The machine-state data does not order the launches.** The fastest launch is the one with the most background
+  work, the slowest is the one with the least busy GPU, and the clocks, temperatures and pstates of all three sit
+  within a whisker of each other. There was nothing to explain - the spread is the floor - but a reader who hoped
+  the sampler would separate a cold launch from a real one should know that on its first real run it found no
+  difference to separate them with.
+* **Within each launch, run 2 beat run 1 in 14 of 18 same-turn pairs** - the within-launch warm-up, the right
+  direction and the size `check_cold_axis.py` predicts (+8.8%). The pairs themselves are the floor measured rather
+  than computed: **18 pairs, median 13.6%, p90 26.4%, worst 32.7%**. They belong beside the 12.1%/29.3% row above
+  (all runs, warm-up included), which they agree with, and not beside the warm-only 10.1% - a two-run launch has
+  one cold run and one warm one, so every pair here is cold against warm and no warm-only pair can be formed.
+* **At turn 0 the first run was faster in all three launches** (by 24.4%, 25.5% and 15.3%), which is the opposite
+  direction to the old turn-0 control (+5.5% for the second run). Three pairs prove nothing, and it is written down
+  because it is the predicted direction failing on the first data collected to check it.
+
 ## What does carry the speed
 
 Within one arm, turn by turn, subtracting each arm's own mean so only the turn differs (n = 510):
@@ -243,6 +277,11 @@ re-run to be worth anything.
    `results.json` on disk has state, so this has never been rendered from measured data, only from the selftest's
    fabricated snapshot. The cold region of this session is still read from an arm's position, as it was when the
    section above was written; the next sweep is the first that can read it off the record.
+   **First real data 2026-10-20**, three launches of one arm, in the section above: the sampler works on a live
+   run, and on that run it found no difference in clock, temperature, pstate or throttling between launches that
+   came out 20.1% apart — which is the floor talking, not the machine state, and the sampler's job is to say so
+   rather than to be blamed for it. The three launches are the only `results.json` on disk with state; the older
+   89 still have none, so a sweep cannot read its cold region off the record until it is re-run.
 5. **Keep the output text, or a hash of it.** The current record holds no generated text and no output
    fingerprint: `digest()` ends at `drafts_accepted`, and `engine-log-excerpt.txt` holds 5 lines with nothing
    resembling a fingerprint in them. So nothing in `bench/results/` can show that two arms produced the same
@@ -256,3 +295,12 @@ re-run to be worth anything.
    earlier probe. The per-request fingerprints are in `bench/results/2026-10-19-output-fingerprint/`. A speed
    comparison can now be checked against the answer it produced, on prompts where the answer is reproducible at
    all; on the others there is nothing to check, and the tool says so.
+   **Gap found by the first real run 2026-10-20:** the three `runs.jsonl` lines it wrote have `state_hash: null`.
+   Two reasons, both fixed. The engine only prints a `STATE_HASH` line when `STRATA_STATE_HASH=1` is in its
+   environment, and the harness never set it — so `start_server` now starts its server with it (the server passes
+   its own environment straight on to the engine, `serve/server.py` `child_env`, so one setting is enough). And the
+   recorder was reading the harness's temp log, which never has one of those lines — the engine writes to the log
+   the config names, all 459 of them on this machine — so the recorder now reads that log, from the byte it was at
+   when the server started, so a run only counts what the engine printed during it. One honest limit stays: the
+   fingerprint is filled when the harness starts the server itself; a run against a server already running gets
+   nothing, because that server was started without the variable.
