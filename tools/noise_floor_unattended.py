@@ -209,7 +209,7 @@ def main() -> int:
             say(f"  server pid {p.pid} terminated")
         except Exception as e:
             say(f"  could not terminate pid {p.pid}: {e}")
-        gone = psutil.wait_procs([p] + kids, timeout=60)
+        gone, _alive = psutil.wait_procs([p] + kids, timeout=60)     # (gone, alive): unpacked, or the loop below dies
         for g in gone:
             say(f"  pid {g.pid} gone" + (f" (rc {g.returncode})" if g.returncode is not None else ""))
         still = [g for g in (kids + [p]) if g.is_running() and g.pid != psutil.Process().pid]
@@ -221,8 +221,8 @@ def main() -> int:
     # is the mistake the guard exists to stop
     t0 = time.time()
     while time.time() - t0 < READY_TIMEOUT:
-        left = [q for q in psutil.process_iter(["name"])
-                if (q.info["name"] or "").lower().startswith("strata")
+        left = [q for q in psutil.process_iter(["name"])          # the GPU holders only: strata-desktop (the app's
+                if (q.info["name"] or "").lower() in ("strata.exe", "strata-vision.exe")   # window) never exits
                 and q.pid != psutil.Process().pid]
         if not answers(PORT) and not left:
             say(f"GPU free: no server on {PORT}, no strata process, after {time.time() - t0:.0f} s")
@@ -260,4 +260,12 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except SystemExit:
+        raise
+    except BaseException:
+        # launched hidden, it has no console: without this an exception ends the run with nothing in the log
+        import traceback
+        say("driver crashed:\n" + traceback.format_exc())
+        raise
