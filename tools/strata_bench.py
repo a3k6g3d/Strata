@@ -726,12 +726,57 @@ def is_strata(base: str, key: str) -> bool:
     return bool(h and h.get("service") == "strata")
 
 
+def server_env() -> dict:
+    """The environment the benchmark's server starts with: ours, plus the one thing the record needs.
+
+    STRATA_STATE_HASH makes the engine print a fingerprint line per finished request, which is what
+    `runs.jsonl`'s `state_hash` field is built from (docs/BENCH_NOISE.md item 5).  The server passes its own
+    environment straight on to the engine (serve/server.py `child_env`), so setting it here is enough; a
+    run that already set it keeps its own value.
+    """
+    env = dict(os.environ)
+    env.setdefault("STRATA_STATE_HASH", "1")
+    return env
+
+
 def start_server(cfg_path: Path, port: int, gpu: str | None, log_path: Path):
     cmd = [sys.executable, str(ROOT / "serve" / "server.py"), "--engine", "strata", "--config", str(cfg_path), "--port", str(port)]
     if gpu:
         cmd += ["--gpu", gpu]
     logf = open(log_path, "w", encoding="utf-8", errors="replace")
-    return subprocess.Popen(cmd, cwd=str(ROOT), stdout=logf, stderr=subprocess.STDOUT)
+    return subprocess.Popen(cmd, cwd=str(ROOT), stdout=logf, stderr=subprocess.STDOUT, env=server_env())
+
+
+def engine_log_start(cfg: dict | None) -> tuple:
+    """The engine's own log, and how big it is right now (the path, the offset, or (None, 0)).
+
+    The harness's temp log gets the server's stdout; the STATE_HASH lines the engine prints go to the log the
+    config names, so the fingerprint has to be read from there (docs/REJECTED_PROPOSALS.md: every temp log on
+    disk has zero of them).  The offset is taken before the server starts, so the lines read afterwards are
+    this run's and not the ones the machine wrote before it.
+    """
+    p = (cfg or {}).get("log")
+    if not p:
+        return None, 0
+    path = Path(p)
+    if not path.is_absolute():
+        path = ROOT / p
+    try:
+        return path, path.stat().st_size
+    except OSError:
+        return path, 0
+
+
+def engine_log_lines(path, offset: int) -> list:
+    """What the engine appended to its own log since `offset`; missing files and unreadable ones give nothing."""
+    if not path:
+        return []
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            fh.seek(offset)
+            return fh.read().splitlines()
+    except OSError:
+        return []
 
 
 def wait_ready(base: str, key: str, proc, timeout: float, log=print) -> bool:
@@ -1182,6 +1227,24 @@ def selftest() -> int:
     check("the model path is kept, only its folder is hidden", "m.gguf" in line, line)
     deep = json.dumps(redact_obj({"a": {"b": ["C:\\Users\\a3k6g\\x"]}}, red), ensure_ascii=False)
     check("a results tree is redacted all the way down", "a3k6g" not in deep, deep)
+
+    # 5. the fingerprint: the engine only prints it if the server it starts with asks, and reads it from the engine's log
+    check("the server the benchmark starts asks for the fingerprint", server_env().get("STRATA_STATE_HASH") == "1", server_env())
+    make_record_from = (lambda res, log_lines=None, state_lines=None: bench_record.make_record(res, None, log_lines, None, state_lines)) \
+        if bench_record else (lambda *x, **k: check("bench_record importable", False) or {})
+    with tempfile.TemporaryDirectory() as td:
+        log = Path(td) / "engine.log"
+        log.write_text("strata serve: STATE_HASH L=1 gdn=aaaa ple=bbbb tail=cccc pooled=dddd kv=eeee\n", encoding="utf-8")
+        off = log.stat().st_size
+        check("a run whose engine printed nothing has no fingerprint",
+              make_record_from({"results": {}}, state_lines=engine_log_lines(log, off))["state_hash"] is None, "")
+        with open(log, "a", encoding="utf-8") as fh:
+            fh.write("strata serve: STATE_HASH L=2 gdn=0000000000000001 ple=0000000000000002 tail=0000000000000003 pooled=0000000000000004 kv=0000000000000005\n")
+        got = make_record_from({"results": {}}, state_lines=engine_log_lines(log, off))["state_hash"]
+        check("only what the engine wrote during this run counts, not what the machine wrote before it",
+              got and got["lines"] == 1, got)
+        check("the fingerprint from the engine's own log beats the harness's excerpt, which never has one",
+              make_record_from({"results": {}}, ["no fingerprint lines here"], state_lines=engine_log_lines(log, off))["state_hash"] == got, got)
     print("SELFTEST", "passed" if bad == 0 else f"FAILED: {bad}")
     return 0 if bad == 0 else 1
 
@@ -1260,6 +1323,7 @@ def main(argv=None) -> int:
         base = f"http://127.0.0.1:{port}"
     red = redactor(key=key)
     started = False
+    eng_log, eng_off = None, 0                                      # the engine's own log, measured before the server starts
     try:
         if is_strata(base, key):
             say(f"Using the Strata server already running at {base}.")
@@ -1272,6 +1336,7 @@ def main(argv=None) -> int:
                 return 2
             log_path = Path(tempfile.gettempdir()) / f"strata-bench-{os.getpid()}.log"
             say(f"Starting {cfg_path.name} on port {port} (loading takes 1-3 minutes; the PC may be slow meanwhile) ...")
+            eng_log, eng_off = engine_log_start(cfg)              # before the server starts: the lines after this are ours
             proc = start_server(cfg_path, port, a.gpu, log_path)
             started = True
             if not wait_ready(base, key, proc, a.ready_timeout, say):
@@ -1324,7 +1389,9 @@ def main(argv=None) -> int:
         d = write_results(res, parent, red, log_lines)
         if bench_record:                                                              # one line per run, beside the results folders
             try:
-                bench_record.append(parent / "runs.jsonl", bench_record.make_record(redact_obj(res, red), d.name, log_lines))
+                bench_record.append(parent / "runs.jsonl",
+                                    bench_record.make_record(redact_obj(res, red), d.name, log_lines,
+                                                             state_lines=engine_log_lines(eng_log, eng_off)))
             except Exception as e:  # noqa: BLE001 - a record that cannot be written must not lose the run
                 say(f"  (runs.jsonl not written: {e})")
         say("\nResults (median, range over the runs):")

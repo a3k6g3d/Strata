@@ -34,7 +34,7 @@ def state_hash_summary(lines):
     return {"lines": len(found), "digest": hashlib.sha1("\n".join(fields).encode()).hexdigest()[:16]}
 
 
-def make_record(res: dict, folder: str | None = None, log_lines=None, now: float | None = None) -> dict:
+def make_record(res: dict, folder: str | None = None, log_lines=None, now: float | None = None, state_lines=None) -> dict:
     """The flat record of one run, from the `res` dict strata_bench.py writes as results.json."""
     machine, params, results = res.get("machine") or {}, res.get("params") or {}, res.get("results") or {}
     agent = results.get("agent") or {}
@@ -63,7 +63,7 @@ def make_record(res: dict, folder: str | None = None, log_lines=None, now: float
             "prompt_reuse_pct": a.get("prompt_reuse_pct") if a else whole.get("prompt_reuse_pct"),
             "draft_accept_pct": a.get("draft_accept_pct") if a else whole.get("draft_accept_pct"),
             "turns": [{"turn": t.get("turn"), "decode_tps": t.get("decode_tps"), "ttft_s": t.get("ttft_s")} for t in turns],
-            "state_hash": state_hash_summary(log_lines), "folder": folder}
+            "state_hash": state_hash_summary(state_lines if state_lines is not None else log_lines), "folder": folder}
 
 
 def append(path, record: dict) -> None:
