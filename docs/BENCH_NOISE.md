@@ -313,3 +313,28 @@ re-run to be worth anything.
    the same direction the three-launch run reported. `tools/state_hash_check.py` is the script that runs it; it
    re-launches itself out of the process tree it has to kill, because on this machine the tool runner that
    launches it hangs *under* the server, and stopping the server was taking the driver down with it.
+
+
+## Eight launches, and the two effects point opposite ways
+
+`tools/check_cold_axis.py` now reads both batches (its reader wanted two directory levels under the root;
+a single-session run writes one, so it was silently reading zero arms and printing empty tables). Over the
+eight launches on disk -- three, then five, same commit, same config, same arm -- the within-launch number
+is **48 pairs, median +13.4%, 90th percentile 32.7%**, and the later run is faster in **39 of the 48**. That
+is the hand-computed 12.1% / 29.3% again from the tool that computes it, and the direction the doc predicts.
+
+At the launch level the sign flips. In both batches the **first launch is the fastest**: +16.1% over the rest
+of its batch in the three-launch one, +7.3% in the five-launch one. So the cold thing that happens at the
+start of a launch makes that launch the fastest of its batch, while inside it the first run is the slowest --
+the two effects run in opposite directions, and which one wins at the launch level is not something the
+three-launch run could see.
+
+The turn-0 check from the previous section, which came out backwards on three launches, is now **4 of 8** in
+the predicted direction (run 2 faster than run 1 at turn 0) — all four that agree come from the five-launch
+batch, and the four that do not are that batch's remaining launch plus all three of the three-launch one.
+Eight launches is still not a result; it is
+a coin flip with the sign of each one visible.
+
+The tool's across-launch table only takes the five-launch batch: it wants at least four arms in a session,
+and gives r = -0.43 for position against decode -- later launch, slower. The three-launch batch is below its
+floor, so that correlation is one number from one batch, not a finding.

@@ -58,7 +58,9 @@ def main() -> int:
 
     paths = []
     for root in args.roots:
-        paths += sorted(glob.glob(os.path.join(root, "*", "*", "results.json")))
+        # recursive on purpose: a sweep puts each arm two levels down (root/sweep/arm), a single-session
+        # run puts it one (root/arm), and the reader should not care which of the two it is handed.
+        paths += sorted(set(glob.glob(os.path.join(root, "**", "results.json"), recursive=True)))
     arms = []
     for p in paths:
         try:
