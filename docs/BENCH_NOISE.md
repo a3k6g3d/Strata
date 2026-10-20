@@ -304,3 +304,12 @@ re-run to be worth anything.
    when the server started, so a run only counts what the engine printed during it. One honest limit stays: the
    fingerprint is filled when the harness starts the server itself; a run against a server already running gets
    nothing, because that server was started without the variable.
+   **Verified on real data 2026-10-20:** five launches of the baseline arm, agent suite, two runs each, in
+   `bench/results/state-hash-check/` — the first runs on this machine with both halves of the record filled.
+   Every line has a fingerprint now, 25/25/26/25/25 lines and five distinct digests, and the arithmetic agrees:
+   the engine's log held 459 fingerprint lines before these runs and holds 585 now, exactly 126 more, which is
+   what the five runs claim between them — so the recorder is reading this run's lines and not old ones.
+   The launch medians (38.25, 35.8, 35.5, 35.05, 36.7) sit 9.1% apart, and the first launch is again the fastest,
+   the same direction the three-launch run reported. `tools/state_hash_check.py` is the script that runs it; it
+   re-launches itself out of the process tree it has to kill, because on this machine the tool runner that
+   launches it hangs *under* the server, and stopping the server was taking the driver down with it.
