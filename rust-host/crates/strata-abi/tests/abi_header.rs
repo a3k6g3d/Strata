@@ -3,7 +3,7 @@
 //! It parses text rather than including the header, so it needs no C toolchain and runs on any machine.
 
 use std::path::PathBuf;
-use strata_abi::{Status, ABI_VERSION};
+use strata_abi::{ExpertRef, Status, ABI_VERSION};
 
 fn header() -> String {
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -52,6 +52,36 @@ fn enum_discriminants(src: &str, enum_name: &str) -> Vec<(String, u32)> {
     out
 }
 
+/// The fields of `typedef struct <name> { ... }`, as (type, name) pairs, in header order.
+fn struct_fields(src: &str, name: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut inside = false;
+    for line in src.lines() {
+        let l = line.trim();
+        if !inside {
+            if l.starts_with("typedef struct") && l.contains(name) {
+                inside = true;
+            }
+            continue;
+        }
+        if l.starts_with('}') {
+            break;
+        }
+        let body = l.split("/*").next().unwrap_or("").trim().trim_end_matches(';').trim();
+        if body.is_empty() {
+            continue;
+        }
+        // "const unsigned char *bytes;" -> type "const unsigned char *", name "bytes"
+        let (ty, field) = match body.rsplit_once(char::is_whitespace) {
+            Some(pair) => pair,
+            None => panic!("{name}: field line {l:?} has no name"),
+        };
+        let ty = if field.starts_with('*') { format!("{ty} *") } else { ty.to_string() };
+        out.push((ty, field.trim_start_matches('*').to_string()));
+    }
+    out
+}
+
 #[test]
 fn version_constant_matches_the_header() {
     assert_eq!(define_value(&header(), "STRATA_ABI_VERSION"), ABI_VERSION);
@@ -89,4 +119,20 @@ fn expert_ref_is_a_plain_c_data_layout() {
     assert!(src.contains("unsigned long long len;"), "len field moved");
     assert!(src.contains("int slot;"), "slot field moved");
     assert!(src.contains("int source_tier;"), "source_tier field moved");
+
+    // ...and now one does claim to represent it (strata_abi::ExpertRef), so the claim is checked, not assumed:
+    // the field list above is parsed, and the Rust type's layout has to match it field by field.
+    let fields = struct_fields(&src, "strata_expert_ref");
+    assert_eq!(
+        fields,
+        vec![
+            ("const unsigned char *".to_string(), "bytes".to_string()),
+            ("unsigned long long".to_string(), "len".to_string()),
+            ("int".to_string(), "slot".to_string()),
+            ("int".to_string(), "source_tier".to_string()),
+        ],
+        "the header's field order or types moved; the Rust mirror did not"
+    );
+    assert_eq!(std::mem::size_of::<ExpertRef>(), 24, "the mirror's layout is no longer what the header describes");
+    assert_eq!(std::mem::align_of::<ExpertRef>(), 8);
 }

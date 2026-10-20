@@ -1,0 +1,9 @@
+[package]
+name = "strata-host"
+version.workspace = true
+edition.workspace = true
+
+# The runtime half of the plan, as opposed to strata-abi's contract half.  Still dependency-free: the only
+# crate it depends on is the one that holds the ABI mirror and the ring type.
+[dependencies]
+strata-abi = { path = "../strata-abi" }

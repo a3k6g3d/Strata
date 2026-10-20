@@ -66,8 +66,37 @@ hand-written `extern "C"` header (`include/strata/c/abi.h`). Rust binds to that 
    The DLL is loaded by absolute path rather than linked through the import library: the link works, but Windows
    then resolves the DLL at process start from the exe's directory or PATH, and cargo prunes anything in `deps/`
    that it did not put there itself.  `extern "system"` against the header is unchanged either way.
-3. **One vertical slice**: Rust serves a single decode turn — reads one expert from NVMe through its own ring, hands
-   it to the existing kernels, returns the token — with the Python server unchanged.
+3. **One vertical slice** (done, the data path; the turn itself is not): Rust reads one expert off a file through
+   its own ring, hands it down the seam to the existing kernel, and the answer is checked.  What the plan worded as
+   "serves a single decode turn … returns the token — with the Python server unchanged" is *not* what is built:
+   there is no server in the test, no token out, and the file is a synthetic pack in the temp directory (on this
+   machine's NVMe, but not read because it is NVMe).  What is built is the two halves the slice exists to prove:
+   the Rust side's own `NO_BUFFERING | OVERLAPPED` read path, on its own IOCP, in a new std-only crate
+   (`rust-host/crates/strata-host`), and the first seam call that carries a struct — `strata_facade_expert_apply`,
+   which runs the existing `s2_expert_vnni` on bytes the *caller* read.  No Rust kernel code anywhere.  The facade
+   now links `strata_kernels_cpu` behind a guard, and built without it the shim declines rather than pretending.
+   The checks are two and deliberately different in kind: self-consistency (ring bytes vs an ordinary buffered
+   read, same kernel, same answer) and structure (a different blob, a different answer — because a read that always
+   returns the wrong window is perfectly self-consistent, the parity lesson from `expert_parity`).  Green on the
+   CPU arm with the facade built: 13 tests, and the skip path was run too — a machine with no built facade is told
+   so, not passed in silence.
+
+   Four things the machine answered on the way:
+
+   * **A completion port's key cannot tell one read from another.** `GetQueuedCompletionStatus` reports the key
+     registered at `CreateIoCompletionPort` — one value for the whole handle — so the OVERLAPPED pointer is what
+     identifies a read, and the pending table is keyed by that.  Keying it by the key, which is what reads
+     naturally, reaps nothing and looks like a timeout.
+   * **The ring's advertised rule was false for its own signature.** `push` took the item by value and reported a
+     refusal with a `Status`, so a refused item was *dropped inside `push`* — for a completion, that means its
+     aligned buffer is freed, which is exactly the thing the rule says does not happen.  The test that checked the
+     rule used `u32`, which has no destructor, so it could not see this.  `push` now hands the refused item back,
+     and the rule is tested with a type whose drops are countable.
+   * **Answers are compared as bits, not as floats.** Random bytes through a quantized kernel produce plenty of
+     NaN, and `NaN != NaN`, so an `assert_eq!` on two runs that agree exactly would fail.  `to_bits` is what the
+     machine actually produced.
+   * **The facade's last-error buffer is per thread.** Two Rust tests raced on it and one read the other's
+     failure.  A host with one ring and one serving thread would not have caught it; the test suite did.
 4. **Fingerprint parity**: the existing engine and the Rust host, same prompt, same seed, byte-identical output. This
    is the harness gap BENCH_NOISE flagged (no output hash); it has to be built for this project anyway, and it is the
    test that says a rewrite is *allowed* to exist.

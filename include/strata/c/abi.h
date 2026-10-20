@@ -69,6 +69,22 @@ STRATA_API int strata_facade_probe_policy(int t_mtp, int lookup_k, int match,
  * - an honest answer, not a skipped test. */
 STRATA_API int strata_facade_cudart_version(int *runtime_version_out);
 
+/* Milestone 3: the first call that carries a struct across the seam, and the first where the bytes being
+ * described were read by the caller - by the Rust ring, through its own IOCP, on this machine.  `ref` is the
+ * struct above, and it is the rules made concrete: the host owns those bytes for exactly as long as this call
+ * runs, and the facade does not copy them, cache them, or free them.
+ *
+ * `x` is the H-wide activation and `out` is the H-wide result; both are the caller's buffers, passed as
+ * (ptr, len), and the facade owns nothing it writes into them.  The facade runs the existing kernel on the
+ * bytes it is given - the same s2_expert_vnni the C++ path runs, no Rust kernel code anywhere - and refuses
+ * with STRATA_ERR_DEVICE_UNAVAILABLE on a CPU it has not been given permission to run it on.
+ *
+ * The version stays at 1.  An added function cannot cause the silent mismatch the version exists to catch:
+ * a caller built against v1 never calls it, and a caller that does fails at GetProcAddress, loudly. */
+STRATA_API int strata_facade_expert_apply(const strata_expert_ref *ref,
+                                          const float *x, unsigned long long x_len,
+                                          float *out, unsigned long long out_cap);
+
 #ifdef __cplusplus
 }
 #endif
