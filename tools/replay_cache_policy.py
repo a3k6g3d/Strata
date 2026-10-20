@@ -50,9 +50,17 @@ def load_profile(path, slots):
 
 
 class Policy:
-    def __init__(self, every=4, decay=0.7, swaps=96, margin=1.5, mincand=2.0, mode='entries', mingain=0.0, posw=1.0):
+    def __init__(self, every=4, decay=0.7, swaps=96, margin=1.5, mincand=2.0, mode='entries', mingain=0.0, posw=1.0,
+                 gate=0):
         self.every, self.decay, self.swaps, self.margin, self.mincand = every, decay, swaps, margin, mincand
         self.mode, self.mingain, self.posw = mode, mingain, posw
+        # rank-margin gate (RELATED_WORK, the lever SPICE calls confidence-aware prefetch): only the first
+        # `k - gate` entries of a row are allowed to earn usage, so adaptation never warms a row's tail.
+        # It keys on rank, not on score value, because the serve-path traces write the weight column as
+        # zeros (generate.cpp:1023, "zeros read as unit weights") - the ids are still in rank order, and
+        # the doc's own position is that "the part of their result that transfers without [training] is the
+        # loss: score by rank, not by value".  gate=0 is the engine as it stands: warm() is unconditional.
+        self.gate = gate
 
 
 def adapt_round(res, usage, pol):
@@ -96,13 +104,16 @@ def simulate(windows, init, pol, reset_every=0):
             ms = ids[~r]
             miss_ent += len(ms)
             miss_dist += len(np.unique(ms))
+            # the gate narrows what may *earn* residency; hits and misses are still counted over the whole
+            # row, because the row is what the layer actually computes.
+            earn = ids[:, :ids.shape[1] - pol.gate] if pol.gate else ids
             if pol.mode == 'distinct':
-                usage[l, np.unique(ids)] += 1.0
+                usage[l, np.unique(earn)] += 1.0
             elif pol.posw != 1.0:
-                wts = np.repeat(pol.posw ** np.arange(ids.shape[0]), ids.shape[1])
-                np.add.at(usage[l], ids.ravel(), wts)
+                wts = np.repeat(pol.posw ** np.arange(earn.shape[0]), earn.shape[1])
+                np.add.at(usage[l], earn.ravel(), wts)
             else:
-                np.add.at(usage[l], ids.ravel(), 1.0)
+                np.add.at(usage[l], earn.ravel(), 1.0)
         if (wi + 1) % pol.every == 0:
             swaps += adapt_round(res, usage, pol)
             usage *= pol.decay
@@ -127,7 +138,7 @@ if __name__ == "__main__":
         return cast(sys.argv[sys.argv.index(name) + 1]) if name in sys.argv else default
 
     pol = Policy(every=opt("--every", 4, int), decay=opt("--decay", 0.7), swaps=opt("--swaps", 96, int),
-                 margin=opt("--margin", 1.5), mincand=opt("--mincand", 2.0))
+                 margin=opt("--margin", 1.5), mincand=opt("--mincand", 2.0), gate=opt("--gate", 0, int))
     windows, k = load_trace(tr)
     print("windows", len(windows), "k", k, "tokens/window", np.mean([len(w[0][1]) for w in windows]))
     init = load_profile(prof, slots)
@@ -135,7 +146,22 @@ if __name__ == "__main__":
     base = simulate(windows, init, Policy(every=10**9))
     print("profile only, no adaptation: %.4f" % base["share"])
     cur = simulate(windows, init, pol)
-    print("policy every %d, swaps %d, decay %.2f: share %.4f, swaps %d (%.2f/window); miss entries %d, distinct misses %d "
-          "(%.1f%% fewer reads)" % (pol.every, pol.swaps, pol.decay, cur["share"], cur["swaps"], cur["swaps"] / cur["windows"],
+    print("policy every %d, swaps %d, decay %.2f, gate %d: share %.4f, swaps %d (%.2f/window); miss entries %d, distinct misses %d "
+          "(%.1f%% fewer reads)" % (pol.every, pol.swaps, pol.decay, pol.gate, cur["share"], cur["swaps"], cur["swaps"] / cur["windows"],
                                     cur["miss_ent"], cur["miss_dist"],
                                     100 * (1 - cur["miss_dist"] / max(1, cur["miss_ent"]))))
+
+    if "--sweep" in sys.argv:
+        # the rank-margin ladder.  The gate trades hit share for fewer distinct reads: a row's tail is
+        # what a wrong guess warms, and on this machine the drive is at its ceiling, so the trade is the
+        # point (RELATED_WORK: "a wrong guess spends I/O a real miss will want").
+        print("gate\tshare\tswaps/win\tread saving %\tdelta share vs gate 0")
+        ref = None
+        for g in range(0, k):
+            r = simulate(windows, init, Policy(every=pol.every, decay=pol.decay, swaps=pol.swaps,
+                                               margin=pol.margin, mincand=pol.mincand, gate=g))
+            save = 100 * (1 - r["miss_dist"] / max(1, r["miss_ent"]))
+            if ref is None:
+                ref = r
+            print("%d\t%.4f\t%.2f\t%.1f\t%+.4f" % (g, r["share"], r["swaps"] / r["windows"], save,
+                                                   r["share"] - ref["share"]))
