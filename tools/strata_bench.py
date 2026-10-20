@@ -31,6 +31,7 @@ import argparse
 import contextlib
 import datetime
 import getpass
+import hashlib
 import json
 import os
 import platform
@@ -205,7 +206,10 @@ def digest(r: dict) -> dict:
             "read_tokens": read, "generated_tokens": gen, "prompt_tps": pp, "prompt_tps_source": psrc,
             "decode_tps": dec, "decode_tps_source": dsrc if dec is not None else None,
             "prompt_ms": t.get("prompt_ms"), "decode_ms": t.get("predicted_ms"),
-            "drafts_offered": t.get("draft_n"), "drafts_accepted": t.get("draft_n_accepted")}
+            "drafts_offered": t.get("draft_n"), "drafts_accepted": t.get("draft_n_accepted"),
+            # BENCH_NOISE.md item 5: the speed numbers need something to be checked against.  The answer's own hash is
+            # the only thing in a results folder that can show two arms said the same thing.
+            "output_sha256": hashlib.sha256((r.get("text") or "").encode("utf-8")).hexdigest()}
 
 
 # ----------------------------------------------------------------------------------------------------- statistics

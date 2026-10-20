@@ -129,6 +129,22 @@ class SuiteTests(unittest.TestCase):
         self.assertEqual(out["clients"]["errors"], 0)
         self.assertEqual(out["clients"]["rounds"][0]["tokens"], 3 * 12)
 
+    def test_the_answer_is_fingerprinted(self):
+        # BENCH_NOISE.md item 5: the speed numbers need something to be checked against.  The fake answers every
+        # request with the same words, so requests that generated the same number of tokens must fingerprint the same.
+        out = self.suite(runs=2).run()
+        rows = out["chat"]["requests"]
+        self.assertTrue(all(r["output_sha256"] for r in rows))
+        by_gen: dict = {}
+        for r in rows:
+            by_gen.setdefault(r["generated_tokens"], set()).add(r["output_sha256"])
+        self.assertTrue(all(len(v) == 1 for v in by_gen.values()),
+                        {k: sorted(v) for k, v in by_gen.items() if len(v) > 1})
+        import hashlib
+        gen = sorted(by_gen)[0]
+        self.assertEqual(next(iter(by_gen[gen])),
+                         hashlib.sha256(("word " * gen).encode("utf-8")).hexdigest())
+
     def test_agent_session_reuses_the_conversation(self):
         out = self.suite(runs=2).run()
         ag = out["agent"]

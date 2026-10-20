@@ -238,3 +238,10 @@ re-run to be worth anything.
    answer, which is the one thing a speed comparison is supposed to be checked against. The older harness in
    `bench/results/2026-10-04-community-rtx-4090-laptop/` recorded both `text` and `request_sha256` per request;
    the current one records neither.
+   **Done 2026-10-19:** `digest()` records `output_sha256` per request now, and `tools/output_fingerprint.py`
+   fingerprints the same fixed prompts the sweeps send, over runs, and says whether the machine reproduced itself.
+   It did not: five runs of the same prompt at temperature 0 (greedy) with the same seed gave 2, 5 and 4 distinct
+   answers on the three prompts — while a short exact-answer prompt was identical five times out of five in an
+   earlier probe. The per-request fingerprints are in `bench/results/2026-10-19-output-fingerprint/`. A speed
+   comparison can now be checked against the answer it produced, on prompts where the answer is reproducible at
+   all; on the others there is nothing to check, and the tool says so.
