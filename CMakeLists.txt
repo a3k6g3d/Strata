@@ -1418,6 +1418,15 @@ set_property(SOURCE src/kernels/cpu/q2_avx2.cpp APPEND PROPERTY COMPILE_DEFINITI
 find_package(Threads REQUIRED)
 target_link_libraries(strata_kernels_cpu PUBLIC Threads::Threads)
 
+# docs/RUST_HOST.md milestone 3: `strata_facade_expert_apply` runs `s2_expert_vnni`, so the facade has to link this
+# library.  The link goes here rather than at the facade's own definition because that is ~100 lines earlier in
+# this file, and naming a target before it exists is an error.  The guard is what keeps the facade building when
+# kernels are off: without them the shim declines the call rather than pretending to have run it.
+if(TARGET strata_facade)
+  target_link_libraries(strata_facade PRIVATE strata_kernels_cpu)
+  target_compile_definitions(strata_facade PRIVATE STRATA_FACADE_WITH_KERNELS=1)
+endif()
+
 # ---- plan v0.3 P6: the i-quant models' CPU experts (IQ2_XS / IQ3_XXS files) ----
 #
 # The CPU computes a native expert with ggml-cpu's own dot products (`ggml_get_type_traits_cpu`), so an IQ
