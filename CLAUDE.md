@@ -30,6 +30,16 @@ cmake --build J:/Strata-work/build-0143 --target strata -j 8
 
 `strata-vision.exe` (image encoder) is a separate CMake project in `tools/vision`, not a target of the main build; copy the existing one into a new build folder. For the C++ test binaries configure with `-DSTRATA_BUILD_TESTS=ON` and run `ctest`.
 
+State on this machine (2026-10-19, `build-cpu-tests`, Debug): **36 of 38 pass.** The two that fail, `expert_parity` and
+`pool_test`, want `pack/full/experts.bin` — a gitignored development layout, absent here — and failing is what they are
+meant to do on a machine without one (the CMake comment by those two `add_test`s is explicit that a missing pack must not
+read as a pass). Nothing else fails, and `ctest` now runs unattended: it did not before, because `q8k_quant_parity` fed
+the reference quantizer rows outside the domain its own `nearest_int` asserts (denormals, NaN, infinity), and the MS debug
+CRT answers `abort()` with a modal dialog that blocks the whole run until clicked. The rows the reference cannot consume
+are now gated to a build with asserts live and counted in the output; release still checks all sixteen rows and reports
+identical, which is the result that actually matters. (`_NO_DEBUG_HEAP=1` is the workaround if a debug test ever aborts
+again: it makes the debug CRT print and exit instead of blocking.)
+
 Run the server (about 4 minutes to load; it pins RAM and can make the PC unresponsive meanwhile):
 
 ```

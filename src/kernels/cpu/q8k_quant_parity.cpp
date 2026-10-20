@@ -69,6 +69,28 @@ std::vector<std::vector<float>> cases(int n) {
     return c;
 }
 
+// ggml's reference quantizer asserts the domain of its own round-to-nearest helper (ggml-quants.c, nearest_int:
+// |fval| <= 4194303). A row of denormals, or a NaN/inf, drives an intermediate past that bound, so in a build
+// where asserts are live the reference aborts before the comparison can happen - it is the reference that dies,
+// not the copy under test, and it dies on input the assert documents as outside its domain. The release build,
+// which is the build the product ships in, compiles the assert out, checks all sixteen rows, and reports
+// identical. So the rows the reference cannot consume are gated to such a build, counted, and printed: the
+// Debug run stays non-vacuous (thirteen rows still compared) and the skipped ones are named, never silent.
+constexpr bool kAssertsLive =
+#ifdef NDEBUG
+    false;
+#else
+    true;
+#endif
+
+bool ref_domain_ok(const std::vector<float>& x) {
+    for (const float v : x) {
+        if (!std::isfinite(v)) return false;
+        if (v != 0.f && std::fabs(v) < 1.17549435089462695e-38f) return false;   // the smallest normal float
+    }
+    return true;
+}
+
 // both outputs prefilled alike: a zero block leaves bsums unwritten in the reference, and so must the copy
 bool same(const char* tag, int n, int ci, ggml_from_float_t a, void (*b)(const float*, void*, int64_t),
           const std::vector<float>& x, size_t bytes) {
@@ -95,11 +117,15 @@ int main(int argc, char** argv) {
     const ggml_from_float_t gcpu = ggml_get_type_traits_cpu(GGML_TYPE_Q8_K)->from_float;
     const bool avx2 = cpu::cpu_avx2_ok();
     const bool avx1 = !avx2 && cpu::cpu_avx1_ok();   // the older CPUs' copy (checked wherever AVX exists)
-    int failures = 0, checked = 0;
+    int failures = 0, checked = 0, skipped = 0;
     for (const int n : {256, 512, 2560, 6144}) {
         const size_t bytes = ggml_row_size(GGML_TYPE_Q8_K, n);
         const auto cs = cases(n);
         for (int ci = 0; ci < (int) cs.size(); ++ci) {
+            if (kAssertsLive && !ref_domain_ok(cs[(size_t) ci])) {   // the reference would abort on this row
+                ++skipped;
+                continue;
+            }
             failures += !same("ggml-cpu vs reference", n, ci, ref, gcpu, cs[(size_t) ci], bytes);
             if (avx2) failures += !same("AVX-2 vs reference", n, ci, ref, cpu::q8k_quant_avx2, cs[(size_t) ci], bytes);
             if (avx1) failures += !same("AVX1 vs reference", n, ci, ref, cpu::q8k_quant_avx1, cs[(size_t) ci], bytes);
@@ -114,13 +140,25 @@ int main(int argc, char** argv) {
         return 1;
     }
     g_fmt = &f;
-    for (const auto& x : cases(2560))
+    for (const auto& x : cases(2560)) {
+        if (kAssertsLive && !ref_domain_ok(x)) {   // the reference would abort on this row
+            ++skipped;
+            continue;
+        }
         failures += !same("native_quant_act", 2560, 0, ref, via_act, x, ggml_row_size(GGML_TYPE_Q8_K, 2560));
-    for (const auto& x : cases(512))
+    }
+    for (const auto& x : cases(512)) {
+        if (kAssertsLive && !ref_domain_ok(x)) {   // the reference would abort on this row
+            ++skipped;
+            continue;
+        }
         failures += !same("native_quant_h", 512, 0, ref, via_h, x, ggml_row_size(GGML_TYPE_Q8_K, 512));
-    std::printf("q8k_quant_parity: %d rows x 4 sizes, AVX-2 copy %s, AVX1 copy %s: %s\n", checked / 4,
+    }
+    std::printf("q8k_quant_parity: %d rows x 4 sizes, AVX-2 copy %s, AVX1 copy %s%s: %s\n", checked / 4,
                 avx2 ? "checked" : "skipped (no AVX2, or STRATA_FORCE_ISA)",
-                avx1 ? "checked" : "skipped (AVX2 present, no AVX, or STRATA_FORCE_ISA)", failures ? "FAILED" : "identical");
+                avx1 ? "checked" : "skipped (AVX2 present, no AVX, or STRATA_FORCE_ISA)",
+                skipped ? ", rows outside the reference's asserted domain skipped (denormals, NaN, inf)" : "",
+                failures ? "FAILED" : "identical");
     if (bench && (avx2 || avx1)) {
         std::mt19937 rng(3);
         std::normal_distribution<float> nd(0.f, 1.f);
