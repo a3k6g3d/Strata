@@ -143,6 +143,35 @@ def tree_of_me() -> list:
     return out
 
 
+def check(p, argv, cmd) -> int:
+    """What --check prints: what would be stopped, and what would be spared. Kills nothing."""
+    print("process tree (this one first):")
+    for pid, name in tree_of_me():
+        print(f"   {name}({pid})")
+    print()
+    if p is None:
+        print("no live server found on the port - nothing to stop; the run would go ahead anyway")
+        return 0
+    print("would stop:")
+    print(f"   pid {p.pid} ({p.name()})  cwd: {p.cwd()}")
+    print(f"     {cmd}")
+    print("   and restart it as exactly that, in that directory")
+    keep = mine()
+    print("would kill (the server's subtree, minus my own line):")
+    for c in all_children(p):
+        if c.pid not in keep:
+            print(f"     {c.pid:<8} {c.name()}")
+    print("would spare (mine):")
+    for c in all_children(p):
+        if c.pid in keep:
+            print(f"     {c.pid:<8} {c.name()}")
+    print()
+    print("Anything NOT under the server is left alone - including a Claude session that")
+    print("is not talking through it. If this list names something you care about, that is")
+    print("what gets stopped; check it now rather than after the run.")
+    return 0
+
+
 def main() -> int:
     say(f"driver up (pid {psutil.Process().pid}); log: {LOG}")
     say("my process tree: " + " <- ".join(f"{n}({p})" for p, n in tree_of_me()))
@@ -163,6 +192,8 @@ def main() -> int:
         say("  spared (my own line): " + (", ".join(f"{c.pid}:{c.name()}" for c in all_children(p) if c.pid in keep) or "(none)"))
         for k in kids:
             say(f"  will kill pid {k.pid} ({k.name()})")
+        if "--check" in sys.argv:
+            return check(p, argv, cmd)
         # terminate the children first, then the server: the engine is the thing holding
         # 11.5 GiB of VRAM, and killing the parent first can leave it orphaned on the card
         for k in kids:
