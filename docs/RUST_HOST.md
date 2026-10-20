@@ -99,7 +99,21 @@ hand-written `extern "C"` header (`include/strata/c/abi.h`). Rust binds to that 
      failure.  A host with one ring and one serving thread would not have caught it; the test suite did.
 4. **Fingerprint parity**: the existing engine and the Rust host, same prompt, same seed, byte-identical output. This
    is the harness gap BENCH_NOISE flagged (no output hash); it has to be built for this project anyway, and it is the
-   test that says a rewrite is *allowed* to exist.
+   test that says a rewrite is *allowed* to exist.  The harness is built (`tools/output_fingerprint.py`, 13 selftest
+   checks plus `tools/test_output_fingerprint.py`, 10 pytest tests, both green; `digest()` in `tools/strata_bench.py`
+   records `output_sha256` per request now, which is what item 5 of BENCH_NOISE asked for).  What it measured on the
+   existing engine before there was any Rust host to compare against (2026-10-19, RTX 5070, engine 0.1.45, the A/B
+   harness's own fixed prompts, seed 1234, temperature 0 — which means greedy, since the server does not forward a
+   temperature of 0): **the existing engine is not byte-identical to itself.**  Five runs of the same prompt gave 2, 5
+   and 4 distinct answers across the three prompts.  So "byte-identical output" cannot be the test as written, on
+   these prompts, against this engine — and the tool says which prompts it can be checked on instead of assuming it:
+   a short exact-answer prompt was identical five times out of five in an earlier probe, and an open-ended one was
+   never identical twice.  The parity gate therefore compares only prompts each arm reproduces on its own, and reports
+   the rest as *not comparable* rather than as a pass.  Two more things the shape of the data forced into it: the
+   first run of a prompt is a different computation from the later ones (the conversation cache makes run 2 read what
+   run 1 wrote), so runs are split cold/warm and only like is compared with like; and an errored run never votes, or
+   a run that failed and returned the empty string would agree with every other failure and the test would pass out
+   of nothing.  The gate is not vacuous — the tests check that a real difference comes out as a mismatch.
 5. Only after 4: the measurement arms (the `pcie_frac` arm the Gen4 correction created, the rank-margin gate), read
    against the floor.
 

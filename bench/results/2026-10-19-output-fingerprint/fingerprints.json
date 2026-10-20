@@ -1,0 +1,175 @@
+{
+ "seed": 1234,
+ "runs": 5,
+ "max_tokens": 64,
+ "arms": [
+  {
+   "name": "A",
+   "url": "http://127.0.0.1:8080",
+   "per_prompt": {
+    "chat0": {
+     "runs": 5,
+     "errors": 0,
+     "verdict": "unstable",
+     "hash": "068ad8d845977f5ed9176ac187cb23b2a436c95ab6f5c2e4a0309c7d01d54177",
+     "distinct": 2
+    },
+    "chat1": {
+     "runs": 5,
+     "errors": 0,
+     "verdict": "unstable",
+     "hash": "4595c8dd0204c7e70f28168f53d68909997dc8aabeb7dac13778a6bf89e3785e",
+     "distinct": 5
+    },
+    "chat2": {
+     "runs": 5,
+     "errors": 0,
+     "verdict": "unstable",
+     "hash": "d665b34f4fd6f3afd77b10f157518c8c6f40fb6a795af5e37fd8b31c3ef28d27",
+     "distinct": 4
+    }
+   }
+  }
+ ],
+ "requests": {
+  "A": [
+   {
+    "run": 0,
+    "cold": true,
+    "prompt": "chat0",
+    "hash": "068ad8d845977f5ed9176ac187cb23b2a436c95ab6f5c2e4a0309c7d01d54177",
+    "err": null,
+    "chars": 229,
+    "at": 1792464673.021
+   },
+   {
+    "run": 1,
+    "cold": false,
+    "prompt": "chat0",
+    "hash": "068ad8d845977f5ed9176ac187cb23b2a436c95ab6f5c2e4a0309c7d01d54177",
+    "err": null,
+    "chars": 229,
+    "at": 1792464684.098
+   },
+   {
+    "run": 2,
+    "cold": false,
+    "prompt": "chat0",
+    "hash": "068ad8d845977f5ed9176ac187cb23b2a436c95ab6f5c2e4a0309c7d01d54177",
+    "err": null,
+    "chars": 229,
+    "at": 1792464694.557
+   },
+   {
+    "run": 3,
+    "cold": false,
+    "prompt": "chat0",
+    "hash": "068ad8d845977f5ed9176ac187cb23b2a436c95ab6f5c2e4a0309c7d01d54177",
+    "err": null,
+    "chars": 229,
+    "at": 1792464704.751
+   },
+   {
+    "run": 4,
+    "cold": false,
+    "prompt": "chat0",
+    "hash": "708217e73b423d0fc84ae3f06dc37a7cc23ae32c0e4f659e22a7981714962a09",
+    "err": null,
+    "chars": 246,
+    "at": 1792464714.398
+   },
+   {
+    "run": 0,
+    "cold": true,
+    "prompt": "chat1",
+    "hash": "4595c8dd0204c7e70f28168f53d68909997dc8aabeb7dac13778a6bf89e3785e",
+    "err": null,
+    "chars": 362,
+    "at": 1792464676.994
+   },
+   {
+    "run": 1,
+    "cold": false,
+    "prompt": "chat1",
+    "hash": "cb39293076960f49e1a62e15608506d4079cb1c7cfb83c381d46209fcad41707",
+    "err": null,
+    "chars": 353,
+    "at": 1792464687.481
+   },
+   {
+    "run": 2,
+    "cold": false,
+    "prompt": "chat1",
+    "hash": "3311e54ea0fb6fc9dc52041f19eb03123f0ae14037bd0e2819cc617368fe31cd",
+    "err": null,
+    "chars": 354,
+    "at": 1792464697.68
+   },
+   {
+    "run": 3,
+    "cold": false,
+    "prompt": "chat1",
+    "hash": "25d4a9a501dffa99d89687a5e515651d6c8665af3ee4f2089c3dc6489fef6276",
+    "err": null,
+    "chars": 352,
+    "at": 1792464707.82
+   },
+   {
+    "run": 4,
+    "cold": false,
+    "prompt": "chat1",
+    "hash": "9565463a6573d861d24a2e6170e7f6cac2a98a678feb312bc59c11b2d551f2fb",
+    "err": null,
+    "chars": 352,
+    "at": 1792464717.795
+   },
+   {
+    "run": 0,
+    "cold": true,
+    "prompt": "chat2",
+    "hash": "d665b34f4fd6f3afd77b10f157518c8c6f40fb6a795af5e37fd8b31c3ef28d27",
+    "err": null,
+    "chars": 306,
+    "at": 1792464680.765
+   },
+   {
+    "run": 1,
+    "cold": false,
+    "prompt": "chat2",
+    "hash": "4e35087cd83cd9c5e6dcb0d86a58702e7648cbeb3955c7168f8710b5b6033ba0",
+    "err": null,
+    "chars": 302,
+    "at": 1792464690.991
+   },
+   {
+    "run": 2,
+    "cold": false,
+    "prompt": "chat2",
+    "hash": "b8a4f1b35066d8094620188487b6be4ccf1bf0c827965df44d50b816801e8517",
+    "err": null,
+    "chars": 332,
+    "at": 1792464701.192
+   },
+   {
+    "run": 3,
+    "cold": false,
+    "prompt": "chat2",
+    "hash": "a625d925b0232387b4c83588307c0c7039b25d2ff71c6baf08dcae65d5d050e9",
+    "err": null,
+    "chars": 326,
+    "at": 1792464710.92
+   },
+   {
+    "run": 4,
+    "cold": false,
+    "prompt": "chat2",
+    "hash": "d665b34f4fd6f3afd77b10f157518c8c6f40fb6a795af5e37fd8b31c3ef28d27",
+    "err": null,
+    "chars": 306,
+    "at": 1792464720.91
+   }
+  ]
+ },
+ "comparison": [],
+ "ok": false
+}
