@@ -226,11 +226,16 @@ is a filter of the engine's stderr and does not carry it; the slot arithmetic is
 | as configured (shared pool, 1,951 slots) | 13.0 | **23.5** | 35.0 | 23.8 |
 | per-layer slots (41 per layer) | 8.6 | **20.4** | 29.2 | 20.3 |
 
-That is **-13.2%** for per-layer (the baseline is +15.5% over it).  The earlier warning about within-arm spread was right
+That is **-13.4%** for per-layer (the baseline is +15.5% over it; both from the exact medians, one of which is 20.35 and
+shows as 20.4 in the table - the -13.2% this line used to carry was the same sum done from the rounded figure).  The earlier warning about within-arm spread was right
 that 3 runs cannot resolve this suite, but 8 runs can: a Mann-Whitney rank-sum over the two 40-turn samples gives
 **U = 1,102.5 of 1,600 pairs (z = 2.91, two-sided p = 0.004)**, with the baseline ahead in **68.9%** of all pairings.
 The shapes back the test up - the baseline's upper tail reaches 35.0 tok/s while per-layer's tops out at 29.2, so the
 fast turns this model produces simply do not happen with per-layer slots.
+
+**This table and that test were re-derived from the two `results.json` files** - eight runs of six turns each, forty of
+those turns clearing the 40-generated-token floor in each arm - and reproduce to the digit, which is more than the
+adapt-kv writeup two sections up could say about itself when it was re-derived.
 
 **The answer to the question as posed:** at 1,951 slots the shared pool is **not** leaving anything on the table.  A
 baseline already hitting 61.0% had little room to gain, and splitting the pool 41 ways costs it: 41 slots per layer
