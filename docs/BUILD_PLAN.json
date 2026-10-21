@@ -16,7 +16,7 @@
     "control": "interleaved A-B / B-A / A-B, baseline repeated",
     "state_capture": "tools/bench_state.py (clocks, utilisation, power, throttle, free RAM, background load, at start/every 10s/end)",
     "tool_of_record": "tools/summarize_ab_sweep.py",
-    "test_suite": "tools/test_strata_ab.py (28 passing)",
+    "test_suite": "tools/test_strata_ab.py (31 passing)",
     "rule": "an arm is compared against a same-configuration arm, never against a token sequence (docs/REJECTED_PROPOSALS.md #6)",
     "observed_gpu_utilisation_pct_on_this_machine": {
       "min_mean": 20.6,
@@ -80,9 +80,9 @@
       "id": 5,
       "title": "Write up the adapt-kv sweep honestly: nothing separated",
       "needs_gpu": false,
-      "status": "open, no machine time needed, reads straight off disk",
+      "status": "open, no machine time needed, reads straight off disk. Tool part is done (the verdict now compares the two per-turn distributions, not two single medians); the write-up itself is what is left.",
       "source": "docs/SWEEP_ADAPT_KV.md, bench/results/ab-adapt-kv-sweep/, tools/read_sweep_warm.py",
-      "detail": "13 arms, three runs each, all within their own noise. Its own noise row is the 70.4% baseline repeat and its largest arm gap is 72.6%, so it only barely clears its floor - which is why the honest verdict is 'nothing separated', not a story about which arm won.",
+      "detail": "13 arms, three runs each, all within their own noise. The biggest arm gap (72.6%, adapt-swaps 16) sits inside the noise row's own per-turn range (54-98%), so the data cannot separate them and the honest verdict is 'nothing separated', not a story about which arm won. Cache-off is the contrast: its arm (28-44%) lies wholly outside its repeats (1-24%).",
       "done_when": "docs/SWEEP_ADAPT_KV.md and bench/results/ab-adapt-kv-sweep/SWEEP_ADAPT_KV.md tell the same story, and every number in both reproduces through tools/summarize_ab_sweep.py or tools/read_sweep_warm.py"
     }
   ],
@@ -120,7 +120,7 @@
       "every number written into a doc must reproduce off disk with the tool of record named in the doc",
       "the verdict line in any tool must be computed, never asserted",
       "numbers already in the docs are correct as written - do not re-derive them from rounded medians",
-      "run tools/test_strata_ab.py before committing; it must stay at 28 passing"
+      "run tools/test_strata_ab.py before committing; it must stay at 31 passing"
     ],
     "order_of_work": [
       "item 5 first - it needs no GPU and it is the write-up the others get judged against",
