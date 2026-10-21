@@ -441,3 +441,22 @@ half now does; and the October cache-off arm, which is superseded by this one an
 baseline under a second label.  The counters question stays closed - it was closed off the source, and this run did
 not reopen it: it says how much the cache is worth, not why.
 
+
+## The non-agent suite agrees, and prompt reading leans on the cache harder still (2026-10-21)
+
+Build-plan item 4: the same two arms (`as configured`, `expert-cache 1 (off in effect)`) on the chat and 4K tests, six
+launches taking turns (A B / B A / A B), on the current machine and model (i7-11700K, Swift 1.5 IQ3_S, `build-0145`).
+`summarize_ab_sweep.py` and `read_sweep_warm.py` read agent turns only, so this sweep is read with
+`python tools/read_suite_sweep.py bench/results/ab-cache-off-nonagent`:
+
+| | cache on (3 launches) | cache off (3 launches) | |
+|---|---|---|---|
+| chat decode, tok/s | 40.35 / 40.50 / 34.00 (median 40.35, own spread 16.1%) | 25.55 / 24.75 / 26.55 (median 25.55) | -36.7%, separated |
+| 4K prompt, tok/s | 748.25 / 723.00 / 656.85 (median 723.00, own spread 12.6%) | 264.50 / 265.60 / 265.65 (median 265.60) | -63.3%, separated |
+| expert-cache hit | 57.0-59.7% | 0.2% | |
+
+The engine logs say what each arm was, launch by launch: three filled the GPU cache with 2,169 experts (4.16 GiB) and
+three with 1 expert (0.00 GiB). Every cache-off launch lies outside every cache-on launch on both measures, so the -34% of
+the agent suite reproduces here (-36.7%), and the 4K prompt is read 2.7 times as fast with the cache as without it.
+Not explained yet: the cache-on 4K prompt speed here (657-748 tok/s) is well above the 255-267 tok/s the full suite
+measured on this machine on 2026-10-18.
