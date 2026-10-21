@@ -365,6 +365,79 @@ drafts column, which comes from the engine's exact cumulative counters in both a
 same rate - which is the second thing that rules out the bus as the cause, and the reason the remaining explanation has
 to be the refusal path rather than anything crossing it.
 
-Next open items, in order: a cache-off arm that is off, which needs a number that is not 0 - the flag has no spelling
-for off at all while a profile is in use, so the arm is `--expert-cache 1`, or no profile.  The counters are off the
-list, for the reason above.
+## The cache-off arm has been run, and the answer is the cache's: it carries a third of the agent suite
+
+`bench/results/ab-cache-off/`, 2026-10-21: six launches - three rounds of the two arms, the order reversed every second
+round so each arm sits at both positions - two runs each, agent suite only, GPU genuinely free, nothing else talking to
+the server.  Started by hand from `tools/cache_off.bat`, for the reason written in `tools/noise_floor.bat`.
+
+**First the check the last arm failed.**  Every arm's own engine log says what it built, and the answer is six for six:
+**2,169 experts, 4.16 GiB** in every baseline launch and **1 expert, 0.00 GiB** in every arm launch.  The October arm
+labelled cache-off reported 1,951 and 1,954 there.  So this arm is off.
+
+| agent suite | as configured | `--expert-cache 1` | change |
+| --- | ---: | ---: | ---: |
+| decode tok/s (median of the three launches) | 36.10 | 23.75 | **-34.2%** |
+| first token (s) | 5.12 | 12.76 | +149.2% |
+| expert hit | 63.2% | 0.2% | the arm is off, and the counter says so |
+| over PCIe | 15.8% | 34.8% | more than twice the bus traffic |
+| prompt reuse | 67.8% | 67.8% | unchanged |
+| drafts accepted | 67.9% | 68.1% | unchanged |
+
+Medians of the per-launch medians in `runs.jsonl`; `python tools/read_sweep_warm.py bench/results/ab-cache-off` reads
+the same data cold-from-warm and turn by turn.
+
+**The two groups do not overlap, and the batch measures its own noise.**  The three baseline launches are
+36.05 / 36.10 / 36.95 and the three arm launches 23.70 / 23.75 / 23.85 - the smallest gap between the groups is 13.6x
+the widest spread inside either.  Two of the six launches are repeats of the baseline, so they are the same command
+run three times and any gap between them is the noise: **1.2%** warm, 2.5% on the harness's own figure.  The arm's
+three launches agree within 0.6%.  A 34% effect is 13-28x that, and it is the same in both columns - the warm one the
+ranking is allowed to use and the cold one it is not (-35.7/-37.4/-39.9 warm, -29.9/-32.0/-32.3 cold).
+
+**Turn by turn, every one of the eighteen pairs is negative.**  The arm's three launches give medians of -32.6%,
+-34.0%, -33.7%, and the two baseline repeats - which measure nothing but the machine - sit at -2.9% and -0.8%, with
+individual turns as much as +24% in the wrong direction.  The effect never once changes sign, at any turn, in any
+launch.
+
+**Drift runs the wrong way for it to be the explanation.**  The `state` block of every launch records the GPU's clock
+when the run started, and the arm's three read **1,852 / 1,537 / 1,965 MHz** against the baseline's
+**1,845 / 337 / 337** - the arm got the faster machine and was still a third slower.  (The end-of-run sample reads
+180 MHz for all six, so it is the start sample that carries the signal.)  If the machine's drift had been carrying the
+result it would have pushed the other way.  That is what the interleaved schedule is for, and it worked: each arm sat
+at both positions, the arm at 2, 3, 6 and the baseline at 1, 4, 5.
+
+**The confound the batch file promised is real, and it understates the result.**  A 1-expert cache hands VRAM back -
+measured across the six launches' `state` blocks, the baseline's GPU sits at 11,361 MiB used at start and the arm's at
+7,899, so **3.38 GiB** comes back (the batch file's own README says ~3.7 GiB; the cache itself is 4.16 GiB, so not all
+of it lands in the KV pool).  So the arm is "cache off *plus* that memory given back", not cache off alone.  That
+extra memory can only have helped the arm, and it lost by 34% anyway.  The cache's cost on its own is **at least**
+this.
+
+**What this does not settle.**  It is not comparable to the October table, and the batch file says so before it runs:
+the config has moved since - the pack is swift15, `--adapt-swaps` is 48 where the doc records 8, the engine is 0.1.45,
+and auto is 2,169 slots where it was 1,951.  This run's baseline is its own reference and nothing else.  And it says
+**how much** the cache is worth, not **why** - the *why* stays where the section on the source left it, and this run
+does not reopen it.
+
+**So the question the run was built to ask has an answer on the agent suite, and it is the cache's.**  On this suite,
+in the batch that was built to compare the two on it (`bench/results/ab-cache-vs-drafts-agent`, four arms, three runs
+each), taking the drafts away moves the agent workload **-3.8%** warm - and taking the cache away moves it *-0.7%*,
+which is the row that batch was actually for.  Both are under the 24.3% floor, so neither is a result on its own
+terms, and that batch has no repeat of its baseline so it measures no noise of its own.  What the new run changes is
+that the cache side now has a number that clears its own noise by 13-28x, and the drafts side still does not: on the
+agent suite the cache carries a third of the speed and the drafts carry an amount this machine cannot resolve from
+noise.  (The drafts' real cost on this machine is -18.9%, but that is the **chat** suite, where it was never noise -
+and the cache rows of that same chat table are the ones the earlier section says never turned the cache off.)
+
+Do not read this as the cache and the drafts being comparable quantities across the two tables.  The cache figure is
+today's, on the new config; the drafts figure that clears noise is October's, on the chat suite and the old config.
+What is comparable is the two arms inside each batch, and inside each of those the answer has not changed: on the chat
+suite the drafts carry it, and on the agent suite the cache does.
+
+Next open items, in order: the cache-off arm on the **chat** suite, which is the one place the original table's claim
+that the cache changes nothing has never been tested with an arm that is actually off; the drafts arm re-run on the
+agent suite with a repeat of the baseline in it, so that half of the comparison clears its own noise the way the cache
+half now does; and the October cache-off arm, which is superseded by this one and should be read as measuring the
+baseline under a second label.  The counters question stays closed - it was closed off the source, and this run did
+not reopen it: it says how much the cache is worth, not why.
+

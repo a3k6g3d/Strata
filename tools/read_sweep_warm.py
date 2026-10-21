@@ -150,15 +150,42 @@ def main():
         print("%-26s %10s   %s" % (a["arm"], "%+.1f%%" % (100.0 * (med - 1.0)) if med else "-", cells))
 
     print()
-    biggest = max((abs(100.0 * (w / b_warm - 1.0)) for _, w, _ in rows if w and b_warm), default=0.0)
-    if biggest > NOISE_FLOOR_PCT:
-        print("largest warm-column gap: %.1f%%, over the %.1f%% floor -- but the baseline is the"
-              % (biggest, NOISE_FLOOR_PCT))
-        print("outlier row, so the gap is the baseline's, not the arms'.  Read the table against the")
-        print("sweep's own repeated baseline, not the first arm of the session.")
+    # Which row the extreme gap belongs to is a fact about the data, not a sentence to be written in
+    # advance.  A batch whose baseline is repeated measures its own noise (those rows are the same
+    # command twice, so any gap in them IS the noise); a batch whose baseline is one launch does not,
+    # and then the only figure a gap can be checked against is the floor from BENCH_NOISE.md - and a
+    # baseline that is also the first launch of the session is the row the doc already distrusts.
+    baseline_label = baseline["arm"].strip().lower()
+    gaps = [(label, 100.0 * (w / b_warm - 1.0)) for label, w, _ in rows if w and b_warm]
+    noise_gaps = [abs(g) for label, g in gaps if label.strip().lower() == baseline_label]
+    arm_gaps = [(label, abs(g)) for label, g in gaps if label.strip().lower() != baseline_label]
+
+    if not arm_gaps:
+        print("no arm rows to judge: every row here is a repeat of the baseline.")
+        return 0
+    biggest_label, biggest = max(arm_gaps, key=lambda x: x[1])
+    worst_noise = max(noise_gaps, default=None)
+    print("largest gap among the arms: %.1f%% (%r), against the %.1f%% floor from BENCH_NOISE.md."
+          % (biggest, biggest_label, NOISE_FLOOR_PCT))
+    if worst_noise is not None:
+        print("the batch measures its own noise: %d row(s) are repeats of the baseline, and their"
+              % len(noise_gaps))
+        print("largest gap is %.1f%% - that is the spread of one command run twice, so it is the"
+              % worst_noise)
+        print("limit a gap in this batch has to beat.")
+        limit, limit_src = worst_noise, "the batch's own repeated baseline"
     else:
-        print("largest warm-column gap: %.1f%%, under the %.1f%% floor -- none of these is a result."
-              % (biggest, NOISE_FLOOR_PCT))
+        print("this batch has no repeat of the baseline, so it measures no noise of its own and the")
+        print("only figure to check against is the floor - and if the baseline is also the first")
+        print("launch of the session, the doc's own caveat applies to it.")
+        limit, limit_src = NOISE_FLOOR_PCT, "the floor from BENCH_NOISE.md"
+    signs = {g > 0 for label, g in gaps if label.strip().lower() != baseline_label}
+    consistent = len(signs) == 1
+    if biggest > limit:
+        print("over it (%s), so the gap is %s's, not the noise's%s."
+              % (limit_src, biggest_label, "; every arm row agrees on the sign" if consistent else ""))
+    else:
+        print("under it (%s), so on this data it is not a result." % limit_src)
     return 0
 
 
