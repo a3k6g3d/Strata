@@ -202,5 +202,54 @@ class TheBatchFile(unittest.TestCase):
         self.assertIn("--noise-floor 0", err)                                  # says how to mean the sweep
 
 
+class TheCacheOffBatchFile(TheBatchFile):
+    """The same two checks, run against tools/cache_off.bat's own line.
+
+    Inheriting is the point: the trap that killed the first interleaved run - the driver's default
+    command asks for the noise floor, --harness-args only appends, and the harness gives the noise
+    floor precedence - is a property of the driver, not of one batch file, so every batch file needs
+    the same test.  The labels differ, so the schedule test is overridden below.
+    """
+
+    BAT = ROOT / "tools" / "cache_off.bat"
+
+    def test_the_batch_file_cancels_the_drivers_default_noise_floor(self):
+        argv = self.harness_args()
+        nf = [argv[i + 1] for i, x in enumerate(argv) if x == "--noise-floor"]
+        self.assertEqual(len(nf), 2, "the driver's default, and the batch file cancelling it")
+        self.assertEqual(nf[-1], "0")
+        self.assertEqual(argv[argv.index("--sweep") + 1], "cache-off")
+
+    def test_the_command_it_runs_launches_both_arms_and_lands_each_at_both_positions(self):
+        rc, out, err = dry_run(*self.harness_args())
+        self.assertEqual(rc, 0, err)
+        labels = [l.split(":")[1].split("  (round")[0].strip() for l in out.splitlines() if l.startswith("launch ")]
+        self.assertEqual(labels, ["as configured", "expert-cache 1 (off in effect)",
+                                  "expert-cache 1 (off in effect)", "as configured",
+                                  "as configured", "expert-cache 1 (off in effect)"])
+        for label in ("as configured", "expert-cache 1 (off in effect)"):
+            pos = [n for n, l in enumerate(labels) if l == label]
+            self.assertEqual(len(pos), 3)
+            self.assertNotEqual(pos[0] % 2, pos[1] % 2)                        # sits at both positions, which is the point
+        self.assertIn("runs 2 x", out)
+
+    def test_it_writes_somewhere_other_than_the_arms_it_is_not_comparable_to(self):
+        # bench/results/ab-cache-vs-drafts already holds the four October arms, and the config has
+        # moved since they ran, so a run that landed there would be read beside numbers it cannot be
+        # compared with.  The batch file has to name its own folder.
+        argv = self.harness_args()
+        out = [argv[i + 1] for i, x in enumerate(argv) if x == "--out"]
+        self.assertEqual(len(out), 1, "the batch file names its own output folder")
+        self.assertNotEqual(Path(out[0]).name, "ab-cache-vs-drafts")
+        self.assertEqual(Path(out[0]).name, "ab-cache-off")
+
+    def test_the_arm_it_runs_is_not_the_one_the_old_arms_ran(self):
+        # the dry run prints the engine arguments it will pass; the flag that silently meant auto is the
+        # one this whole run exists to avoid, so it must not appear
+        _, out, _ = dry_run(*self.harness_args())
+        self.assertNotIn("--expert-cache 0", out)
+        self.assertIn("--expert-cache 1", out)
+
+
 if __name__ == "__main__":
     unittest.main()
