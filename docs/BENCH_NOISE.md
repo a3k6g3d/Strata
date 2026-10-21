@@ -338,3 +338,54 @@ a coin flip with the sign of each one visible.
 The tool's across-launch table only takes the five-launch batch: it wants at least four arms in a session,
 and gives r = -0.43 for position against decode -- later launch, slower. The three-launch batch is below its
 floor, so that correlation is one number from one batch, not a finding.
+
+
+## Fourteen launches, and the machine state on disk says nothing again
+
+The driver ran six more launches of the same arm on `c2a7dbd6` - the same config, the same suite, two runs each,
+about three and a half minutes a launch. That is the third batch on disk (three launches, then five, then six), so
+the within-launch number can now be computed on **84 pairs**: median **+13.9%**, 90th percentile 32.8%, later run
+faster in **65 of 84**. Per batch it is +7.3% (18 pairs), +16.7% (30) and +15.7% (36) - the new batch lands on the
+same number as the five-launch one, and the whole thing sits where the hand-computed 12.1% said it would before
+any of this was measured. The within-launch drift is the one effect here that has now survived three batches.
+
+At the launch level the new batch is the one that breaks the pattern, which is the interesting part:
+
+| batch | commit | launches | first launch vs the rest of its batch | first launch's rank |
+|---|---|---|---|---|
+| 1 | 181fe260 | 3 | +16.1% | 1st of 3 |
+| 2 | 1cfe412b | 5 | +7.3% | 1st of 5 |
+| 3 | c2a7dbd6 | 6 | -3.6% | 5th of 6 |
+
+Two of three batches lead with their first launch; the third does not, and its first launch is the second slowest
+of its six. The plan for this run said that if the new batch's first launch led again - three of three - the
+cold-start rule would need rethinking rather than more data. It did not lead, so the rule is not dead, but it is
+now 2 of 3 with the third batch going the other way, which is what a coin flip looks like at n=3. What the rule
+was written for - the first 20 minutes of a session behaving differently - still has exactly one batch of real
+data behind it (the harness's own cold-region line on the merged folder: first 20 min median 32.10, after
+35.78, +11.5%), and that batch is the three-launch one, so the cold region and the batch are the same data.
+
+The harness's own noise floor, computed on the merged folder with the cold launches left out, is now **12.7% over
+6 launches** - the predicted 12-13%, measured. So the number the doc has been quoting from the 3-run arms is now
+confirmed by launches whose only difference is which one ran when.
+
+The turn-0 check is **6 of 14** in the predicted direction (the new batch is 2 of 6: 0/3, then 4/5, then 2/6).
+Fourteen launches is still not a result and I am not going to write it as one.
+
+**Machine state, nine rows now (six with fingerprints).** The new batch's six rows are the first machine state
+written by the fixed code on a run that was meant to produce it. Correlating each state column against the
+launch's own median decode over the eleven launches that have a state hash, nothing is strong enough to name:
+max temperature is the best of a bad lot at r = +0.41, background-busy samples r = -0.28 (the wrong way), free
+RAM at the end r = +0.14, clock r = +0.16, power r = +0.08, uptime r = -0.15. The fastest launch of the new
+batch (38.30) is the one with the most background work in its samples (103 busy samples against 0 for most of
+the rest) and one of the lowest clock maxima (2910 MHz) - the state columns point the wrong way for the fastest
+launch, which is the sampler telling me again that the spread is not in them.
+
+The state-hash fix works on real data at scale: 11 of 11 launches recorded by the fixed code have a fingerprint,
+24-26 lines each, every digest distinct. The three launches from before the fix are still the only nulls.
+
+What I would do with this, in the same order as the list above: the within-launch drift is real and item 2 stands
+on it. Item 1 - interleave the arms or place them by clock - is the one this run was supposed to settle, and it
+came back 2 of 3, so it is still open and the honest move is to stop collecting batches of this shape (they all
+look like this one) and run the interleaved version instead: same arm, arms placed in a different order in each
+repetition, so the position effect shows up as disagreement between repetitions instead of as a result.
