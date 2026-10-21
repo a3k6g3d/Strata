@@ -36,6 +36,16 @@ dated, and the fork's releases follow [SemVer](https://semver.org) once it tags 
   every `results.json` (`state`); `tools/bench_record.py`: one line per run in `runs.jsonl`; `tools/wait_for.py`: block until a log pattern, a process
   exit or a timeout. 8 + 5 + 11 + 10 + 7 new tests; the benchmark's own tests now look at result folders only.
 
+### Added (2026-10-21, an unattended noise-floor driver and its launchers)
+- `tools/noise_floor_unattended.py` stops the live server and its children (engine, vision sidecar, tool servers), waits until no `strata.exe` /
+  `strata-vision.exe` is left, runs `strata_ab.py` (by default three launches of the live config on the agent suite, two runs each), and brings the server
+  back with the exact command that was running; every step is one flushed line in its log, `--check` prints what would be stopped and kills nothing,
+  `--harness-args` appends to the harness command and `--log` keeps batches apart. The live config is the `strata.json` beside the repo folder.
+  Launchers: `tools/noise_floor.bat` and `tools/interleaved_control.bat` (the new `noise-interleaved` sweep: the same arm twice, taking turns, A B / B A / A B).
+- Two driver bugs found on its first run here: `psutil.wait_procs` returns `(gone, alive)` and the driver iterated the pair, so it raised and died, hidden,
+  in the same second it had stopped the server (and left it down); and its GPU-free check waited for every `strata*` process, which includes the desktop
+  app's window, so it would have given up after 15 minutes. Both fixed; a crash now writes its traceback to the log.
+
 ### Added (2026-10-19, opt-in `eos_resample`: an end token in the middle of the thinking or an open code span is sampled again)
 - A model asked about chat markers (`<|im_start|>`, `<|im_end|>`) samples the real end token where it wants to write the marker as text, and the reply
   stops inside its thinking (an empty answer: 3 of 5 runs of one such prompt) or inside an open code span or fenced block (about 1 in 4 to 1 in 8 runs).

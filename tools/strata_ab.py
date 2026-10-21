@@ -124,6 +124,14 @@ SWEEPS = {
                  ("adapt-swaps 32", ["--adapt-swaps 32"]),
                  ("adapt-swaps 48", ["--adapt-swaps 48"])],
     },
+    "noise-interleaved": {
+        "note": ("The same arm twice, the two taking turns (round 1 A B, round 2 B A, round 3 A B) so the machine's "
+                 "drift is not the same variable as an arm's position.  Nothing about the engine changes between the "
+                 "two arms, so any difference between them - within a round, or between rounds - is the noise, "
+                 "measured with the position effect broken up rather than baked in."),
+        "arms": [("as configured", []),
+                 ("as configured (repeat)", [])],
+    },
 }
 
 
