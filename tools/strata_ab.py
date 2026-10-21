@@ -135,6 +135,21 @@ SWEEPS = {
                  ("4-bit draft layer", ["--mtp-q4 all"]),
                  ("spec 6", ["--spec 6"])],
     },
+    # Build-plan item 3, retargeted (docs/WINDOW_PROFILE_CUDA.md): the GPU waits 59% of a decode window for the PCIe share of the
+    # missed experts.  The engine picks that share itself - 0.55 from the link probe, then PcieAuto refines it from the CPU pool's
+    # speed in the first decode windows (up to three updates, steps of 0.05, clamped to 0.10-0.60); on 2026-10-21 it moved to 0.45.
+    # An explicit --pcie-frac fixes the share from the first token and switches that refinement off, so 0.45 is the control for
+    # "fixed from the start" against the automatic arm, and 0.60 is the top of what the automatic rule would ever choose.
+    # Less share on PCIe means more of the missed experts on the CPU pool, whose wait was 6% of the window.
+    "pcie-frac": {
+        "note": ("Does a different PCIe share of the missed experts shorten the decode window?  The automatic share (refined to 0.45 "
+                 "on this machine) against fixed 0.25, 0.35, 0.45 and 0.60, one flag per arm, the arms taking turns."),
+        "arms": [("as configured", []),
+                 ("pcie-frac 0.25", ["--pcie-frac 0.25"]),
+                 ("pcie-frac 0.35", ["--pcie-frac 0.35"]),
+                 ("pcie-frac 0.45", ["--pcie-frac 0.45"]),
+                 ("pcie-frac 0.60", ["--pcie-frac 0.60"])],
+    },
     "noise-interleaved": {
         "note": ("The same arm twice, the two taking turns (round 1 A B, round 2 B A, round 3 A B) so the machine's "
                  "drift is not the same variable as an arm's position.  Nothing about the engine changes between the "
