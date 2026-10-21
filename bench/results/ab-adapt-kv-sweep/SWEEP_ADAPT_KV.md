@@ -129,3 +129,17 @@ inside it too. The live config is still unchanged, which is the correct outcome 
 path that got there ran through this file's table being wrong, the cold-start effect being
 measured properly in `docs/BENCH_NOISE.md`, and the tool of record learning to flag — not
 score — an arm that ran inside the machine's first twenty minutes.
+
+## Verdict (2026-10-21): nothing separated
+
+The same story as `docs/SWEEP_ADAPT_KV.md`, from the same data and the same tool:
+`python tools/read_sweep_warm.py bench/results/ab-adapt-kv-sweep` pairs every arm with the baseline turn by turn
+and puts its per-turn gaps beside those of the baseline's own repeat. The largest arm gap, `adapt-swaps 16` at
+72.6 %, has per-turn gaps of 43.4–96.9 %; the repeat of the unchanged configuration has 53.6–98.4 %. The arm sits
+inside the spread of one command run twice, so this data cannot separate any knob from the configuration — not as a
+win, and not as a loss. The ranking in the table above was the machine warming up (the baseline ran first, cold), and
+the repeat row is the measurement that says so. For contrast, the cache-off batch read the same way puts its arm at
+28.1–44.4 % against repeats at 1.1–24.1 %: separated, and that is the one result in this line that is.
+
+Since 2026-10-18 the live configuration runs `--adapt-swaps 48`, after a later interleaved sweep on a different CPU,
+model and link (recorded in the main line's `docs/TUNING_LOG.md`); that does not change what this sweep's data says.

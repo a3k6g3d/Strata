@@ -163,3 +163,48 @@ turn differ by. Nothing here says the flags do nothing (the hit-rate moves they 
 says decode on this machine cannot be resolved at that scale by this design. A re-run worth doing would drop the arms that
 never move the hit rate, keep the two that do, run each arm at least 5 times interleaved (`--rounds 5`), and compare only
 warm runs.
+
+## Verdict, 2026-10-21: nothing separated
+
+The last reading compares whole distributions instead of two medians, because a margin between two single numbers says
+nothing when each number hides a spread. `tools/read_sweep_warm.py` pairs every arm with the baseline turn by turn (the
+agent suite walks the context up over its turns, so the same turn holds context roughly fixed) and puts the arm's per-turn
+gaps next to the per-turn gaps of the batch's own repeated baseline - one command run twice, the only noise measured inside
+this batch:
+
+```
+python tools/read_sweep_warm.py bench/results/ab-adapt-kv-sweep
+
+largest gap among the arms: 72.6% ('adapt-swaps 16'), against the 24.3% floor from BENCH_NOISE.md.
+  adapt-swaps 16           median  57.9%  range  43.4-96.9%  n=6
+  noise (repeat)           median  66.5%  range  53.6-98.4%  n=6
+the two distributions overlap - the arm's smallest per-turn gap is inside the noise
+row's range - so this data cannot separate them
+```
+
+The biggest arm gap in the sweep sits inside the spread of the baseline against itself. Every gap in this batch is that
+large because the baseline ran first and cold (16.68 tok/s warm, against 28.42 for its own repeat); the repeat row is what
+says so, and no arm gets clear of it. **Nothing separated: no knob in this sweep can be called faster or slower than the
+configuration from this data**, which is a stronger statement than the three before it only in its method, not its
+conclusion.
+
+The same tool on the cache-off batch shows what a separated result looks like, so the verdict above is the data's and not
+the tool's inability to see anything:
+
+```
+python tools/read_sweep_warm.py bench/results/ab-cache-off
+
+  expert-cache 1 (off in effect) median  33.7%  range  28.1-44.4%  n=6
+  noise (repeat)                 median   3.7%  range   1.1-24.1%  n=12
+```
+
+There the arm's whole range lies outside its repeats and every arm row agrees on the sign - the expert cache carries the
+speed (`CACHE_VS_DRAFTS.md`). Here the arm's range lies inside its repeat's, and the honest reading is not a ranking.
+
+What this does not say, kept here so the verdict is not stretched: it does not say the flags do nothing (the hit-rate moves
+are real, 24.9% to 56.9%), and it does not cover a different machine state. On 2026-10-18, after the CPU (i7-11700K), the
+model (Swift 1.5) and the link changed, an interleaved sweep on the main line put `--adapt-swaps` 24-48 ahead of 8 on a
+cache hit rate that rose with the setting in every launch and on decode by +5 to +18% per paired round, and the live
+configuration moved to 48; that result is recorded in the main line's `docs/TUNING_LOG.md`, with two launches per arm, and
+it does not clear this file's 24.3% batch floor either. It is a different machine and model, not a re-reading of this
+sweep, and the verdict here stands for the data here.
