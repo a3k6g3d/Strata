@@ -26,26 +26,31 @@ rem children, wait for the GPU to be genuinely empty, run the six launches, then
 rem the server as the exact command that was running.
 rem
 rem About 35 minutes now: six launches (three rounds x two arms) at the ~5 min a launch this
-rem file's own run took, plus the 20 s gaps.  The chat you are in will drop when the server
-rem stops, because the agent talking to you is talking through it.
+rem file's own run took, plus the 20 s gaps.  The chat you are in does not just drop when
+rem the server stops, it closes: the --check pass below names strata-vision.exe - this
+rem window - in the kill list, and only the server is restarted afterwards.  The driver
+rem spared its own three lines and would still have killed the server above them, so the
+rem rule about not launching the driver from a tool runner is about what it kills, and the
+rem mechanism is narrower than it was written: it survives, the server does not, and the
+rem chat hangs off the server.
 
 cd /d J:\Strata-work\Strata-0140
 
 echo.
 echo This is what will be stopped. Nothing is killed yet.
 echo.
-python tools\noise_floor_unattended.py --check --log bench\results\noise-interleaved.log
+python tools\noise_floor_unattended.py --check --log bench\results\noise-interleaved-2.log
 
 echo.
 pause
 
-python tools\noise_floor_unattended.py --log bench\results\noise-interleaved.log ^
+python tools\noise_floor_unattended.py --log bench\results\noise-interleaved-2.log ^
   --harness-args "--sweep noise-interleaved --rounds 3 --runs 6 --noise-floor 0 --out bench/results/noise-interleaved-2"
 
 echo.
 echo Run finished.  The log is:
-echo   J:\Strata-work\Strata-0140\bench\results\noise-interleaved.log
-echo   J:\Strata-work\Strata-0140\bench\results\noise-interleaved-harness-out.log
+echo   J:\Strata-work\Strata-0140\bench\results\noise-interleaved-2.log
+echo   J:\Strata-work\Strata-0140\bench\results\noise-interleaved-2-harness-out.log
 echo Results: J:\Strata-work\Strata-0140\bench\results\noise-interleaved-2\
 echo.
 pause
