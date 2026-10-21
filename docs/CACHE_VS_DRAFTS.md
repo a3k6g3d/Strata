@@ -313,6 +313,53 @@ that comparison, and survives it.
 layer against auto's 1,951 in one range, and its 13% is a real difference between two real configurations.  It is still
 a counters question.
 
-Next open items, in order: the counters (`STRATA_LOOKAHEAD_STATS`, the hit/miss/evicted/loaded lines); and a cache-off
-arm that is off, which needs a number that is not 0 - the flag has no spelling for off at all while a profile is in use,
-so the arm is `--expert-cache 1`, or no profile.
+## The counters question, closed off the source: neither candidate the section named survives it
+
+Read off the source and the two arms' `results.json` files, no GPU time.  The section above left the 13% unexplained and
+named two candidates for the counters to choose between.  The source kills both, and it turns out the counters cannot
+answer the question either.
+
+**There is no eviction in this cache, on either path.**  The shared path says so in the code (`src/core/expert_cache.cpp:653`,
+`full: no eviction, deliberately`), and the per-layer path says it is running the same rule with a different ceiling
+(`src/core/expert_cache.cpp:642`).  So "eviction churn inside a layer's own 41-slot range" is not a thing that can
+happen: a layer whose quota is full does not evict, it **refuses** (`return kNotResident`) and that expert is served from
+somewhere else for the rest of the run.  The quota fills in first-touch order and never gives anything back.
+
+**The other candidate is the wrong shape too.**  "Per-slot bookkeeping in the per-layer path" describes a path that is
+*shorter* than the shared one - a range check and an array increment against a single counter check - and it only runs
+on a miss, because a hit returns before any of it.  A per-access cost that only applies to misses, on a path that is
+cheaper than the one it is being blamed for, does not explain a 13% loss.
+
+**What the source does support is the prediction the section already made**, and it is the refusal, not the bookkeeping:
+each layer owns `[l*41, (l+1)*41)` exactly, so a layer whose traffic concentrates **cannot borrow a single slot from a
+layer that is sitting on its 41 unused**.  Everything past its own 41 is refused and served off the fast path, which is
+exactly the failure mode the section predicted before it had data.
+
+**The counters as named do not exist.**  `STRATA_LOOKAHEAD_STATS` prints no hit/miss/evicted/loaded lines - what it
+prints is the *predictor's* score sheet (`src/core/expert_source.cpp:2287`): windows, layers scored, actual non-resident
+experts per layer, predictor ms/window, and recall/precision at four k values.  It scores the look-ahead against the real
+routing; it says nothing about where an expert was served from.  So the counters question closes here, and the run it
+pointed at is not needed for it.
+
+## One correction to the per-layer section's caveat: the PCIe column is comparable
+
+The caveat says only the speed columns are comparable across the two arms, because they ran on different versions of the
+bench.  That is right for the **hit** column and wrong for the **PCIe** one, and the difference matters because the
+unexplained observation sits on the PCIe column.
+
+The bug was in the hit column's key - it read `prompt_cache_reused_tokens`, a key the server never writes, so every run
+reported 0.0%.  The PCIe column read `pcie_share`, which is the key the server does write, in both versions.  The only
+thing the fix changed there was what to do with a record that reported nothing: the old code counted it as a zero, the
+new code skips it.  That asymmetry can only have **deflated the baseline's 9.1%**, never inflated it - so the real gap
+between 9.1 and 7.3 is this wide or wider, and "less bus traffic with less speed" stands.
+
+The raw per-request records are not saved in these `results.json` files (the phases carry their time windows and the
+computed figures, not the records), so the number of silent records cannot be read off disk.  What can be read is the
+drafts column, which comes from the engine's exact cumulative counters in both arms: 1608 of 2625 against 1690 of 2711,
+61.3% against 62.3%.  So the two arms were offered *different amounts of speculation* and accepted at essentially the
+same rate - which is the second thing that rules out the bus as the cause, and the reason the remaining explanation has
+to be the refusal path rather than anything crossing it.
+
+Next open items, in order: a cache-off arm that is off, which needs a number that is not 0 - the flag has no spelling
+for off at all while a profile is in use, so the arm is `--expert-cache 1`, or no profile.  The counters are off the
+list, for the reason above.
