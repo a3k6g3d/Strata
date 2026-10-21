@@ -384,8 +384,51 @@ launch, which is the sampler telling me again that the spread is not in them.
 The state-hash fix works on real data at scale: 11 of 11 launches recorded by the fixed code have a fingerprint,
 24-26 lines each, every digest distinct. The three launches from before the fix are still the only nulls.
 
+## The interleaved control ran, and did not interleave
+
+`bench/results/noise-interleaved/` has three launches of one arm, two runs each, 10:03 to 10:13 pm. It was
+supposed to have six launches and two arms. It has six launches' worth of schedule written in its notes and
+three launches' worth of data, all of it from the same arm in the same position - the shape the section above
+said cannot answer the question, again.
+
+The cause is in the driver, and it is quiet. `noise_floor_unattended.py` hardcodes its harness command with
+`--noise-floor 3`, and `--harness-args` appends, so the batch file's `--sweep noise-interleaved --rounds 3`
+arrived after a flag that had already decided the run: `main()` takes `rounds = a.noise_floor or a.rounds`,
+truncates the arm pool to the baseline, and forces `order="same"`. argparse accepted both flags without
+comment, and the sweep's note - the one about the two arms taking turns - was printed above every README
+anyway, so the folders read as the interleaved control and are not it. The tests were green throughout: they
+cover `schedule()` and the noise-floor mode separately, and nothing tested the command the batch file builds,
+which is the only place the two collide.
+
+What the run is worth is a fourth batch of the same shape. Within-launch, its 18 pairs give median **+15.5%**,
+run 2 faster in 15 of 18 - and pooled across all four batches that is **102 pairs, median +14.2%, 90th
+percentile 32.9%, later run faster in 80 of 102**. The within-launch drift has now survived four batches,
+which is more than anything else here has survived.
+
+At the launch level this batch leads with its first launch too - 39.75, 38.35, 37.15, monotonically down,
+7.0% spread - so the count of batches whose first launch is their fastest is now **3 of 4**. The one that
+does not is the six-launch batch whose first launch was fifth of six. Three of four is not a result either;
+it is the coin flip with one more coin.
+
+Three more machine-state rows, all with fingerprints (25/25/24 lines, three distinct digests), so fourteen
+launches on disk now have both halves of the record. On these three the state columns point the way the
+sampler would want for once - the fastest launch (39.75) has the lowest mean utilisation (26.4% against
+34.7/34.3) and the lowest maximum temperature (59C against 63/61) - and n=3 is why that sentence is not a
+finding. The previous batch's rows pointed the wrong way for the fastest launch.
+
+So: the fix is that `main()` now refuses a command that asks for a sweep and a noise floor at once, names
+both and says which one won, rather than picking one and keeping the other's note. The batch file spells
+`--noise-floor 0` out, and writes to a new folder (`noise-interleaved-2`) so the run that happened and the
+run that means it are not mixed. And `tools/test_strata_ab.py` gained the test that was missing: it reads the
+batch file's own command line, runs it through `--dry-run`, and checks that six launches come out with both
+labels landing at both positions - the check that would have caught this before anyone sat through 15 minutes
+of GPU. The old folder stays where it is, unrenamed, because it is a real measurement of the wrong thing.
+
+The run has to be had again: `tools\interleaved_control.bat`, ~35 minutes now that it really is six launches.
+
 What I would do with this, in the same order as the list above: the within-launch drift is real and item 2 stands
-on it. Item 1 - interleave the arms or place them by clock - is the one this run was supposed to settle, and it
-came back 2 of 3, so it is still open and the honest move is to stop collecting batches of this shape (they all
-look like this one) and run the interleaved version instead: same arm, arms placed in a different order in each
-repetition, so the position effect shows up as disagreement between repetitions instead of as a result.
+on it - four batches now. Item 1 - interleave the arms or place them by clock - is the one this run was supposed
+to settle, and it came back 2 of 3, so it is still open and the honest move is to stop collecting batches of this
+shape (they all look like this one) and run the interleaved version instead: same arm, arms placed in a different
+order in each repetition, so the position effect shows up as disagreement between repetitions instead of as a
+result. Which is what the batch file does, now that it is actually running it.

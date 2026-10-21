@@ -165,6 +165,15 @@ def main(argv=None) -> int:
     if a.rounds < 1 or a.noise_floor < 0:
         print("--rounds must be at least 1 and --noise-floor at least 0.", file=sys.stderr)
         return 2
+    if a.sweep and a.noise_floor:
+        # argparse takes both happily and main() gives the noise floor precedence, which is how the first
+        # interleaved run ended up as three launches of one arm with the sweep's note printed above them.
+        # A command that asks for both is a command that means one of them; say so instead of guessing.
+        print(f"--sweep {a.sweep} and --noise-floor {a.noise_floor} are different runs: the noise floor launches the "
+              f"baseline arm alone {a.noise_floor} times, in a fixed order, and never reaches the sweep's other arms - "
+              f"so the run would have the sweep's note printed above data the sweep did not produce.  "
+              f"Give --noise-floor 0 to run the sweep.", file=sys.stderr)
+        return 2
     default_out = "noise-floor" if a.noise_floor else "ab-cache-vs-drafts"
     parent = Path(a.out) if a.out else ROOT / "bench" / "results" / default_out
     parent.mkdir(parents=True, exist_ok=True)

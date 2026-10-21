@@ -12,13 +12,22 @@ rem in a different order each round (A B, B A, A B), two runs each, so the posit
 rem effect shows up as disagreement between rounds instead of as a result.  Both arms are
 rem byte-identical, so every difference between them IS the noise.
 rem
+rem Why --noise-floor 0 is spelled out below.  The driver's default harness command asks for
+rem the noise floor, and --harness-args only appends, so the first run of this file carried
+rem both flags at once.  The harness gives the noise floor precedence: it launched the
+rem baseline arm alone three times, never reached the second arm, and printed this run's
+rem note above every README anyway - so what is on disk under noise-interleaved is a fourth
+rem batch of the shape that cannot answer the question, and the run has to be had again.
+rem The harness now refuses a command that asks for both, and this file says plainly which
+rem one it means.  The old folder is left alone; the real run writes a new one.
+rem
 rem What it does, in the same order as the other batch file: stop the live server and its
 rem children, wait for the GPU to be genuinely empty, run the six launches, then restart
 rem the server as the exact command that was running.
 rem
-rem About 25 minutes at the pace the last batch ran at (3.5 min a launch, plus the 20 s
-rem gaps).  The chat you are in will drop when the server stops, because the agent talking
-rem to you is talking through it.
+rem About 35 minutes now: six launches (three rounds x two arms) at the ~5 min a launch this
+rem file's own run took, plus the 20 s gaps.  The chat you are in will drop when the server
+rem stops, because the agent talking to you is talking through it.
 
 cd /d J:\Strata-work\Strata-0140
 
@@ -31,12 +40,12 @@ echo.
 pause
 
 python tools\noise_floor_unattended.py --log bench\results\noise-interleaved.log ^
-  --harness-args "--sweep noise-interleaved --rounds 3 --runs 6 --out bench/results/noise-interleaved"
+  --harness-args "--sweep noise-interleaved --rounds 3 --runs 6 --noise-floor 0 --out bench/results/noise-interleaved-2"
 
 echo.
 echo Run finished.  The log is:
 echo   J:\Strata-work\Strata-0140\bench\results\noise-interleaved.log
 echo   J:\Strata-work\Strata-0140\bench\results\noise-interleaved-harness-out.log
-echo Results: J:\Strata-work\Strata-0140\bench\results\noise-interleaved\
+echo Results: J:\Strata-work\Strata-0140\bench\results\noise-interleaved-2\
 echo.
 pause

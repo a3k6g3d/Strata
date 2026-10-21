@@ -1,0 +1,11 @@
+[strata] loading the most-used experts into RAM (up to 36 GiB; the rest are read from the model files as needed) and locking part of them for the GPU.
+         Please wait and don't close this window; the browser opens when it is ready.
+[strata] filling the GPU's expert cache (2169 experts, 4.16 GiB of VRAM) ...
+[strata] almost ready ...
+[strata] slot save/restore on: J:\Strata-work\slots (session files are kept until deleted: about 1.2 GB per 63K-token conversation; restore only files this server wrote)
+ready: http://127.0.0.1:8080/v1  (OpenAI: /v1/chat/completions, Anthropic: /v1/messages, context 65536 tokens, images on)
+[strata] tool loop: shortened 1363 older tool result(s) to fit the context
+[strata] compact: cache hit, a summary of 6351 messages
+[strata] the engine reported an error: prompt (64948 tokens) + max_new (800) exceeds the context (65536)
+[strata] summarizing the earlier conversation failed: prompt (64948 tokens) + max_new (800) exceeds the context (65536)
+[strata] fitting the conversation into the context: 26.7 s (1363 result(s) shortened, 6351 message(s) summarized)

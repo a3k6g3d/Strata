@@ -3,15 +3,18 @@ from __future__ import annotations
 
 import contextlib
 import io
+import shlex
 import sys
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
+import noise_floor_unattended as N  # noqa: E402
 import strata_ab as A  # noqa: E402
 
 ARMS = [("base", []), ("b", ["--x 1"]), ("c", ["--y 2"])]
+HARNESS_FLAGS = N.HARNESS[3:]             # the driver's default command minus "python -u <tool>"
 
 
 def dry_run(*args):
@@ -110,6 +113,56 @@ class Options(unittest.TestCase):
             rc, _, err = dry_run(*args)
             self.assertEqual(rc, 2)
             self.assertIn("at least", err)
+
+
+class TheBatchFile(unittest.TestCase):
+    """The command tools/interleaved_control.bat will actually run, taken from the file itself.
+
+    The tests above call schedule() directly, so they were green while the run happened and did not
+    interleave: the driver's default command asks for the noise floor, --harness-args only appends, and
+    the harness gives the noise floor precedence - three launches of one arm, with this sweep's note
+    printed above every README anyway.  Only a test that starts from the batch file's own line can see
+    that, so this one does.
+    """
+
+    BAT = ROOT / "tools" / "interleaved_control.bat"
+
+    def harness_args(self) -> list:
+        # the driver's own default flags, then whatever the batch file appends - the same join opts() does
+        text = self.BAT.read_text(encoding="utf-8")
+        line = [l for l in text.splitlines() if l.strip().startswith("--harness-args")]
+        self.assertEqual(len(line), 1, "the batch file has exactly one run line")
+        quoted = line[0].split('"')[1]
+        return shlex.split(" ".join(HARNESS_FLAGS) + " " + quoted)
+
+    def test_the_batch_file_cancels_the_drivers_default_noise_floor(self):
+        argv = self.harness_args()
+        # argparse takes the LAST of a repeated flag, so the batch file's own --noise-floor is the one that counts
+        nf = [argv[i + 1] for i, x in enumerate(argv) if x == "--noise-floor"]
+        self.assertEqual(len(nf), 2, "the driver's default, and the batch file cancelling it")
+        self.assertEqual(nf[-1], "0")
+        self.assertEqual(argv[argv.index("--sweep") + 1], "noise-interleaved")
+
+    def test_the_command_it_runs_launches_both_arms_and_lands_each_at_both_positions(self):
+        rc, out, err = dry_run(*self.harness_args())
+        self.assertEqual(rc, 0, err)
+        self.assertEqual([l.split(":")[0].replace("launch ", "").split("/")[0] for l in out.splitlines()
+                          if l.startswith("launch ")], [str(n) for n in range(1, 7)])
+        labels = [l.split(":")[1].split("  (round")[0].strip() for l in out.splitlines() if l.startswith("launch ")]
+        self.assertEqual(labels, ["as configured", "as configured (repeat)",
+                                  "as configured (repeat)", "as configured",
+                                  "as configured", "as configured (repeat)"])
+        for label in ("as configured", "as configured (repeat)"):
+            pos = [n for n, l in enumerate(labels) if l == label]
+            self.assertEqual(len(pos), 3)
+            self.assertNotEqual(pos[0] % 2, pos[1] % 2)                        # sits at both positions, which is the point
+        self.assertIn("runs 2 x", out)                                         # 6 runs over 3 rounds, as the note says
+
+    def test_a_command_asking_for_both_is_refused_rather_than_guessed(self):
+        rc, _, err = dry_run("--sweep", "noise-interleaved", "--rounds", "3", "--noise-floor", "3")
+        self.assertEqual(rc, 2)
+        self.assertIn("noise-floor", err)
+        self.assertIn("--noise-floor 0", err)                                  # says how to mean the sweep
 
 
 if __name__ == "__main__":
