@@ -80,7 +80,7 @@
       "id": 5,
       "title": "Write up the adapt-kv sweep honestly: nothing separated",
       "needs_gpu": false,
-      "status": "open, no machine time needed, reads straight off disk. Tool part is done (the verdict now compares the two per-turn distributions, not two single medians); the write-up itself is what is left.",
+      "status": "done 2026-10-21 (b63be2eb): both write-ups carry the same verdict, nothing separated; every number reproduces through tools/read_sweep_warm.py",
       "source": "docs/SWEEP_ADAPT_KV.md, bench/results/ab-adapt-kv-sweep/, tools/read_sweep_warm.py",
       "detail": "13 arms, three runs each, all within their own noise. The biggest arm gap (72.6%, adapt-swaps 16) sits inside the noise row's own per-turn range (54-98%), so the data cannot separate them and the honest verdict is 'nothing separated', not a story about which arm won. Cache-off is the contrast: its arm (28-44%) lies wholly outside its repeats (1-24%).",
       "done_when": "docs/SWEEP_ADAPT_KV.md and bench/results/ab-adapt-kv-sweep/SWEEP_ADAPT_KV.md tell the same story, and every number in both reproduces through tools/summarize_ab_sweep.py or tools/read_sweep_warm.py"
