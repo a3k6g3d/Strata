@@ -117,6 +117,24 @@ SWEEPS = {
         "arms": [("as configured", []),
                  ("expert-cache 1 (off in effect)", ["--expert-cache 1"])],
     },
+    # Every way this engine has to produce more than one token per verify window, against the configuration's own (the
+    # retrained Basalt MTP layer, --spec 4, prompt-lookup suffix drafts at their default of 3).  One flag per arm; a flag
+    # given again here overrides the configuration's, because the engine keeps the last value it reads.  Not here: the
+    # coupled / Gumbel draft sampling (STRATA_SPEC_COUPLED, STRATA_SPEC_GUMBEL), which only acts on requests sampled at a
+    # temperature above 0 and this suite is greedy; EAGLE, Medusa, a separate small draft model and diffusion or NCM
+    # drafters, which this engine does not implement.
+    "spec-methods": {
+        "note": ("Which multi-token method carries the speed on this machine?  The configuration's MTP drafting against no "
+                 "speculation, the model's original MTP head, MTP without prompt lookup, MTP with a prompt-lookup chain after "
+                 "its drafts, a 4-bit draft layer and a wider verify window, one flag per arm, the arms taking turns."),
+        "arms": [("as configured", []),
+                 ("no speculation", ["--spec 1"]),
+                 ("original MTP head", ["--mtp J:/Strata-work/mtp-rt"]),
+                 ("MTP without prompt lookup", ["--suffix-draft 0"]),
+                 ("MTP + lookup chain 4", ["--lookup-chain 4"]),
+                 ("4-bit draft layer", ["--mtp-q4 all"]),
+                 ("spec 6", ["--spec 6"])],
+    },
     "noise-interleaved": {
         "note": ("The same arm twice, the two taking turns (round 1 A B, round 2 B A, round 3 A B) so the machine's "
                  "drift is not the same variable as an arm's position.  Nothing about the engine changes between the "
