@@ -45,6 +45,43 @@ TEXT_EXTENSIONS = {".txt", ".md", ".py", ".json", ".csv", ".tsv", ".log", ".js",
                    ".cmd", ".sql", ".diff", ".patch", ".env", ".gradle", ".kt"}
 
 
+def _system_ca_file() -> str:
+    """A PEM file of the system's trusted roots: Windows' stores through ssl.enum_certificates, or the platform's own bundle."""
+    import ssl
+    import tempfile
+    pems = []
+    try:
+        for store in ("ROOT", "CA"):
+            pems += [ssl.DER_cert_to_PEM_cert(der) for der, enc, _ in ssl.enum_certificates(store) if enc == "x509_asn"]
+    except (AttributeError, OSError):                   # not Windows
+        pass
+    bundle = ssl.get_default_verify_paths().cafile
+    if not pems and bundle and os.path.exists(bundle):
+        return bundle
+    with tempfile.NamedTemporaryFile("w", suffix=".pem", delete=False) as f:
+        f.write("".join(pems))
+    return f.name
+
+
+def http_client(httpx):
+    """The bot's HTTP client.  httpx and httpcore import the `certifi` package (httpcore at import time, httpx when it builds its
+    SSL settings), and with it missing the client cannot be made: ModuleNotFoundError, and the bot stayed offline while the
+    server ran - twice on this machine, 2026-10-19 and 2026-10-21, when certifi vanished from the user's site-packages.  The bot
+    only talks plain HTTP to the local server (Discord's own traffic goes through aiohttp, which does not use certifi), so when the
+    package is missing a stand-in module is registered whose `where()` returns the system's trusted roots."""
+    try:
+        import certifi  # noqa: F401
+    except ImportError:
+        import sys
+        import types
+        stand_in = types.ModuleType("certifi")
+        stand_in.where = _system_ca_file
+        stand_in.contents = lambda: open(_system_ca_file(), encoding="ascii", errors="ignore").read()
+        sys.modules["certifi"] = stand_in
+        print("[strata] Discord: the certifi package is not installed; using the system's certificate store instead", flush=True)
+    return httpx.AsyncClient(timeout=None)
+
+
 def is_text_attachment(name: str, content_type: str) -> bool:
     return (content_type or "").split(";")[0].startswith("text/") or os.path.splitext(name or "")[1].lower() in TEXT_EXTENSIONS
 
@@ -376,7 +413,7 @@ class StrataDiscordBot:
         if self.cfg.get("channel_ids"):
             intents.message_content = True              # server channels need the privileged intent (Developer Portal)
         client = discord.Client(intents=intents)
-        self.discord, self.client, self.http = discord, client, httpx.AsyncClient(timeout=None)
+        self.discord, self.client, self.http = discord, client, http_client(httpx)
 
         @client.event
         async def on_ready():

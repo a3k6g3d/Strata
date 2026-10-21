@@ -238,5 +238,34 @@ class AnswerTests(unittest.TestCase):
         self.assertEqual(ch.note.edits[-1], "done")
 
 
+@unittest.skipIf(httpx is None, "httpx not installed")
+class HttpClientWithoutCertifi(unittest.TestCase):
+    """httpx's default SSL settings need `certifi`; the bot must still get a client when that package is gone."""
+
+    def without_certifi(self):
+        from unittest import mock
+        return mock.patch.dict("sys.modules", {"certifi": None})            # None in sys.modules: import raises ImportError
+
+    def test_the_plain_client_needs_certifi_and_the_bots_does_not(self):
+        with self.without_certifi():
+            with self.assertRaises(ImportError):
+                httpx.AsyncClient(timeout=None)                              # the failure that kept the bot offline
+            client = D.http_client(httpx)
+            self.assertIsInstance(client, httpx.AsyncClient)
+            asyncio.run(client.aclose())
+            import certifi                                                   # the stand-in the bot registered
+            self.assertTrue(os.path.exists(certifi.where()))
+            import httpcore._ssl                                             # httpcore's import-time dependency is met too
+            self.assertTrue(httpcore._ssl.default_ssl_context() is not None)
+
+    def test_with_certifi_it_is_the_plain_client(self):
+        import importlib.util
+        if importlib.util.find_spec("certifi") is None:
+            self.skipTest("certifi not installed")
+        client = D.http_client(httpx)
+        self.assertIsInstance(client, httpx.AsyncClient)
+        asyncio.run(client.aclose())
+
+
 if __name__ == "__main__":
     unittest.main()
