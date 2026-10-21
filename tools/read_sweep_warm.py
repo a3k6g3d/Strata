@@ -62,6 +62,19 @@ def is_repeat_of_baseline(label, baseline_label):
     return norm(label) == norm(baseline_label) and norm(label) != ""
 
 
+def separable(arm_turns, noise_turns):
+    """True only if the arm's per-turn distribution lies wholly outside the noise row's.
+
+    Two single medians are not enough to call a gap: each row is one number, so the margin
+    between two medians is not a margin until the spread underneath it is looked at.  None
+    means there is no distribution to check - then the floor is all there is, and the tool
+    says so rather than rounding that into a verdict.
+    """
+    if not arm_turns or not noise_turns:
+        return None
+    return min(arm_turns) > max(noise_turns)
+
+
 def load_arm(path):
     """One arm's results.json -> {run: [turn, ...]} of decode tok/s, plus its label."""
     with open(path, encoding="utf-8") as fh:
@@ -161,8 +174,10 @@ def main():
     print()
     print("turn by turn (median over runs, ratio to the baseline at the same turn):")
     print("%-26s %10s   %s" % ("arm", "median", "per turn"))
+    per_turn_of = {}
     for a in others:
         med, per_turn = turn_paired(a, baseline)
+        per_turn_of[a["arm"]] = [r for _, r in per_turn]
         cells = " ".join("%d:%+.0f%%" % (t, 100.0 * (r - 1.0)) for t, r in per_turn)
         print("%-26s %10s   %s" % (a["arm"], "%+.1f%%" % (100.0 * (med - 1.0)) if med else "-", cells))
 
@@ -198,7 +213,31 @@ def main():
         limit, limit_src = NOISE_FLOOR_PCT, "the floor from BENCH_NOISE.md"
     signs = {g > 0 for label, g in gaps if not is_repeat_of_baseline(label, baseline_label)}
     consistent = len(signs) == 1
-    if biggest > limit:
+    # Two single medians are what the top line compares, and that is the whole problem: each row is
+    # one number, so a margin between them is not a margin until the spread underneath it is looked
+    # at.  The per-turn numbers printed above are the only spread in here, so the check is whether the
+    # arm's per-turn distribution sits outside the noise row's range at all - not just above its
+    # median.  A batch with no repeat row has no distribution to check, and then the floor is all
+    # there is, which is why the tool says so rather than rounding it into a verdict.
+    noise_labels = [label for label, g in gaps if is_repeat_of_baseline(label, baseline_label)]
+    noise_turns = [abs(r - 1.0) for label in noise_labels for r in per_turn_of.get(label, [])]
+    arm_turns = [abs(r - 1.0) for r in per_turn_of.get(biggest_label, [])]
+    if noise_turns and arm_turns:
+        print("the two rows in question, spread and all (per-turn |gap|, the only spread here):")
+        print("  %-24s median %5.1f%%  range %5.1f-%.1f%%  n=%d"
+              % (biggest_label, 100.0 * statistics.median(arm_turns),
+                 100.0 * min(arm_turns), 100.0 * max(arm_turns), len(arm_turns)))
+        print("  %-24s median %5.1f%%  range %5.1f-%.1f%%  n=%d"
+              % ("noise (repeat)", 100.0 * statistics.median(noise_turns),
+                 100.0 * min(noise_turns), 100.0 * max(noise_turns), len(noise_turns)))
+        separated = separable(arm_turns, noise_turns)
+    else:
+        separated = None
+    if separated is False:
+        print("the two distributions overlap - the arm's smallest per-turn gap is inside the noise")
+        print("row's range - so this data cannot separate them; the medians at the top of this")
+        print("output are one number each, and the margin between those two numbers is not a margin.")
+    elif biggest > limit:
         print("over it (%s), so the gap is %s's, not the noise's%s."
               % (limit_src, biggest_label, "; every arm row agrees on the sign" if consistent else ""))
     else:

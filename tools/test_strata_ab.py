@@ -277,5 +277,26 @@ class TestRepeatOfBaseline(unittest.TestCase):
         self.assertFalse(W.is_repeat_of_baseline("(repeat)", ""))
 
 
+class TestSeparable(unittest.TestCase):
+    # A gap between two single medians is not a margin until the spread underneath it is looked at.
+    # The tool says "cannot separate" when the two distributions overlap, and it has to get both
+    # batches on disk right: adapt-kv's biggest arm (per-turn 43-97%) sits inside its own noise row
+    # (54-98%), and cache-off's arm (28-44%) sits wholly outside its repeats (1-24%).
+    def test_overlapping_distributions_are_not_separated(self):
+        arm = [0.43, 0.51, 0.50, 0.97, 0.77, 0.65]
+        noise = [0.72, 0.58, 0.54, 0.98, 0.87, 0.61]
+        self.assertFalse(W.separable(arm, noise))
+
+    def test_distributions_that_do_not_touch_are_separated(self):
+        arm = [0.28, 0.30, 0.31, 0.37, 0.44, 0.32]
+        noise = [0.01, 0.04, 0.02, 0.01, 0.24, 0.03]
+        self.assertTrue(W.separable(arm, noise))
+
+    def test_no_distribution_is_answered_as_no_distribution(self):
+        self.assertIsNone(W.separable([0.3], []))
+        self.assertIsNone(W.separable([], [0.3]))
+        self.assertIsNone(W.separable([], []))
+
+
 if __name__ == "__main__":
     unittest.main()
