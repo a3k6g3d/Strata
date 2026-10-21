@@ -4683,6 +4683,28 @@ def _transcript(messages: list, cap_chars: int) -> str:
     return out
 
 
+def _summary_prompt(svc: Service, head: str, messages: list, budget: int) -> tuple[str, list | None]:
+    """`head` plus the transcript of `messages`, cut until the summary request fits the context with room for the summary.
+    The character budget assumes about 3 characters a token; code and tool output take fewer, and a summary request that is
+    too long by even a few tokens fails - and then the chat stays over the window on every later turn, because nothing else
+    shortens the messages since the last summary (2026-10-21: 64,936 + 800 tokens > 65,536, a chat stuck at 124K).
+    So the request is measured with the real tokenizer and the transcript cut further until it fits.
+    -> (prompt, its token ids), the ids handed on so a long transcript is tokenized once, not twice."""
+    ctx = svc.engine.max_context or getattr(svc.engine, "known_ctx", 0)
+    prompt = head + _transcript(messages, budget)
+    ids = None
+    for _ in range(5):
+        if ctx <= 0:
+            return prompt, None
+        ids = svc.encode_prompt([{"role": "user", "content": prompt}], None, {"enable_thinking": False})
+        room = ctx - SUMMARY_MAX_TOKENS - CTX_SLACK - 64          # 64: the chat template around the request
+        if len(ids) <= room or budget <= 2000:
+            return prompt, ids
+        budget = max(2000, int(budget * room / len(ids) * 0.95))
+        prompt, ids = head + _transcript(messages, budget), None
+    return prompt, ids
+
+
 def _summary_message(summary: str) -> dict:
     return {"role": "user", "content": "[Summary of the earlier part of this conversation, written by you so you can "
                                        "continue the work:]\n" + summary}
@@ -4741,10 +4763,13 @@ def _digest(messages: list) -> str:
     return hashlib.sha256(json.dumps(messages, sort_keys=True, default=str).encode()).hexdigest()
 
 
-def _write_summary(svc: Service, prompt: str, cancel) -> str | None:
+def _write_summary(svc: Service, prompt, cancel, ids=None) -> str | None:
     """One generation by the same model (thinking off, at most SUMMARY_MAX_TOKENS) over `prompt`: the summary text, or
     None when it failed - the caller's own error for a prompt that still does not fit follows, as before."""
-    ids = svc.encode_prompt([{"role": "user", "content": prompt}], None, {"enable_thinking": False})
+    if isinstance(prompt, tuple):                     # (prompt, ids) from _summary_prompt: already tokenized
+        prompt, ids = prompt
+    if ids is None:
+        ids = svc.encode_prompt([{"role": "user", "content": prompt}], None, {"enable_thinking": False})
     svc.embeddings.path = None
     parts = []
     try:
@@ -4819,13 +4844,13 @@ def compact_history(svc: Service, messages: list, tools, kw, cancel, orig: list 
         on_summary()                                 # only now is the model really going to write a summary
     extended = bool(replaced) and len(summary) <= SUMMARY_ROLLUP_CHARS
     if extended:                                     # the chat has grown past the cached summary: add what is new to
-        delta = _write_summary(svc, SUMMARY_EXT_PROMPT + "SUMMARY SO FAR:\n" + summary   # it, instead of rewriting
-                                + "\n\nWHAT HAS BEEN SAID SINCE THEN:\n" + _transcript(new, budget), cancel)    # the whole thing
+        delta = _write_summary(svc, _summary_prompt(svc, SUMMARY_EXT_PROMPT + "SUMMARY SO FAR:\n" + summary   # it, instead
+                                + "\n\nWHAT HAS BEEN SAID SINCE THEN:\n", new, budget), cancel)          # of rewriting the whole thing
         if not delta or cancel.is_set():             # no delta: the summary stands as it was, as after a failed one
             return replaced
         summary = summary + "\n" + delta
     else:
-        summary = _write_summary(svc, SUMMARY_PROMPT + _transcript(middle, budget), cancel)
+        summary = _write_summary(svc, _summary_prompt(svc, SUMMARY_PROMPT, middle, budget), cancel)
         if not summary or cancel.is_set():
             return replaced
     n_orig = covered + (start - head - (1 if covered else 0))       # client messages this summary stands for

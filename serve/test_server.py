@@ -356,6 +356,20 @@ class CompactHistory(unittest.TestCase):
                     {"role": "tool", "content": "r" * 3000}]
         return out
 
+    def test_the_summary_request_itself_fits_the_context(self):
+        # 2026-10-21: the transcript was sized at ~3 chars a token; code and tool output take fewer, the summary request came
+        # out 200 tokens over the window, failed, and the chat stayed stuck over the window on every turn after.  Here one
+        # token is one character, so the 3-chars budget is three times too big unless the request is measured.
+        from serve.server import CTX_SLACK, SUMMARY_MAX_TOKENS, compact_history
+        svc, calls = self.svc(12000)
+        msgs = [{"role": "system", "content": "sys"}] + [{"role": r, "content": r[0] * 3000}
+                                                          for _ in range(30) for r in ("user", "assistant")]
+        n = compact_history(svc, msgs, None, {}, threading.Event())
+        self.assertGreater(n, 0)
+        self.assertEqual(len(calls), 1)
+        self.assertLessEqual(calls[0] + SUMMARY_MAX_TOKENS + CTX_SLACK, 12000)
+        self.assertIn("SUMMARY OF WORK", msgs[1]["content"])
+
     def test_older_part_replaced_by_the_summary_and_the_tail_kept(self):
         from serve.server import compact_history
         svc, calls = self.svc(12000)
