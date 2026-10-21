@@ -27,6 +27,10 @@ The run-to-run spread inside one arm was 26.8-32.1 tok/s, so -1.7% is nothing; -
 away costs almost a fifth of the decode and, on the long prompt, 4.5% of the read.  Taking the cache away changes
 nothing that this suite can see.
 
+**(Read this with the last section: the arm labelled `--expert-cache 0` never turned the cache off, so the cache's cost
+was never measured on this suite.  The drafts half of the table stands - that is a real single-flag change.  The two
+cache rows are the rows to re-read there.)**
+
 ## Why the cache shows nothing here, and what this does NOT prove
 
 *(This section was written reading the 0.0% in the table above at face value.  The 0.0% turned out to be a reporting bug,
@@ -43,12 +47,14 @@ catch it because the `/metrics` it fabricates had invented the same wrong key, s
 instead of with the server.
 
 What the recomputed figures say: the cache hits plenty on this machine (40.6% of its lookups on the chat suite, 61.0% on
-the agent session), and removing it still costs only 1.7% - the same conclusion as before, reached the honest way.  The
+the agent session), and removing it still costs only 1.7% - the same conclusion as before, reached the honest way, and
+now known to be no measurement at all, since that arm never had the cache taken away (see the last section).  The
 suite's prompts are fresh by construction (each carries a unique tag, and the 4K prompts report `0 reused`), so what the
 cache is hitting is the experts the same run routes to twice - across the tokens of one decode, and across the runs of
 one arm - not a repeated prompt.
 
-So this measures the value of the expert cache on work that never repeats its prompt, and finds it small (1.7%), and it
+So this measures the value of the expert cache on work that never repeats its prompt - and finds it small (1.7%), which
+is the number the last section takes away; and it
 measures the value of the drafts on that same work, which is 19%.  It says **nothing** about the workload the cache is
 built for - the agent session that resends the same conversation turn after turn - because that test was not run here
 (`--tests chat,4k`).  The suite has it; run `--tests agent` (or the default suite) before drawing any conclusion about
@@ -58,14 +64,22 @@ the cache.
 *higher* than the arms with the cache on, which cannot be right in the way the column is labelled: the engine's own
 `req_look` is `hits + admitted + refused` (`src/program/generate.cpp` ~12187), so a cache with no slots should have
 nothing to hit.  Either the record's `hit_rate` counts a resident-tier lookup that is not this cache, or
-`--expert-cache 0` does not mean what the arm's label says.  Until that is settled against the engine's own `DONE` line
-and `STRATA_LOOKAHEAD_STATS`, the hit column may be read **within** one arm as "how much of the traffic the top tier
-served", and must not be compared across arms as the value of the feature.  The PCIe column and the speed columns do not
-have this problem.
+`--expert-cache 0` does not mean what the arm's label says.
+
+*This is now settled, and it is the second branch: see the last section.  The arms labelled `--expert-cache 0` ran with
+the cache **on**, which is why their hit rates look like cache-on arms - the reading of the column as "the value of the
+feature" was built on arms that never had the feature taken away.  What the section said about the column itself still
+stands: it may be read **within** one arm, and the two pairs that are now the same configuration - as-configured with
+`--expert-cache 0`, drafts-off with both-off - are the pairs to read it across.  They agree: 40.6 with 41.1, and 48.7
+with 51.0, the same configs landing within noise of each other.  The PCIe column and the speed columns do not have this
+problem.*
 
 Two secondary readings worth keeping: the drafts-off arm put **fewer** experts over PCIe (4.2% against 6.9%), because
-a rejected draft wastes a pass over the experts it routed through; and both-off is worse than drafts-off alone
-(-25.9% against -18.9%), so with no drafts the cache still earns something even on fresh prompts.
+a rejected draft wastes a pass over the experts it routed through; and ~~both-off is worse than drafts-off alone
+(-25.9% against -18.9%), so with no drafts the cache still earns something even on fresh prompts~~ - **this second one
+does not survive**: both-off and drafts-off are the same configuration (see the last section), so that seven-point gap
+is two runs of one arm, and it says nothing about the cache.  It is worth keeping as a noise measurement - it is the
+biggest same-config gap in the run, and it sits comfortably inside the floor in `BENCH_NOISE.md`.
 
 ## The next arm, run: the agent session changes nothing, and says why
 
@@ -88,7 +102,8 @@ is what the column deserves there, not the 0.0% that was printed.)
 Three things came out of this, and only one of them is about speed.
 
 **The conversation cache and the expert cache are two different reuse events, and both of them happened.** A turn reused
-69.2% of its prompt (3 tokens re-read per session against 73 with the expert cache off), and the expert cache found
+69.2% of its prompt (3 tokens re-read per session against 73 in the arm labelled `--expert-cache 0`, which is the same
+configuration run again, so that particular difference is noise), and the expert cache found
 61.0% of what it looked for already in VRAM.  Those are separate ledgers - reusing a conversation does not re-route its
 tokens, so it cannot put an expert in the cache - and the 61.0% is earned by the tokens that *are* re-routed: the decode
 of the turn, and the repeats of the session.  The earlier version of this section claimed the opposite ("the expert
@@ -99,7 +114,8 @@ cache still found nothing to hit") because it was reading the bug rather than th
 system RAM - a 36 GiB resident budget against a 35.4 GiB expert stack, so nearly the whole model is already home.  That
 is the correct reading of these figures and it is not a complaint; it is exactly what a cache smaller than the model is
 for.  But it bounds the cache's marginal value on this box: the path it owns is 9% of the traffic, which is precisely
-why taking it away costs 1.7%.
+why taking it away costs 1.7% - a figure that is now the baseline against a second run of itself, and so is the part of
+this paragraph that has to be re-measured.
 
 **Three runs cannot resolve this suite.** The spread inside one arm was 20.2-31.1 tok/s - wider than every difference
 between arms.  The drafts, which cost 18.9% on the fresh-prompt suite, cost 4.7% here, and both-off came out ahead of
@@ -242,5 +258,61 @@ the baseline's 9.1%) and a similar draft accept rate (62.3% against 61.3%) while
 with less speed means the cost is not bytes crossing the bus; the obvious candidates are the per-slot bookkeeping in
 the per-layer path and eviction churn inside a layer's own 41-slot range.  That is a counters question
 (`STRATA_LOOKAHEAD_STATS`, the hit/miss/evicted/loaded lines) and not a sixth arm, which is where this doc already
-pointed.  Next open items, in order: reconcile the `--expert-cache 0` arms' 41-51% paradox, then those counters.
+pointed.  The `--expert-cache 0` paradox that used to sit in front of the counters is settled in the last section.
 
+
+## The `--expert-cache 0` paradox, resolved: those arms never turned the cache off
+
+Read off the source and the arms' own logs, no GPU time.  The arms' command lines carry `--expert-cache auto` first and
+`--expert-cache 0` last, and the parser turns the last one back into the first:
+
+    src/program/generate.cpp:3499    if (o.expert_cache == 0) o.expert_cache = -1;
+
+with the comment above it saying so outright - `0` used to mean "the count the profile was built for", and since the
+profile began ranking every pair it means auto.  So both arms labelled cache-off ran the cache at full size.  The arms'
+own `engine-log-excerpt.txt` says the same thing, and this is the part that settles it, because it is the engine
+reporting what it actually built rather than what it was asked for:
+
+| arm | what the engine logged | its command line's last `--expert-cache` |
+| --- | --- | --- |
+| as configured | filling the GPU's expert cache (1951 experts, 3.75 GiB) | auto |
+| `--expert-cache 0` | filling the GPU's expert cache (**1951 experts, 3.75 GiB**) | 0 -> auto |
+| `--mtp-max-t 1 --suffix-draft 0` | filling the GPU's expert cache (1954 experts, 3.76 GiB) | auto |
+| both off | filling the GPU's expert cache (**1954 experts, 3.76 GiB**) | 0 -> auto |
+
+So the four arms are **two configurations, run twice each**: {as configured, `--expert-cache 0`} and {drafts-off,
+both-off}.  Nothing in the run took the expert cache away.
+
+## What that leaves standing
+
+The speed columns reproduce from the `results.json` files exactly as the table has them (chat medians 28.6 / 28.1 /
+23.2 / 21.2, 4K medians 479.2 / 476.7 / 457.6 / 448.9, first token 1.68 / 1.66 / 1.71 / 2.07 s), so the numbers are the
+right ones - it is what they are numbers *of* that changes.
+
+**The drafts conclusion stands, and is now measured twice.** as-configured against drafts-off is a genuine single-flag
+change, and it is -18.9%.  The same comparison through the other pair - `--expert-cache 0` against both-off, which are
+also a single-flag change apart from each other - is -24.6%.  Two independent pairs agreeing on a large effect is the
+strongest thing in this file.
+
+**The cache's cost on this suite was never measured.** The -1.7% row is the baseline against a second run of the
+baseline.  It is not a small effect; it is no measurement at all, and the sentence "taking the cache away changes
+nothing that this suite can see" has to be read as "the arm meant to measure it measured nothing".  The question the run
+was built to ask - does the expert cache carry the speed, or the drafts - is answered for the drafts and **still open for
+the cache**.
+
+**The two same-config pairs are free noise measurements.** They are the pairs the caveat above already names, and the
+gaps between them - 1.7 points for the first pair, 8.6 for the second, which is the one struck through above - are
+run-to-run spread on one configuration, not effects.
+
+**The agent section's "against 73 with the expert cache off" is the same-config pair again.** The 3 and the 73 re-read
+tokens are two runs of one configuration, and as-configured's own range is 2 to 144, which brackets 73 with room to
+spare.  The point the section makes - that prompt reuse and the expert cache are separate ledgers - does not depend on
+that comparison, and survives it.
+
+**The per-layer arm is untouched by all of this**, because it never claimed to be a cache-off arm: it is 41 slots per
+layer against auto's 1,951 in one range, and its 13% is a real difference between two real configurations.  It is still
+a counters question.
+
+Next open items, in order: the counters (`STRATA_LOOKAHEAD_STATS`, the hit/miss/evicted/loaded lines); and a cache-off
+arm that is off, which needs a number that is not 0 - the flag has no spelling for off at all while a profile is in use,
+so the arm is `--expert-cache 1`, or no profile.
