@@ -73,7 +73,7 @@
       "id": 4,
       "title": "Run cache-off on the non-agent suite",
       "needs_gpu": true,
-      "status": "open, the only place the -34% has never been measured",
+      "status": "done 2026-10-21 (38d9ef41): six interleaved launches, engine logs checked arm by arm (2,169 experts vs 1); chat decode -36.7% and 4K prompt -63.3% with the cache off, every launch separated - the agent suite's -34% reproduces (docs/CACHE_VS_DRAFTS.md, tools/read_suite_sweep.py)",
       "source": "docs/CACHE_VS_DRAFTS.md",
       "done_when": "six launches, interleaved, engine logs checked arm by arm - and the -34% either reproduces on this suite or the two suites are stated as disagreeing"
     },
@@ -126,7 +126,7 @@
     "order_of_work": [
       "item 5 - done 2026-10-21",
       "items 1 and 2 - done 2026-10-21 (docs/WINDOW_PROFILE_CUDA.md)",
-      "item 4 whenever the machine is free",
+      "item 4 - done 2026-10-21 (docs/CACHE_VS_DRAFTS.md)",
       "item 3 (retargeted): first the --pcie-frac arms with the profiler on, then the waitB split, then any code change"
     ]
   },
