@@ -5,10 +5,10 @@
   "purpose": "The remaining build work, in the order it can be done, each item sourced to the measurement that justifies it. Tuning is deliberately last - see deferred_tuning.",
   "machine": {
     "gpu": "RTX 5070 12 GB",
-    "cpu": "i5-10600K (AVX2, no AVX-512)",
+    "cpu": "i7-11700K (since 2026-10-18; the measurements before that date, including the A770 spec's, were on an i5-10600K or another machine)",
     "ram": "64 GB DDR4-2666",
     "link": "PCIe Gen4 x16, measured; do not budget bandwidth off the old Gen2/Gen3 line",
-    "model": "SC117 Qwen3.8-Flash-Next abliterated, IQ3_S"
+    "model": "Swift 1.5 GSQ-RCO abliterated IQ3_S, engine build-0145 (upstream 0.1.45), since 2026-10-18; before that SC117 Qwen3.8-Flash-Next abliterated IQ3_S"
   },
   "measurement_rules": {
     "noise_floor_pct": 24.3,
@@ -24,7 +24,8 @@
       "runs_with_state": 29,
       "source": "state.during.util_gpu_pct_mean in bench/results/*/*/results.json",
       "meaning": "the headroom this plan is about is measured on this card, not assumed"
-    }
+    },
+    "noise_floor_note": "24.3% is the batch-of-six figure from BENCH_NOISE.md, measured before the 2026-10-18 CPU and model change. The 2026-10-20 noise-floor run on the current machine (3 launches of the live config, agent suite) spread 18.4% with its cold first launch and 2.1% on engine decode across the two warm launches (6.6% client-side). The gate below therefore uses the noise each batch measures for itself."
   },
   "not_deferrable": [
     {
@@ -60,13 +61,13 @@
     },
     {
       "id": 3,
-      "title": "Overlap the CPU expert pool with GPU work during decode",
+      "title": "Cut the GPU's wait for the PCIe share of the missed experts (waitB)",
       "needs_gpu": true,
-      "status": "needs a decision before it starts: items 1 and 2 put the CPU-pool wait at 6.0% of the window, so hiding it completely cannot clear the 24.3% gate; the time is in waitB, the PCIe-share copies (docs/WINDOW_PROFILE_CUDA.md). Retarget to the bus share and copy path, or close",
-      "source": "docs/A770_SPEED_SPEC.md, 'The window is nearly GPU + CPU serial (architectural hypothesis)' and 'Per-stage breakdown obtained (decisive)'",
-      "detail": "on the A770 the wait-for-CPU-flag stages plus copy-and-combine are ~87% of the window and every actual GPU kernel is small; worker count was already tried and did nothing, so it is a scheduling change, not a sizing one.",
-      "caveat": "the 87% figure is from the Arc card over PCIe 3.0 x4, not from this machine. The shape is the same - decode here is CPU-bound, and this card idles at 20-72% during runs - but the size is not transferred.",
-      "done_when": "the window shrinks by more than the 24.3% floor under the interleaved control, with the idle-GPU fraction from item 2 visibly falling as the cause"
+      "status": "retargeted 2026-10-21 on items 1-2: the CPU-pool wait is 6.0% of the window, so the original target (overlap the CPU pool) cannot clear any useful gate; the GPU waits 59.2% of the window for the PCIe-share copies",
+      "source": "docs/WINDOW_PROFILE_CUDA.md, tools/read_window_profile.py, bench/results/window-profile-2026-10-21/",
+      "detail": "Per window (59.4 ms median, 31 requests): waitB 35.5 ms, waitCPU 3.1 ms, doorbell waitA 0.32 ms; 3.25 PCIe experts per layer-window. At the probed 27.2 GB/s the copies should take at most ~15 ms per window, so part of waitB is not the link - the file tier, late copies, or an early wait are the candidates, none measured. Steps: (a) --pcie-frac arms against the automatic 0.55 (0.40, 0.25: work moves from the copies to the CPU pool, whose wait is small), interleaved, each launch run with STRATA_VERIFY_PROFILE=1 STRATA_DECODE_TIMING=1 so read_window_profile.py gives waitB per arm; (b) split waitB into copy time and source time (file tier versus the page-locked RAM tier); (c) only then a code change to the copy path, if (a)-(b) point at one.",
+      "caveat": "the profiler's stamps add their own time, so read the shares, not the absolute milliseconds, and compare arms measured the same way",
+      "done_when": "waitB's share of the window falls and decode rises by more than the noise the batch measures for itself, under the interleaved control - or the bus-share arms are stated as not moving it, which closes the lever"
     },
     {
       "id": 4,
@@ -89,7 +90,7 @@
   "deferred_tuning": {
     "why": "the sweep that tried to settle these produced nothing above its own floor, so tuning now would be fitting noise and the decision would have to be re-made after the build anyway",
     "already_settled_do_not_resweep": [
-      "--adapt-swaps 8",
+      "--adapt-swaps 48 (2026-10-18 interleaved sweeps on the current CPU and model: 24-48 ahead of 8 on a hit rate that rose with the setting in every launch, flat to ~64, slower at 96 and 128; main line docs/TUNING_LOG.md). Was 8 before that.",
       "--ple-io direct",
       "--vram-reserve-mib 640",
       "spec 4 / min-p 0.5",
@@ -98,7 +99,7 @@
     "open_knobs": [
       {
         "lever": "--pcie-frac",
-        "note": "real lever, already automatic - leave it unset unless the experiment is about the bus share"
+        "note": "real lever, automatic (it picks 0.55 on this link's 27.2 GB/s probe); item 3 now sets it on purpose, because items 1-2 put 59% of the window in the wait for the PCIe share"
       },
       {
         "lever": "--pool-workers",
@@ -110,7 +111,7 @@
       }
     ],
     "source_for_all_of_it": "docs/REJECTED_PROPOSALS.md, CLAUDE.md, docs/SWEEP_ADAPT_KV.md",
-    "gate": "any arm must clear the 24.3% floor under the interleaved control, and the tool must compute that verdict rather than assert it"
+    "gate": "an arm must clear the noise its own batch measures - the repeated-baseline rows, computed by tools/summarize_ab_sweep.py or tools/read_sweep_warm.py, never asserted - under the interleaved control; 24.3% (BENCH_NOISE.md, before 2026-10-18) is the historical figure, not a fixed bar"
   },
   "execution": {
     "mode": "end-to-end by Claude, no per-package review",
@@ -123,16 +124,16 @@
       "run tools/test_strata_ab.py before committing; it must stay at 31 passing"
     ],
     "order_of_work": [
-      "item 5 first - it needs no GPU and it is the write-up the others get judged against",
-      "then item 2, the latency measurement, which needs no profiler and unblocks item 3",
-      "item 1 in parallel, since it gates the profiler that item 3 wants",
+      "item 5 - done 2026-10-21",
+      "items 1 and 2 - done 2026-10-21 (docs/WINDOW_PROFILE_CUDA.md)",
       "item 4 whenever the machine is free",
-      "item 3 last, and only after 1 and 2 have produced numbers"
+      "item 3 (retargeted): first the --pcie-frac arms with the profiler on, then the waitB split, then any code change"
     ]
   },
   "handoff": {
     "this_file_is_the_work_plan": true,
     "the_sweep_plan_format_is": "bench/results/2026-10-06-community-rtxpro-v0140/plan.example.json",
     "note": "the two are different documents and should stay separate - one says what to build, the other says what to run to check a piece that got built"
-  }
+  },
+  "updated": "2026-10-21: machine and model brought up to date, the gate made per batch, item 3 retargeted on items 1-2's numbers"
 }
