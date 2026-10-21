@@ -254,6 +254,8 @@ re-run to be worth anything.
    of a session whose first 20 minutes behave differently. Either repeat every arm at several positions and
    average, or discard every arm started inside the cold region. A sweep that runs its baseline first and last
    (which the harness already does) can detect this; it cannot correct for it.
+   **Done 2026-10-21**, six launches of one arm placed in a different order each round, in the section at the
+   end: it works, and what it says is that the arms agree on nothing above 20%.
 2. **Discard the first run of each launch, or report it separately.** It is 12% below its own arm's later runs in 23
    of 25 arms, and it is pooled into the median every arm is ranked by, which biases every arm down by roughly 4% at
    `--runs 3` - the size of the differences being argued about. `summarize_ab_sweep.py` now prints that figure
@@ -426,9 +428,70 @@ of GPU. The old folder stays where it is, unrenamed, because it is a real measur
 
 The run has to be had again: `tools\interleaved_control.bat`, ~35 minutes now that it really is six launches.
 
+## Six launches, two arms, and the arms are the same arm
+
+`tools\interleaved_control.bat` ran at 08:18, and this time it really did interleave: six launches, three per
+label, each label at both positions (round 1 A B, round 2 B A, round 3 A B), 27 minutes of launches and about
+35 minutes wall. The batch file's own log confirms the schedule launch by launch, and the two arms share one
+launch line, 439 characters, byte for byte - which is the whole point of the control: any difference between
+them is the machine, not the configuration.
+
+| round | position 1 | position 2 | later minus earlier |
+|---|---|---|---|
+| 1 | A 33.10 | B 36.45 | +10.1% |
+| 2 | B 35.80 | A 33.50 | -6.4% |
+| 3 | A 32.55 | B 28.35 | -12.9% |
+
+The three rounds do not agree on a sign. The harness's own verdict line says the same thing in its units - the
+repeat arm against the reference arm, launch for launch: **+8.3\*, +0.4\*, -2.7, median -2.7%, inside noise** -
+and it is the first time that line has ever been printed about two arms that are genuinely the same arm, so
+"inside noise" is the correct output and the control works.
+
+The number to keep is the spread of all six identical launches: **24.3%** (33.1, 33.5, 32.55, 36.45, 35.80,
+28.35). The harness's noise-floor line for this folder says 2.9%, but that is the reference arm's own three
+launches only - the tight arm of the pair - and the honest floor for a six-launch batch of this shape is the
+whole set. So: a difference between two arms has to beat roughly a fifth of the measurement before it means
+anything, and the 0.1.41 table's claims of 5-13% sit under that line, as the doc has been saying.
+
+Position barely moved: the first launch of a round median 33.1, the second 33.5, +1.2%. The label moved more
+than position (+8.2%) and the label is a coin flip, which is the run telling me the spread is not in either.
+
+The one effect that did survive is the within-launch drift, and this batch is its strongest yet: run 2 faster
+than run 1 in **6 of 6** launches (median +21.5%; +22.1, +7.1, +27.1, +13.2, +20.9, +23.8). Pooled across the
+five batches of this shape now on disk - 54, 30, 18 and 36 pairs - that is **138 pairs, median +14.2%, 90th
+percentile 32.9%, later run faster in 111 of 138**. Five batches, same sign, same size.
+
+At the launch level this batch breaks the pattern: its first launch ranks 4 of 6, so the count of batches whose
+first launch is their fastest is now **3 of 4** - the coin flip with one more coin, unchanged in meaning.
+
+**Machine state, twenty rows now (six with fingerprints from a driver-run batch).** All six rows of this batch
+carry a fingerprint (25/25/25/25/25/26 lines, six distinct digests) - the first batch where that happened on a
+run driven by the batch file rather than by the harness directly. The best correlate of a launch's median decode
+is free RAM, +0.88 at the start of the launch and +0.85 at its lowest point during it, which looks like a finding
+until you notice free RAM falls monotonically through the batch (11.16, 11.05, 10.90, 10.63, 9.87, 8.81) and so
+does everything else that drifts with time - uptime is -0.71 against the same column. Free RAM and "later" are
+the same number here, and n=6 cannot separate them. Mean utilisation is +0.16 and clock mean -0.20, both
+pointing wherever the sampler says not to look.
+
+The slowest launch of the six, and the one that drags the B label down, is also the only one with background
+work in its record: `msiexec.exe`, 79 samples, an installer running through it, and the lowest free RAM of the
+batch. By the doc's own rule - anything that changes between the two runs of a comparison must be identical -
+that launch is spoiled for arm purposes, and dropping it moves the label difference from +8.2% to +9.1% and
+leaves the two remaining rounds still disagreeing in sign (+10.1 and -6.4). So the run's answer does not depend
+on the contaminated row, but the row should not have been there, and the sampler caught it: that is the feature
+doing its job for the first time.
+
+**What this settles, and what it does not.** Item 1 is answered, and the answer is the bad kind: the control
+works, the arms agree, and what they agree on is that a six-launch batch of this shape cannot resolve anything
+below about 20%. The board's claims of 5-13% are not results and the doc's advice - interleave the arms, or
+place them by clock, and compare only within a position - is now backed by a run that did exactly that. What
+it does not settle is the cold-start rule, which is still 3 of 4 and still a coin flip, and the within-launch
+drift, which is not a coin flip and has now survived five batches.
+
 What I would do with this, in the same order as the list above: the within-launch drift is real and item 2 stands
-on it - four batches now. Item 1 - interleave the arms or place them by clock - is the one this run was supposed
-to settle, and it came back 2 of 3, so it is still open and the honest move is to stop collecting batches of this
-shape (they all look like this one) and run the interleaved version instead: same arm, arms placed in a different
-order in each repetition, so the position effect shows up as disagreement between repetitions instead of as a
-result. Which is what the batch file does, now that it is actually running it.
+on it - five batches now, 138 pairs, same sign in every one of them. Item 1 - interleave the arms or place them by
+clock - was the one the batches of this shape could not settle, and the interleaved version has now settled it: the
+position effect shows up as disagreement between repetitions, which is what it was built to do, and the answer it
+gives is that nothing below about 20% is a result at six launches. So the move now is not another batch: it is to
+stop quoting the 5-13% claims in `SWEEP_ADAPT_KV.md` and `CACHE_VS_DRAFTS.md` as results, and to read the sweeps
+off the warm column (item 2) and turn by turn (item 3), both of which need no re-run at all.
