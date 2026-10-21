@@ -11,6 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 import noise_floor_unattended as N  # noqa: E402
+import read_sweep_warm as W  # noqa: E402
 import strata_ab as A  # noqa: E402
 
 ARMS = [("base", []), ("b", ["--x 1"]), ("c", ["--y 2"])]
@@ -249,6 +250,31 @@ class TheCacheOffBatchFile(TheBatchFile):
         _, out, _ = dry_run(*self.harness_args())
         self.assertNotIn("--expert-cache 0", out)
         self.assertIn("--expert-cache 1", out)
+
+
+class TestRepeatOfBaseline(unittest.TestCase):
+    # a repeat of the baseline is the same command run again, so the gap on its row IS the
+    # noise floor and the row cannot be judged as an arm.  The two sweeps label it
+    # differently - adapt-kv writes "as configured (repeat)", the cache-off batch just runs
+    # the baseline three times - so both spellings have to land the same way.  The old code
+    # compared label sets and so let adapt-kv's row through as an arm; its 70% gap was then
+    # read as the noise floor, which is the wrong way round.
+    def test_the_two_ways_the_sweeps_label_a_repeat(self):
+        self.assertTrue(W.is_repeat_of_baseline("as configured (repeat)", "as configured"))
+        self.assertTrue(W.is_repeat_of_baseline("as configured", "as configured"))
+        self.assertTrue(W.is_repeat_of_baseline("as configured - repeat", "as configured"))
+        self.assertTrue(W.is_repeat_of_baseline("as configured 2", "as configured"))
+
+    def test_a_real_arm_is_not_a_repeat(self):
+        base = "as configured"
+        for label in ("expert-cache 1 (off in effect)", "kv-3.5 (no min)", "as configured --min_keep 1"):
+            self.assertFalse(W.is_repeat_of_baseline(label, base), label)
+
+    def test_nothing_matches_an_empty_label(self):
+        # the tool asks with the baseline's own label, so it never sees a doubled suffix;
+        # what it does have to refuse is two blanks matching each other.
+        self.assertFalse(W.is_repeat_of_baseline("", ""))
+        self.assertFalse(W.is_repeat_of_baseline("(repeat)", ""))
 
 
 if __name__ == "__main__":

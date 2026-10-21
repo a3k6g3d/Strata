@@ -37,12 +37,29 @@ import argparse
 import glob
 import json
 import os
+import re
 import statistics
 import sys
 
 # BENCH_NOISE.md, "Six launches, two arms, and the arms are the same arm": the
 # spread of six launches that ran the identical 439-character command.
 NOISE_FLOOR_PCT = 24.3
+
+# A repeat of the baseline is the same command run again, so the gap on its row IS the
+# noise and it cannot be judged as an arm.  Sweeps label those rows in more than one way
+# - adapt-kv writes "as configured (repeat)", the cache-off batch just runs the baseline
+# three times and every row lands with the same label - so the comparison strips the
+# suffix before it asks, and an exact match is only the easy case of it.
+REPEAT_SUFFIX = re.compile(r"[\s\-]+(?:repeat|repeats|control|noise|rerun|re-?run)\b|\((?:repeat|control|noise|rerun|re-?run)\)", re.I)
+LAUNCH_SUFFIX = re.compile(r"[\s\-]+(?:launch|run|arm|#[0-9]+|[0-9]+)$", re.I)
+
+
+def is_repeat_of_baseline(label, baseline_label):
+    def norm(s):
+        s = REPEAT_SUFFIX.sub(" ", s.strip().lower())
+        s = LAUNCH_SUFFIX.sub(" ", s).strip()
+        return re.sub(r"\s+", " ", s).strip()
+    return norm(label) == norm(baseline_label) and norm(label) != ""
 
 
 def load_arm(path):
@@ -157,8 +174,8 @@ def main():
     # baseline that is also the first launch of the session is the row the doc already distrusts.
     baseline_label = baseline["arm"].strip().lower()
     gaps = [(label, 100.0 * (w / b_warm - 1.0)) for label, w, _ in rows if w and b_warm]
-    noise_gaps = [abs(g) for label, g in gaps if label.strip().lower() == baseline_label]
-    arm_gaps = [(label, abs(g)) for label, g in gaps if label.strip().lower() != baseline_label]
+    noise_gaps = [abs(g) for label, g in gaps if is_repeat_of_baseline(label, baseline_label)]
+    arm_gaps = [(label, abs(g)) for label, g in gaps if not is_repeat_of_baseline(label, baseline_label)]
 
     if not arm_gaps:
         print("no arm rows to judge: every row here is a repeat of the baseline.")
@@ -179,7 +196,7 @@ def main():
         print("only figure to check against is the floor - and if the baseline is also the first")
         print("launch of the session, the doc's own caveat applies to it.")
         limit, limit_src = NOISE_FLOOR_PCT, "the floor from BENCH_NOISE.md"
-    signs = {g > 0 for label, g in gaps if label.strip().lower() != baseline_label}
+    signs = {g > 0 for label, g in gaps if not is_repeat_of_baseline(label, baseline_label)}
     consistent = len(signs) == 1
     if biggest > limit:
         print("over it (%s), so the gap is %s's, not the noise's%s."
