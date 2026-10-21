@@ -94,6 +94,19 @@ SWEEPS = {
                  ("vram-reserve 768", ["--vram-reserve-mib 768"]),
                  ("as configured (repeat)", [])],
     },
+    # The control the last three noise-floor batches could not give: the same arm, launched in a different order each
+    # repetition (A B, B A, A B), so an arm's position in the session stops being the same variable as the machine's
+    # drift.  Both arms are byte-identical, so every difference between them IS the noise - which is the point: the
+    # batches on disk put the same arm in the same position every time, so their spread can never separate the two.
+    # Three rounds of two arms is the smallest run that has a round where the order is reversed at all.
+    "noise-interleaved": {
+        "note": ("The same arm twice, the two taking turns (round 1 A B, round 2 B A, round 3 A B) so the machine's "
+                 "drift is not the same variable as an arm's position.  Nothing about the engine changes between the "
+                 "two arms, so any difference between them - within a round, or between rounds - is the noise, "
+                 "measured with the position effect broken up rather than baked in."),
+        "arms": [("as configured", []),
+                 ("as configured (repeat)", [])],
+    },
 }
 
 

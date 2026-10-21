@@ -17,6 +17,7 @@ file that may have moved since.
 """
 from __future__ import annotations
 
+import shlex
 import subprocess
 import sys
 import time
@@ -35,6 +36,25 @@ HARNESS = [sys.executable, "-u", str(ROOT / "tools" / "strata_ab.py"),
            "--runs", "6", "--noise-floor", "3"]
 READY_TIMEOUT = 900          # seconds to wait for the GPU to actually empty
 RESTART_WAIT = 240           # seconds to give the server to come back up
+
+
+def opts(argv) -> tuple:
+    """(the harness command to run, the log to write) - both overridable, both with the old defaults.
+
+    --harness-args appends to HARNESS rather than replacing it: the config, the suite and the runs are the parts
+    that have been the same on every batch so far, and the thing that changes from run to run is the shape of the
+    schedule (--sweep/--rounds/--order).  --log keeps the batches apart; three batches have already written over
+    one log, and the log is the only thing that survives a run.
+    """
+    harness, log = list(HARNESS), LOG
+    if "--harness-args" in argv:
+        i = argv.index("--harness-args") + 1
+        harness += shlex.split(argv[i]) if i < len(argv) else []
+    if "--log" in argv:
+        i = argv.index("--log") + 1
+        if i < len(argv):
+            log = Path(argv[i])
+    return harness, log
 
 
 def say(msg: str) -> None:
@@ -173,6 +193,8 @@ def check(p, argv, cmd) -> int:
 
 
 def main() -> int:
+    global LOG
+    harness, LOG = opts(sys.argv[1:])
     say(f"driver up (pid {psutil.Process().pid}); log: {LOG}")
     say("my process tree: " + " <- ".join(f"{n}({p})" for p, n in tree_of_me()))
 
@@ -232,13 +254,14 @@ def main() -> int:
         say(f"gave up waiting {READY_TIMEOUT} s for the GPU to empty; not running - the numbers would be meaningless")
         return 1
 
-    say("running: " + " ".join(HARNESS[1:]))
+    say("running: " + " ".join(harness[1:]))
     t = time.time()
     # the harness's own printout has to go somewhere durable: a WMI-launched process has
-    # no console, so without this the run happens and its story is never told
-    out_path = LOG.with_name("noise-floor-harness-out.log")
+    # no console, so without this the run happens and its story is never told.  Named after
+    # the log, so a second batch does not write over the first one's story either.
+    out_path = LOG.with_name(LOG.stem + "-harness-out.log")
     with open(out_path, "w", encoding="utf-8") as out_fh:
-        rc = subprocess.call(HARNESS, stdout=out_fh, stderr=subprocess.STDOUT)
+        rc = subprocess.call(harness, stdout=out_fh, stderr=subprocess.STDOUT)
     say(f"harness exited {rc} after {(time.time() - t) / 60:.1f} min; output: {out_path}")
 
     if argv:

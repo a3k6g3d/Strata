@@ -48,6 +48,37 @@ class Schedule(unittest.TestCase):
             self.assertEqual(sorted(i for r, i, _ in plan if r == rnd), list(range(len(A.SWEEPS["adapt-kv"]["arms"]))))
 
 
+class NoiseInterleaved(unittest.TestCase):
+    """The control the batches on disk cannot be: the same arm twice, so any difference IS the noise."""
+
+    def setUp(self):
+        self.arms = A.SWEEPS["noise-interleaved"]["arms"]
+
+    def test_the_two_arms_are_the_same_command(self):
+        # the point of the sweep: nothing about the engine changes between them, so a difference
+        # between the two labels is the noise, not an effect.  Only the label differs.
+        self.assertEqual(len(self.arms), 2)
+        self.assertEqual([args for _, args in self.arms], [[], []])
+        self.assertEqual(len({label for label, _ in self.arms}), 2)
+
+    def test_the_rounds_put_the_arms_in_a_different_order(self):
+        plan = A.schedule(self.arms, 3)
+        self.assertEqual([a[0] for _, _, a in plan],
+                         ["as configured", "as configured (repeat)",
+                          "as configured (repeat)", "as configured",
+                          "as configured", "as configured (repeat)"])
+        # ... which is the whole reason it exists: each label sits at both positions, so a
+        # within-round difference is not the same variable as the machine's drift.
+        for label in ("as configured", "as configured (repeat)"):
+            pos = [n for n, (_, _, a) in enumerate(plan) if a[0] == label]
+            self.assertEqual(len(pos), 3)
+            self.assertNotEqual(pos[0] % 2, pos[1] % 2)
+
+    def test_one_round_of_it_is_still_the_arms_in_order(self):
+        self.assertEqual([a[0] for _, _, a in A.schedule(self.arms, 1)],
+                         ["as configured", "as configured (repeat)"])
+
+
 class Options(unittest.TestCase):
     def test_a_dry_run_prints_the_rounds_and_the_runs_per_launch(self):
         rc, out, _ = dry_run("--sweep", "adapt-kv", "--rounds", "3", "--runs", "6")
