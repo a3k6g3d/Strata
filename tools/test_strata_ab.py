@@ -82,6 +82,43 @@ class NoiseInterleaved(unittest.TestCase):
                          ["as configured", "as configured (repeat)"])
 
 
+class CacheOff(unittest.TestCase):
+    """The arm the original four could not make: `--expert-cache 0` is not off while a profile is in use."""
+
+    def setUp(self):
+        self.arms = A.SWEEPS["cache-off"]["arms"]
+
+    def test_the_two_arms_differ_by_exactly_one_flag(self):
+        self.assertEqual(len(self.arms), 2)
+        self.assertEqual(self.arms[0][1], [])                                # the baseline, unchanged
+        self.assertEqual(self.arms[1][1], ["--expert-cache 1"])
+
+    def test_the_arm_does_not_ask_for_zero(self):
+        # the whole reason this sweep exists: generate.cpp:3499 turns a 0 back into auto while a profile is in use,
+        # so an arm labelled cache-off and spelled `--expert-cache 0` measures the baseline under a second label.
+        for _, args in self.arms:
+            for i, a in enumerate(args):
+                if a.startswith("--expert-cache"):
+                    val = a.split(" ", 1)[1] if " " in a else args[i + 1]
+                    self.assertNotEqual(val.strip(), "0", f"{a!r} is auto on this rig, not off")
+
+    def test_the_note_states_the_confound_it_cannot_measure_away(self):
+        # a 1-expert cache frees ~3.7 GiB that the KV and prompt path will take, so the arm is two changes, not one
+        note = A.SWEEPS["cache-off"]["note"].lower()
+        self.assertIn("3.7", note)
+        self.assertIn("generate.cpp:3499", A.SWEEPS["cache-off"]["note"])    # says why 0 is not off
+
+    def test_the_rounds_put_the_arms_in_a_different_order(self):
+        plan = A.schedule(self.arms, 3)
+        labels = [a[0] for _, _, a in plan]
+        self.assertEqual(labels, [self.arms[0][0], self.arms[1][0],
+                                  self.arms[1][0], self.arms[0][0],
+                                  self.arms[0][0], self.arms[1][0]])
+        for _, args in self.arms:                                            # each configuration sits at both positions
+            pos = [n for n, (_, _, a) in enumerate(plan) if a[1] == args]
+            self.assertNotEqual(pos[0] % 2, pos[1] % 2)
+
+
 class Options(unittest.TestCase):
     def test_a_dry_run_prints_the_rounds_and_the_runs_per_launch(self):
         rc, out, _ = dry_run("--sweep", "adapt-kv", "--rounds", "3", "--runs", "6")

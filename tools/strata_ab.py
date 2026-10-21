@@ -99,6 +99,24 @@ SWEEPS = {
     # drift.  Both arms are byte-identical, so every difference between them IS the noise - which is the point: the
     # batches on disk put the same arm in the same position every time, so their spread can never separate the two.
     # Three rounds of two arms is the smallest run that has a round where the order is reversed at all.
+    # The cache-off arm the original four could not make.  `--expert-cache 0` is not off: generate.cpp:3499 turns a 0
+    # back into auto whenever a profile is in use, which is what happened to both arms labelled cache-off in
+    # bench/results/ab-cache-vs-drafts-agent - their own engine logs say 1951/1954 experts, not zero.  So off has no
+    # spelling on this rig while a profile is loaded, and the arm asks for ONE expert instead: the flag truncates the
+    # ranked list, so the cache holds a single pair and everything else is served off the fast path.  The arm is only
+    # believed if the engine's own log line reads 1 expert - that line is the check the old arm failed.
+    # Stating the confound rather than hiding it: a 1-expert cache hands ~3.7 GiB of VRAM back, and the KV and prompt
+    # path will take it, so this arm is "cache off AND 3.7 GiB given back", not cache off alone.
+    "cache-off": {
+        "note": ("Does the expert cache carry the speed, on its own?  The baseline against a run whose GPU cache holds "
+                 "one expert, so the cache is off in effect (`--expert-cache 0` is not: the parser turns a 0 back into "
+                 "auto while a profile is in use, generate.cpp:3499).  Same model, same prompts, same runs, one engine "
+                 "argument changed.  The arm also hands ~3.7 GiB of VRAM back to the KV and prompt path, so it is "
+                 "'cache off plus that memory given back', not cache off alone.  Read the engine's own log line in each "
+                 "arm before believing any of it: it must say 1951 experts and 1."),
+        "arms": [("as configured", []),
+                 ("expert-cache 1 (off in effect)", ["--expert-cache 1"])],
+    },
     "noise-interleaved": {
         "note": ("The same arm twice, the two taking turns (round 1 A B, round 2 B A, round 3 A B) so the machine's "
                  "drift is not the same variable as an arm's position.  Nothing about the engine changes between the "
