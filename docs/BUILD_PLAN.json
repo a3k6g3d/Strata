@@ -1,0 +1,138 @@
+{
+  "schema": "strata-build-plan/1",
+  "branch": "speed-work-0.1.43",
+  "head_at_writing": "3ac377f3",
+  "purpose": "The remaining build work, in the order it can be done, each item sourced to the measurement that justifies it. Tuning is deliberately last - see deferred_tuning.",
+  "machine": {
+    "gpu": "RTX 5070 12 GB",
+    "cpu": "i5-10600K (AVX2, no AVX-512)",
+    "ram": "64 GB DDR4-2666",
+    "link": "PCIe Gen4 x16, measured; do not budget bandwidth off the old Gen2/Gen3 line",
+    "model": "SC117 Qwen3.8-Flash-Next abliterated, IQ3_S"
+  },
+  "measurement_rules": {
+    "noise_floor_pct": 24.3,
+    "floor_source": "docs/BENCH_NOISE.md",
+    "control": "interleaved A-B / B-A / A-B, baseline repeated",
+    "state_capture": "tools/bench_state.py (clocks, utilisation, power, throttle, free RAM, background load, at start/every 10s/end)",
+    "tool_of_record": "tools/summarize_ab_sweep.py",
+    "test_suite": "tools/test_strata_ab.py (28 passing)",
+    "rule": "an arm is compared against a same-configuration arm, never against a token sequence (docs/REJECTED_PROPOSALS.md #6)",
+    "observed_gpu_utilisation_pct_on_this_machine": {
+      "min_mean": 20.6,
+      "max_mean": 72.3,
+      "runs_with_state": 29,
+      "source": "state.during.util_gpu_pct_mean in bench/results/*/*/results.json",
+      "meaning": "the headroom this plan is about is measured on this card, not assumed"
+    }
+  },
+  "not_deferrable": [
+    {
+      "thing": "the expert cache stays on",
+      "why": "-34.2% decode medians with it off (36.10 -> 23.75 tok/s), groups 12.20 tok/s apart = 13.6x the widest within-group spread, six-for-six engine logs (2,169 experts / 4.16 GiB vs 1 expert / 0.00 GiB), drift running the wrong way to help the arm",
+      "source": "docs/CACHE_VS_DRAFTS.md, bench/results/ab-cache-off/",
+      "status": "this is the one result in the line that is not marginal, so everything below is built on the cache being there"
+    },
+    {
+      "thing": "the 3.38 GiB of VRAM handed back by the arm",
+      "why": "measured from the state blocks (11,361 vs 7,899 MiB used at start); it changes what fits on the card, so it is structural, not a knob",
+      "source": "bench/results/ab-cache-off/ state blocks"
+    }
+  ],
+  "items": [
+    {
+      "id": 1,
+      "title": "Fix the eager-path doorbell payload so the in-engine profiler works",
+      "needs_gpu": true,
+      "status": "open, and it is the gate on item 3",
+      "source": "docs/A770_SPEED_SPEC.md, 'Both in-engine profilers are broken'",
+      "detail": "STRATA_VERIFY_PROFILE and STRATA_VERIFY_EAGER both fail with 'verify: layer 0 rang but its payload never arrived whole', reproducibly 3/3. Likely defect: the eager path does not publish the doorbell payload doorbell_payload_ready waits for, so the host spins to the 2 s timeout. Debug-only path; normal graph-mode inference is unaffected.",
+      "caveat": "recorded on the A770/SYCL build. Confirm it reproduces on this CUDA build before treating it as the same bug.",
+      "done_when": "either the profiler produces per-stage timings on this CUDA build, or the failure is confirmed A770-only and item 3 proceeds on item 2's numbers alone"
+    },
+    {
+      "id": 2,
+      "title": "Measure the doorbell round-trip latency (ring -> host -> flag -> GPU) and how much of the window is idle GPU time",
+      "needs_gpu": true,
+      "status": "open, cheapest real step, needs no profiler",
+      "source": "docs/A770_SPEED_SPEC.md, end of 'GPU utilization: the GPU is mostly IDLE during decode'",
+      "done_when": "a measured round-trip latency in ms and a measured idle-GPU fraction on this machine, from interleaved runs with state capture, against the 24.3% floor"
+    },
+    {
+      "id": 3,
+      "title": "Overlap the CPU expert pool with GPU work during decode",
+      "needs_gpu": true,
+      "status": "blocked on items 1 and 2 - the source says do not start it blind",
+      "source": "docs/A770_SPEED_SPEC.md, 'The window is nearly GPU + CPU serial (architectural hypothesis)' and 'Per-stage breakdown obtained (decisive)'",
+      "detail": "on the A770 the wait-for-CPU-flag stages plus copy-and-combine are ~87% of the window and every actual GPU kernel is small; worker count was already tried and did nothing, so it is a scheduling change, not a sizing one.",
+      "caveat": "the 87% figure is from the Arc card over PCIe 3.0 x4, not from this machine. The shape is the same - decode here is CPU-bound, and this card idles at 20-72% during runs - but the size is not transferred.",
+      "done_when": "the window shrinks by more than the 24.3% floor under the interleaved control, with the idle-GPU fraction from item 2 visibly falling as the cause"
+    },
+    {
+      "id": 4,
+      "title": "Run cache-off on the non-agent suite",
+      "needs_gpu": true,
+      "status": "open, the only place the -34% has never been measured",
+      "source": "docs/CACHE_VS_DRAFTS.md",
+      "done_when": "six launches, interleaved, engine logs checked arm by arm - and the -34% either reproduces on this suite or the two suites are stated as disagreeing"
+    },
+    {
+      "id": 5,
+      "title": "Write up the adapt-kv sweep honestly: nothing separated",
+      "needs_gpu": false,
+      "status": "open, no machine time needed, reads straight off disk",
+      "source": "docs/SWEEP_ADAPT_KV.md, bench/results/ab-adapt-kv-sweep/, tools/read_sweep_warm.py",
+      "detail": "13 arms, three runs each, all within their own noise. Its own noise row is the 70.4% baseline repeat and its largest arm gap is 72.6%, so it only barely clears its floor - which is why the honest verdict is 'nothing separated', not a story about which arm won.",
+      "done_when": "docs/SWEEP_ADAPT_KV.md and bench/results/ab-adapt-kv-sweep/SWEEP_ADAPT_KV.md tell the same story, and every number in both reproduces through tools/summarize_ab_sweep.py or tools/read_sweep_warm.py"
+    }
+  ],
+  "deferred_tuning": {
+    "why": "the sweep that tried to settle these produced nothing above its own floor, so tuning now would be fitting noise and the decision would have to be re-made after the build anyway",
+    "already_settled_do_not_resweep": [
+      "--adapt-swaps 8",
+      "--ple-io direct",
+      "--vram-reserve-mib 640",
+      "spec 4 / min-p 0.5",
+      "no gain: --kv k8v4, --prefill auto:16384, a smaller VRAM reserve, --adapt-async"
+    ],
+    "open_knobs": [
+      {
+        "lever": "--pcie-frac",
+        "note": "real lever, already automatic - leave it unset unless the experiment is about the bus share"
+      },
+      {
+        "lever": "--pool-workers",
+        "note": "real lever, already measured as a wash on the A770; do not re-open as a sizing question"
+      },
+      {
+        "lever": "KV size / quantisation",
+        "note": "real lever, its own experiment with its own parity gate, never a side effect of a memory sweep"
+      }
+    ],
+    "source_for_all_of_it": "docs/REJECTED_PROPOSALS.md, CLAUDE.md, docs/SWEEP_ADAPT_KV.md",
+    "gate": "any arm must clear the 24.3% floor under the interleaved control, and the tool must compute that verdict rather than assert it"
+  },
+  "execution": {
+    "mode": "end-to-end by Claude, no per-package review",
+    "my_role": "recommendations are binding as recommendations - take them, but a gate that fails stops the item and gets reported, not worked around",
+    "rules": [
+      "one change per commit, message says what was measured, not what was hoped",
+      "every number written into a doc must reproduce off disk with the tool of record named in the doc",
+      "the verdict line in any tool must be computed, never asserted",
+      "numbers already in the docs are correct as written - do not re-derive them from rounded medians",
+      "run tools/test_strata_ab.py before committing; it must stay at 28 passing"
+    ],
+    "order_of_work": [
+      "item 5 first - it needs no GPU and it is the write-up the others get judged against",
+      "then item 2, the latency measurement, which needs no profiler and unblocks item 3",
+      "item 1 in parallel, since it gates the profiler that item 3 wants",
+      "item 4 whenever the machine is free",
+      "item 3 last, and only after 1 and 2 have produced numbers"
+    ]
+  },
+  "handoff": {
+    "this_file_is_the_work_plan": true,
+    "the_sweep_plan_format_is": "bench/results/2026-10-06-community-rtxpro-v0140/plan.example.json",
+    "note": "the two are different documents and should stay separate - one says what to build, the other says what to run to check a piece that got built"
+  }
+}
