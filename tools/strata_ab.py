@@ -124,6 +124,83 @@ SWEEPS = {
                  ("adapt-swaps 32", ["--adapt-swaps 32"]),
                  ("adapt-swaps 48", ["--adapt-swaps 48"])],
     },
+    # The control the last three noise-floor batches could not give: the same arm, launched in a different order each
+    # repetition (A B, B A, A B), so an arm's position in the session stops being the same variable as the machine's
+    # drift.  Both arms are byte-identical, so every difference between them IS the noise - which is the point: the
+    # batches on disk put the same arm in the same position every time, so their spread can never separate the two.
+    # Three rounds of two arms is the smallest run that has a round where the order is reversed at all.
+    # The cache-off arm the original four could not make.  `--expert-cache 0` is not off: generate.cpp:3499 turns a 0
+    # back into auto whenever a profile is in use, which is what happened to both arms labelled cache-off in
+    # bench/results/ab-cache-vs-drafts-agent - their own engine logs say 1951/1954 experts, not zero.  So off has no
+    # spelling on this rig while a profile is loaded, and the arm asks for ONE expert instead: the flag truncates the
+    # ranked list, so the cache holds a single pair and everything else is served off the fast path.  The arm is only
+    # believed if the engine's own log line reads 1 expert - that line is the check the old arm failed.
+    # Stating the confound rather than hiding it: a 1-expert cache hands ~3.7 GiB of VRAM back, and the KV and prompt
+    # path will take it, so this arm is "cache off AND 3.7 GiB given back", not cache off alone.
+    "cache-off": {
+        "note": ("Does the expert cache carry the speed, on its own?  The baseline against a run whose GPU cache holds "
+                 "one expert, so the cache is off in effect (`--expert-cache 0` is not: the parser turns a 0 back into "
+                 "auto while a profile is in use, generate.cpp:3499).  Same model, same prompts, same runs, one engine "
+                 "argument changed.  The arm also hands ~3.7 GiB of VRAM back to the KV and prompt path, so it is "
+                 "'cache off plus that memory given back', not cache off alone.  Read the engine's own log line in each "
+                 "arm before believing any of it: it must say 1951 experts and 1."),
+        "arms": [("as configured", []),
+                 ("expert-cache 1 (off in effect)", ["--expert-cache 1"])],
+    },
+    # Every way this engine has to produce more than one token per verify window, against the configuration's own (the
+    # retrained Basalt MTP layer, --spec 4, prompt-lookup suffix drafts at their default of 3).  One flag per arm; a flag
+    # given again here overrides the configuration's, because the engine keeps the last value it reads.  Not here: the
+    # coupled / Gumbel draft sampling (STRATA_SPEC_COUPLED, STRATA_SPEC_GUMBEL), which only acts on requests sampled at a
+    # temperature above 0 and this suite is greedy; EAGLE, Medusa, a separate small draft model and diffusion or NCM
+    # drafters, which this engine does not implement.
+    "spec-methods": {
+        "note": ("Which multi-token method carries the speed on this machine?  The configuration's MTP drafting against no "
+                 "speculation, the model's original MTP head, MTP without prompt lookup, MTP with a prompt-lookup chain after "
+                 "its drafts, a 4-bit draft layer and a wider verify window, one flag per arm, the arms taking turns."),
+        "arms": [("as configured", []),
+                 ("no speculation", ["--spec 1"]),
+                 ("original MTP head", ["--mtp mtp-rt"]),
+                 ("MTP without prompt lookup", ["--suffix-draft 0"]),
+                 ("MTP + lookup chain 4", ["--lookup-chain 4"]),
+                 ("4-bit draft layer", ["--mtp-q4 all"]),
+                 ("spec 6", ["--spec 6"]),
+                 ("spec 2", ["--spec 2"])],
+    },
+    "spec-low": {
+        "note": ("How much of the speed does the verify window carry?  The configuration's --spec 4 against the smallest window "
+                 "the engine accepts on this pack, --spec 2, and --spec 3 between them, the arms taking turns."),
+        "arms": [("as configured", []),
+                 ("spec 2", ["--spec 2"]),
+                 ("spec 3", ["--spec 3"])],
+    },
+    # The low end of the window.  "No speculation" cannot be an arm on this model: a native (IQ) pack needs --spec T with T >= 2
+    # ("is a native (IQ) pack: it needs --native SHARD1, --spec T (T >= 2) and --prefill CHUNK", seen 2026-10-21 when --spec 1
+    # exited at start-up).  --spec 2 is the smallest window the engine accepts - still MTP, one draft per check - so it bounds how
+    # much of the speed the drafting carries from below without being "off".  Run with the baseline taking turns beside it.
+    # The one flag spec-methods put above the noise (+3.4% and +2.4% on engine decode, both launches above both baseline launches)
+    # in a sweep whose baseline launches were 92 minutes apart: turned off and on, taking turns, to see whether it holds.
+    "lookup-off": {
+        "note": ("Is prompt lookup (suffix drafts, default 3) a net cost on this machine?  The configuration against "
+                 "--suffix-draft 0, the two taking turns, so the position effect that the first reading could not rule out "
+                 "is broken up."),
+        "arms": [("as configured", []),
+                 ("prompt lookup off", ["--suffix-draft 0"])],
+    },
+    # Build-plan item 3, retargeted (docs/WINDOW_PROFILE_CUDA.md): the GPU waits 59% of a decode window for the PCIe share of the
+    # missed experts.  The engine picks that share itself - 0.55 from the link probe, then PcieAuto refines it from the CPU pool's
+    # speed in the first decode windows (up to three updates, steps of 0.05, clamped to 0.10-0.60); on 2026-10-21 it moved to 0.45.
+    # An explicit --pcie-frac fixes the share from the first token and switches that refinement off, so 0.45 is the control for
+    # "fixed from the start" against the automatic arm, and 0.60 is the top of what the automatic rule would ever choose.
+    # Less share on PCIe means more of the missed experts on the CPU pool, whose wait was 6% of the window.
+    "pcie-frac": {
+        "note": ("Does a different PCIe share of the missed experts shorten the decode window?  The automatic share (refined to 0.45 "
+                 "on this machine) against fixed 0.25, 0.35, 0.45 and 0.60, one flag per arm, the arms taking turns."),
+        "arms": [("as configured", []),
+                 ("pcie-frac 0.25", ["--pcie-frac 0.25"]),
+                 ("pcie-frac 0.35", ["--pcie-frac 0.35"]),
+                 ("pcie-frac 0.45", ["--pcie-frac 0.45"]),
+                 ("pcie-frac 0.60", ["--pcie-frac 0.60"])],
+    },
     "noise-interleaved": {
         "note": ("The same arm twice, the two taking turns (round 1 A B, round 2 B A, round 3 A B) so the machine's "
                  "drift is not the same variable as an arm's position.  Nothing about the engine changes between the "
