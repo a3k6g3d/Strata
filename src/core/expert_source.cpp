@@ -1077,6 +1077,8 @@ void FileExpertSource::close() {
         stage_grew_ = false;
     }
     ram_reads_.store(0);
+    ram_us_.store(0);
+    if (const char* v = std::getenv("STRATA_RAM_TIER_CLOCK"); v != nullptr && v[0] != '\0') ram_clock_ = v[0] != '0';
     warm_stamp_.reset();
     warm_hits_.store(0);
     warm_count_.store(0);
@@ -3568,9 +3570,13 @@ const uint8_t* FileExpertSource::blob(int64_t layer, int64_t expert) {
     const uint8_t* result = nullptr;
     bool from_files = true;
     if (complement_ready_) {
+        const auto t0 = ram_clock_ ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
         result = resident_blob(index);
         if (result != nullptr) {
             ram_reads_.fetch_add(1, std::memory_order_relaxed);
+            if (ram_clock_)   // the RAM tier's share of the copy path, so the two tiers can be told apart
+                ram_us_.fetch_add((uint64_t) std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count(),
+                                  std::memory_order_relaxed);
             from_files = false;
         } else if (!override_.empty() && override_[index] != nullptr) {
             result = override_[index];

@@ -13534,6 +13534,7 @@ int main(int argc, char** argv) {
             // CS-T: the RAM and file tiers of this request (the mmap source; 0 with the arena)
             const int64_t ram0 = src.ram_reads(), files0 = src.file_reads();
             const uint64_t file_bytes0 = src.file_read_bytes();
+            const double fms0 = src.file_ms(), rms0 = src.ram_ms();   // the two tiers' clocks, for the per-window line
             const int64_t decode_look0 = drive.d.cache_hits + drive.d.cache_admitted + drive.d.cache_refused;
             const int64_t offload0 = drive.d.offload_entries;   // #588
             pcie_auto.mark(drive.d.ms_run, drive.d.multi_misses);   // the prompt's windows are not the decode's
@@ -14467,6 +14468,13 @@ int main(int argc, char** argv) {
                     if (st == 0) std::fprintf(stderr, "strata decode GPU stages (ms/window):%s\n", pr.c_str());   // text as before
                     else std::fprintf(stderr, "strata decode GPU stages, stage %d (ms/window):%s\n", st, pr.c_str());
                 }
+                // CS-T: the two tiers of the copy path, per window, beside the stage table.  The RAM tier's time is
+                // 0 unless STRATA_RAM_TIER_CLOCK=1 (the clock is off on that path by default, see `ram_ms`).
+                if (srcp == &src)
+                    std::fprintf(stderr, "strata decode tier split (per window): RAM %lld blobs %.2f ms, files %lld blobs %.2f ms%s\n",
+                                 (long long) ((src.ram_reads() - ram0) / w), (src.ram_ms() - rms0) / w,
+                                 (long long) ((src.file_reads() - files0) / w), (src.file_ms() - fms0) / w,
+                                 src.ram_clock_on() ? "" : " (RAM clock off: STRATA_RAM_TIER_CLOCK)");
             }
             if (drive.d.fs) std::fprintf(stderr, "strata serve: %s\n", drive.d.fs->report().c_str());
             if (!cancelled) {

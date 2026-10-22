@@ -770,6 +770,11 @@ public:
     /// the time spent reading the files, summed over threads.
     uint64_t file_blob_bytes() const { return file_blob_bytes_.load(std::memory_order_relaxed); }
     double file_ms() const { return (double) file_us_.load(std::memory_order_relaxed) / 1000.0; }
+    /// The RAM tier's time, the file tier's `file_ms` beside it: the clock is off unless STRATA_RAM_TIER_CLOCK=1,
+    /// because this path is far hotter than the file's (thousands of blobs a request) and the clock would be the
+    /// thing being measured.  With it off the count is right and the time is 0.
+    double ram_ms() const { return (double) ram_us_.load(std::memory_order_relaxed) / 1000.0; }
+    bool ram_clock_on() const { return ram_clock_; }
     /// Threads `prefetch` reads the GGUF with (STRATA_FETCH_THREADS, default 8).
     void set_fetch_threads(int n) { fetch_threads_ = n < 1 ? 1 : n; }
     /// #286: read the experts straight from the drive (Windows: FILE_FLAG_NO_BUFFERING, overlapped; Linux: O_DIRECT and
@@ -959,6 +964,8 @@ private:
     void stage_free_events();
     std::atomic<uint64_t> stage_fence_waits_{0};      ///< refills that had to wait for a queued copy
     std::atomic<int64_t> ram_reads_{0};
+    std::atomic<uint64_t> ram_us_{0};   ///< STRATA_RAM_TIER_CLOCK=1 only: the RAM tier's time, `file_us_`'s counterpart
+    bool ram_clock_ = false;            ///< set once at open: the clock is off otherwise (this path is hot)
     std::atomic<uint64_t> file_read_bytes_{0};
     // ---- the Linux I/O path (set_io_prefetch)
     bool io_pf_ = false;
