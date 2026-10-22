@@ -99,3 +99,40 @@ The engine's own share starts at 0.55 and refines to 0.45 in the first decode wi
   measured speed) lands in the flat top of the curve. The plan's gate (decode rising by more than the batch's own noise) is not
   met, so no configuration change is made. Not measured here: whether `waitB` falls at 0.35, which needs the profiler on, and
   whether 0.35 holds over more launches. The re-run that would settle it is the automatic arm against 0.35 alone, five rounds.
+
+---
+
+## Item 3's re-run, the one the section above asked for (2026-10-22)
+
+The automatic share against 0.35 alone, five rounds, two runs each, agent test only, profiler on
+(`bench/results/ab-pcie-frac-rerun`, launched by `tools/pcie_rerun.bat`, which points at `strata-pcieprof.json` - the live
+`strata.json` plus `STRATA_VERIFY_PROFILE=1` and `STRATA_DECODE_TIMING=1`). Each launch's engine log is saved in its own
+folder as `engine-log.txt`, so the pre-registered commands work as written, folder by folder.
+
+**The mechanism moved, cleanly.** `python tools/read_window_profile.py <folder>/engine-log.txt`, `waitB`'s share of the window:
+
+| launch | 1 | 2 | 3 | 4 | 5 |
+|---|---|---|---|---|---|
+| as configured (automatic, settles at 0.45) | 61.2 | 59.9 | 59.2 | 61.9 | 59.7 |
+| `--pcie-frac 0.35` | 55.4 | 55.5 | 56.2 | 54.1 | 56.2 |
+
+No overlap between the arms - the share falls as the flag says it should, which is what the gate asks on this half.
+Corroborated by `PCIe experts / layer-window`: 3.18-3.67 on the baseline against 2.48-2.62 on the arm, a ratio of 0.72
+against the 0.78 the two shares predict.
+
+**The share check, half of it.** All five baseline logs print the refinement (`-> pcie_frac 0.45`, from the 0.55 the probe
+picks), consistently; the arm logs print no share line at all, because an explicit `--pcie-frac` switches the refinement off.
+So the arm's half of the check can only be read through the experts ratio above, and the comparison this batch actually makes
+is 0.45 against 0.35, not the default against 0.35.
+
+**The speed: the two readers disagree, and the plan names the arbiter.** `summarize_ab_sweep.py` (the tool of record) pairs
+each arm launch with the baseline at the same turn: +6.7\*, +2.9\*, +4.5, +10.4, +6.0 - median **+6.0%**, marked above noise,
+the floor being the reference arm's own launches (2.3% over the three warm ones, 6.0% over all five). The sign holds in five
+of five in both readers: every arm launch positive, every baseline launch negative. `read_sweep_warm.py` puts the biggest arm
+gap at 12.7% against its own noise row of 5.6%, and says the two distributions overlap, so that data cannot separate them -
+it answers a different question (whether the per-turn distributions separate) and its verdict is recorded here as a dissent.
+
+**Verdict: the gate is met** - `waitB`'s share falls, and decode rises by more than the noise this batch measures for
+itself, on the tool the plan names. The lever is live, so the next step is the plan's (b): split `waitB` into copy time and
+source time (file tier versus the page-locked RAM tier). No configuration change is proposed yet - 0.35 is one point on a
+curve whose neighbours (0.25, 0.45) the October sweep found flat, so the gain is the mechanism's, not the setting's.

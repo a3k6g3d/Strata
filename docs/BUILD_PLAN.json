@@ -63,7 +63,7 @@
       "id": 3,
       "title": "Cut the GPU's wait for the PCIe share of the missed experts (waitB)",
       "needs_gpu": true,
-      "status": "first step run 2026-10-21: --pcie-frac 0.25/0.35/0.45/0.60 against the automatic share - 0.60 is worse (-7.6%), 0.25 and 0.45 equal automatic, 0.35 is +7.2% per turn but not separated from the batch's own noise; the bus share is not a lever worth the gate. Open: waitB per arm with the profiler on, and an automatic-vs-0.35 re-run (5 rounds) (docs/WINDOW_PROFILE_CUDA.md)",
+      "status": "gate MET 2026-10-22 (the re-run this item asked for): the automatic share against --pcie-frac 0.35 alone, 5 rounds x 2 runs, agent test, profiler on (bench/results/ab-pcie-frac-rerun). waitB's share of the window falls, no overlap between the arms: baseline 61.2/59.9/59.2/61.9/59.7, arm 55.4/55.5/56.2/54.1/56.2 (tools/read_window_profile.py, per-launch engine-log.txt). Decode: the tool of record (tools/summarize_ab_sweep.py) pairs each arm launch with the baseline at the same turn, +6.7/+2.9/+4.5/+10.4/+6.0, median +6.0%, above the batch's own floor (2.3% over the warm baseline launches); sign holds 5 of 5 in both readers. Dissent recorded: tools/read_sweep_warm.py says its per-turn distributions overlap (biggest arm gap 12.7% vs its own noise row 5.6%). The arm logs print no share line (an explicit flag switches the refinement off) so that check is 0.45-vs-0.35 and the arm's half is read through PCIe experts/layer-window 3.18-3.67 -> 2.48-2.62 (ratio 0.72 vs the 0.78 predicted). Next: (b) split waitB into copy time and source time. Earlier, 2026-10-21: --pcie-frac 0.25/0.35/0.45/0.60 against the automatic share - 0.60 is worse (-7.6%), 0.25 and 0.45 equal automatic, 0.35 is +7.2% per turn but not separated from that batch's own noise (docs/WINDOW_PROFILE_CUDA.md)",
       "source": "docs/WINDOW_PROFILE_CUDA.md, tools/read_window_profile.py, bench/results/window-profile-2026-10-21/",
       "detail": "Per window (59.4 ms median, 31 requests): waitB 35.5 ms, waitCPU 3.1 ms, doorbell waitA 0.32 ms; 3.25 PCIe experts per layer-window. At the probed 27.2 GB/s the copies should take at most ~15 ms per window, so part of waitB is not the link - the file tier, late copies, or an early wait are the candidates, none measured. Steps: (a) --pcie-frac arms against the automatic 0.55 (0.40, 0.25: work moves from the copies to the CPU pool, whose wait is small), interleaved, each launch run with STRATA_VERIFY_PROFILE=1 STRATA_DECODE_TIMING=1 so read_window_profile.py gives waitB per arm; (b) split waitB into copy time and source time (file tier versus the page-locked RAM tier); (c) only then a code change to the copy path, if (a)-(b) point at one.",
       "caveat": "the profiler's stamps add their own time, so read the shares, not the absolute milliseconds, and compare arms measured the same way",
@@ -127,7 +127,7 @@
       "item 5 - done 2026-10-21",
       "items 1 and 2 - done 2026-10-21 (docs/WINDOW_PROFILE_CUDA.md)",
       "item 4 - done 2026-10-21 (docs/CACHE_VS_DRAFTS.md)",
-      "item 3 (retargeted): first the --pcie-frac arms with the profiler on, then the waitB split, then any code change"
+      "item 3 (retargeted): the --pcie-frac arms with the profiler on - done 2026-10-22, the automatic-vs-0.35 re-run met the gate (docs/WINDOW_PROFILE_CUDA.md); next the waitB split, then any code change"
     ]
   },
   "handoff": {
@@ -135,5 +135,5 @@
     "the_sweep_plan_format_is": "bench/results/2026-10-06-community-rtxpro-v0140/plan.example.json",
     "note": "the two are different documents and should stay separate - one says what to build, the other says what to run to check a piece that got built"
   },
-  "updated": "2026-10-21: machine and model brought up to date, the gate made per batch, item 3 retargeted on items 1-2's numbers"
+  "updated": "2026-10-22: item 3's re-run done, gate met (mechanism moved, speed clears the batch's own noise on the tool of record); machine and model brought up to date, the gate made per batch, item 3 retargeted on items 1-2's numbers (2026-10-21)"
 }
