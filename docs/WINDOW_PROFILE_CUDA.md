@@ -67,3 +67,35 @@ Next measurements that follow from this, none of them run yet:
    setting it when the experiment is about the bus share; this one is.
 2. Split `waitB` into copy time and source time: how many of the PCIe-share blobs come from the file tier versus the
    page-locked RAM tier in these windows.
+
+## Item 3's first step, run: the PCIe share (2026-10-21)
+
+`python tools/strata_ab.py --sweep pcie-frac --rounds 3 --runs 6 --tests chat,agent` (the automatic share against fixed 0.25,
+0.35, 0.45 and 0.60; 15 launches taking turns; clean runs, profiler off), read with
+`python tools/summarize_ab_sweep.py bench/results/ab-pcie-frac` and `python tools/read_sweep_warm.py bench/results/ab-pcie-frac`.
+The engine's own share starts at 0.55 and refines to 0.45 in the first decode windows (`PcieAuto`, steps of 0.05, clamped to
+0.10-0.60); a fixed `--pcie-frac` switches the refinement off.
+
+| arm | engine decode, tok/s, the three launches (the first is inside the machine's cold 20 minutes) | experts over PCIe | per-turn paired against automatic |
+|---|---|---|---|
+| automatic (settles at 0.45) | 40.45 / 37.80 / 37.45 | 11.5-16.1% | - |
+| 0.25 | 39.40 / 38.25 / 35.65 | 7.7% | +1.9% |
+| 0.35 | 40.95 / 38.75 / 40.40 | 11.5-12.2% | +7.2% (+4.8, +9.7) |
+| 0.45 | 39.05 / 37.85 / 38.55 | 15.5-16.5% | +0.0% |
+| 0.60 | 32.20 / 37.55 / 36.00 | 22.6-25.1% | -7.6% |
+
+- **0.60 is worse, and that one is a result.** Every launch of it is below the automatic arm's warm launches, its per-turn
+  gaps are -6% to -23%, and it sends 23-25% of the routed experts over PCIe against 12-16%. More work on the link does not
+  help; the engine's own ceiling of 0.60 is not where its rule would ever land.
+- **0.25 and 0.45 are the same as automatic.** 0.45 fixed from the start matching the automatic arm is the control: the refinement
+  settles on 0.45 and costs nothing.
+- **0.35 is the best arm and is not separated.** Both of its warm launches (38.75, 40.40) are above both warm launches of the
+  automatic arm (37.80, 37.45), by +3% and +8%. `summarize_ab_sweep.py` marks it "above noise" on a floor taken from two
+  baseline launches (0.9%). `read_sweep_warm.py` does not: the arm's per-turn gaps (median 6.8%, range 0.4-38.6%) overlap the
+  baseline's repeats (median 6.7%, range 0.8-9.9%), and the automatic arm's own three launches span 7.8% (its best one was its
+  cold first launch, 40.45). A gain of this size is inside what one command run twice does here.
+- **What this says about item 3.** The bus share is not a lever worth 24% - nothing in the sweep moves decode by more than
+  single digits, and only upward at 0.35 and downward at 0.60. The engine's rule (balance the link against the CPU pool's
+  measured speed) lands in the flat top of the curve. The plan's gate (decode rising by more than the batch's own noise) is not
+  met, so no configuration change is made. Not measured here: whether `waitB` falls at 0.35, which needs the profiler on, and
+  whether 0.35 holds over more launches. The re-run that would settle it is the automatic arm against 0.35 alone, five rounds.
