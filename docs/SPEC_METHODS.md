@@ -29,7 +29,8 @@ The baseline's own two launches differ by 1.9%. What that supports:
 - **Prompt lookup off may be slightly faster**: both launches (37.80, 38.15) are above both baseline launches (36.55, 37.25), by
   3.4% and 2.4% on engine decode (the tool's per-turn figure of +8.6% is larger and rests on six turns). A 2-3% effect is about
   the size of this machine's warm engine-decode noise (2.1% on 2026-10-20), measured over two launches; it is a hint, not a
-  finding, and would need the interleaved re-run before the setting is changed. The configuration is unchanged.
+  finding, and would need the interleaved re-run before the setting is changed. The configuration is unchanged. (That re-run
+  was made the same day, `lookup-off` below: the hint did not hold.)
 
 ## What could not be measured
 
@@ -62,6 +63,24 @@ pack - still MTP, one draft per check - so this bounds what the window contribut
   `spec-methods` table above). `--spec 4` is therefore not an optimum so much as a point on a flat part of the curve; a
   re-run that could resolve 3-5% (more launches per arm, interleaved) would be needed before moving it, and the configuration
   is unchanged.
+
+## Prompt lookup, re-checked interleaved (2026-10-22)
+
+`python tools/strata_ab.py --sweep lookup-off --rounds 3 --runs 6 --tests chat,agent` (the configuration against
+`--suffix-draft 0`, six launches taking turns), read with `python tools/summarize_ab_sweep.py bench/results/ab-lookup-off`
+and `python tools/read_sweep_warm.py bench/results/ab-lookup-off`:
+
+| arm | engine decode, tok/s, the three launches (cold ones flagged) | drafts accepted % |
+|---|---|---|
+| as configured | 33.55* / 38.20* / 39.10 | 66.1 / 65.7 / 76.3 |
+| prompt lookup off | 41.55* / 38.60* / 39.10 | 74.3 / 60.4 / 70.1 |
+
+The one launch of each arm that started after the machine's first twenty minutes measured the same, 39.10 tok/s, and the
+per-turn paired difference over the batch is -3.3% (inside noise): the two arms' per-turn gaps (median 10.8%, range 1.6-17.2%)
+lie inside the repeats' (median 4.2%, range 0.0-13.5%). **The 2-3% the first sweep hinted at was position and noise, not the
+flag.** Prompt lookup stays on at its default of 3; turning it off buys nothing measurable here. The batch has one warm
+launch per arm (the other two of each were flagged cold), so what it rules out is a gain of the size the hint claimed, not a
+difference of a percent or two.
 
 **Not in the engine, so not in the sweep:** EAGLE-style feature drafters, Medusa heads, a separate small draft model, and
 diffusion or NCM drafters. The engine has MTP, prompt lookup (suffix drafts and the lookup chain) and the coupled/Gumbel
