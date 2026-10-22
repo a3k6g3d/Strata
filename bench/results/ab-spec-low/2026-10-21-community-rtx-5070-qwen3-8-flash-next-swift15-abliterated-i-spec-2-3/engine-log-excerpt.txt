@@ -1,0 +1,6 @@
+[strata] loading the most-used experts into RAM (up to 36 GiB; the rest are read from the model files as needed) and locking part of them for the GPU.
+         Please wait and don't close this window; the browser opens when it is ready.
+[strata] filling the GPU's expert cache (2172 experts, 4.17 GiB of VRAM) ...
+[strata] almost ready ...
+[strata] slot save/restore on: slots (session files are kept until deleted: about 1.2 GB per 63K-token conversation; restore only files this server wrote)
+ready: http://127.0.0.1:8080/v1  (OpenAI: /v1/chat/completions, Anthropic: /v1/messages, context 65536 tokens, images on)
