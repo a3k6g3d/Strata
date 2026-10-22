@@ -140,6 +140,15 @@ SWEEPS = {
     # ("is a native (IQ) pack: it needs --native SHARD1, --spec T (T >= 2) and --prefill CHUNK", seen 2026-10-21 when --spec 1
     # exited at start-up).  --spec 2 is the smallest window the engine accepts - still MTP, one draft per check - so it bounds how
     # much of the speed the drafting carries from below without being "off".  Run with the baseline taking turns beside it.
+    # The one flag spec-methods put above the noise (+3.4% and +2.4% on engine decode, both launches above both baseline launches)
+    # in a sweep whose baseline launches were 92 minutes apart: turned off and on, taking turns, to see whether it holds.
+    "lookup-off": {
+        "note": ("Is prompt lookup (suffix drafts, default 3) a net cost on this machine?  The configuration against "
+                 "--suffix-draft 0, the two taking turns, so the position effect that the first reading could not rule out "
+                 "is broken up."),
+        "arms": [("as configured", []),
+                 ("prompt lookup off", ["--suffix-draft 0"])],
+    },
     "spec-low": {
         "note": ("How much of the speed does the verify window carry?  The configuration's --spec 4 against the smallest window "
                  "the engine accepts on this pack, --spec 2, and --spec 3 between them, the arms taking turns."),
