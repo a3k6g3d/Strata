@@ -133,7 +133,19 @@ SWEEPS = {
                  ("MTP without prompt lookup", ["--suffix-draft 0"]),
                  ("MTP + lookup chain 4", ["--lookup-chain 4"]),
                  ("4-bit draft layer", ["--mtp-q4 all"]),
-                 ("spec 6", ["--spec 6"])],
+                 ("spec 6", ["--spec 6"]),
+                 ("spec 2", ["--spec 2"])],
+    },
+    # The low end of the window.  "No speculation" cannot be an arm on this model: a native (IQ) pack needs --spec T with T >= 2
+    # ("is a native (IQ) pack: it needs --native SHARD1, --spec T (T >= 2) and --prefill CHUNK", seen 2026-10-21 when --spec 1
+    # exited at start-up).  --spec 2 is the smallest window the engine accepts - still MTP, one draft per check - so it bounds how
+    # much of the speed the drafting carries from below without being "off".  Run with the baseline taking turns beside it.
+    "spec-low": {
+        "note": ("How much of the speed does the verify window carry?  The configuration's --spec 4 against the smallest window "
+                 "the engine accepts on this pack, --spec 2, and --spec 3 between them, the arms taking turns."),
+        "arms": [("as configured", []),
+                 ("spec 2", ["--spec 2"]),
+                 ("spec 3", ["--spec 3"])],
     },
     # Build-plan item 3, retargeted (docs/WINDOW_PROFILE_CUDA.md): the GPU waits 59% of a decode window for the PCIe share of the
     # missed experts.  The engine picks that share itself - 0.55 from the link probe, then PcieAuto refines it from the CPU pool's

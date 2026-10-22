@@ -38,6 +38,17 @@ T >= 2 (`strata generate: ... is a native (IQ) pack: it needs --native SHARD1, -
 flag turns the draft layer off on this model. The lowest setting the engine accepts is `--spec 2`, which is still MTP. How much
 speculation buys over plain one-token decoding on this machine is therefore not measured here.
 
+The low end is defined and waiting for machine time (queued 2026-10-21, not yet run): `--spec 2` is an arm of the `spec-methods`
+list, and a short sweep of its own puts it beside the baseline and `--spec 3`:
+
+```
+python tools/strata_ab.py --sweep spec-low --rounds 3 --runs 6 --tests chat,agent --config <strata-ab.json> --out bench/results/ab-spec-low
+python tools/summarize_ab_sweep.py bench/results/ab-spec-low
+```
+
+Nine launches, about 50 minutes with the server stopped. It bounds the speed the window carries from below (a window of 2
+against 4); it is not speculation off, and its result should be read that way.
+
 **Not in the engine, so not in the sweep:** EAGLE-style feature drafters, Medusa heads, a separate small draft model, and
 diffusion or NCM drafters. The engine has MTP, prompt lookup (suffix drafts and the lookup chain) and the coupled/Gumbel
 sampled drafting (`STRATA_SPEC_COUPLED`, `STRATA_SPEC_GUMBEL`), which acts only on requests sampled above temperature 0 and
