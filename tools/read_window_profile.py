@@ -14,6 +14,12 @@ prints medians and ranges over the requests - the numbers a doc may quote - plus
 Each request's share is its wait over its own window; the median is over requests.  Nothing here is a comparison
 between arms, so no noise floor applies; the ranges are the spread over the requests in the log.
 
+An instrumented engine prints a third line per request - `strata decode tier split (per window): ...` - counting the two
+tiers of the copy path: the blobs that were already resident (RAM) and the blobs read off the drive (files), each with
+its own clock.  The counts are the strong half (they cost nothing); the milliseconds are the weak half, since the RAM
+tier's clock is a steady_clock::now() around every resident hit and so is partly measuring itself.  Both arms of a run
+get the same env block, so arms compare to arms; nothing here compares to a run of the uninstrumented binary.
+
     python tools/read_window_profile.py bench/results/window-profile-2026-10-21/engine-log.txt
 """
 import argparse
@@ -33,6 +39,12 @@ TIMING = {
     "PCIe experts / layer-window": r"PCIe ([\d.]+); adapt",
 }
 WAITS = ("waitA", "waitB", "waitCPU")
+
+# The two tiers of the copy path, printed per window beside the stage table when the engine is the instrumented one.
+# Counts are the strong half (they cost nothing); the milliseconds are the weak half - the RAM tier's clock is a
+# steady_clock::now() around every resident hit, so it is partly measuring itself.  Read the times as shares.
+TIER = re.compile(r"RAM (\d+) blobs ([\d.]+) ms, files (\d+) blobs ([\d.]+) ms")
+TIERS = (("RAM tier blobs/window", 1), ("RAM tier ms/window", 2), ("file tier blobs/window", 3), ("file tier ms/window", 4))
 
 
 def num(pattern, line):
@@ -82,6 +94,12 @@ def main(argv=None) -> int:
     layers = [v for v in layers if v is not None]
     if layers:
         print(f"\nGPU stages' own total, ms/window: {spread(layers)}")
+    tiers = [TIER.search(l) for l in lines if l.startswith("strata decode tier split (per window):")]
+    tiers = [m for m in tiers if m]
+    if tiers:
+        print(f"\nthe two tiers of the copy path, per window ({len(tiers)} requests printed it):")
+        for label, g in TIERS:
+            print(f"  {label:28s} {spread([float(m.group(g)) for m in tiers])}")
     return 0
 
 

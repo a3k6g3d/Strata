@@ -102,6 +102,70 @@ The engine's own share starts at 0.55 and refines to 0.45 in the first decode wi
 
 ---
 
+## Item 3's sub-step (b), the tier split, run (2026-10-22)
+
+The same sweep, the same arms, five rounds, two runs each, agent test only - `bench/results/ab-tier-split-rerun`,
+launched by `tools/tier_split_rerun.bat`. The question this time is not whether the arm is faster; that gate was met
+on the section above. The question is **where the time it saved comes from**: waitB is the wait for a window's blobs,
+and a blob arrives by one of two routes - it is already resident (the RAM tier) or it is read off the drive (the file
+tier). The rule was written into the bat before the first launch, and it is the rule below.
+
+The batch wrote one shared engine log, so it was segmented per launch (`tools/_tier_seg.py`) and each segment saved in
+its own launch folder as `engine-log.txt`, as the previous batch's folders do; the reader was then run folder by
+folder, as the rule names it, and `tools/_tier_share.py` does all ten and prints the table below. The RAM tier's clock
+was on (`STRATA_RAM_TIER_CLOCK=1`, in the run config's env block), and the
+instrumentation that gives it a `ram_ms` beside the `file_ms` is the change in `expert_source.{hpp,cpp}` and
+`generate.cpp` that came with this batch. All ten launches printed their tier lines; none is void.
+
+Per round-pair (baseline then arm), medians over the window counts, and the share the reader prints:
+
+| round | 1 | 2 | 3 | 4 | 5 |
+|---|---|---|---|---|---|
+| waitB share, baseline | 61.2 | 61.6 | 59.1 | 61.0 | 59.3 |
+| waitB share, arm | 54.7 | 57.0 | 56.3 | 56.7 | 55.7 |
+| file tier blobs/window, baseline | 3.00 | 3.00 | 3.00 | 3.00 | 3.00 |
+| file tier blobs/window, arm | 3.00 | 2.50 | 3.00 | 3.00 | 2.00 |
+| RAM tier blobs/window, baseline | 433 | 454 | 428 | 446 | 409 |
+| RAM tier blobs/window, arm | 429.5 | 451.5 | 431 | 439.5 | 423 |
+| file tier ms/window, baseline | 2.17 | 2.23 | 2.10 | 2.28 | 2.39 |
+| file tier ms/window, arm | 2.26 | 2.29 | 2.00 | 2.43 | 2.10 |
+| RAM tier ms/window, both arms | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 |
+
+**The mechanism test fails.** The rule asked for the arm's file-tier count to be lower in at least four of five
+round-pairs, beating the baseline's own spread on that counter. It is lower in two of five, by half a blob and by one
+blob, on a counter whose per-window range is 0 to 30; the baseline's five medians are all 3.00, so its spread is zero
+and any movement would have counted. The two that moved are not separable from noise, and three did not move at all.
+The prediction that the RAM tier would move the other way - blobs crossing over from one tier to the other - also
+fails: no consistent direction, and the baseline's own range (409 to 454) swamps every pair.
+
+The share check passes, which is what makes the failure mean something. Each arm says the share it should: the
+baseline records 16.2 / 16.4 / 16.3 / 16.4 / 15.8 percent, the arm 11.5 / 13.1 / 12.0 / 11.8 / 11.9 - a ratio of 0.74
+against the 0.78 the flag implies. The arms did what they were told, both arms stamped, both printed. So the flag
+moved the bus share, the share moved waitB (5/5 pairs, no overlap, reproducing the previous batch's 61.2-61.9 against
+54.1-56.2 almost exactly) - and **the source side of the wait did not move.**
+
+**So, as the bat put it: the gate was met, but this did not come from the bus share.** The source is the two tiers
+together, and all of it that is clockable is the file tier's ~2.2 ms a window, unchanged between the arms (2.10-2.39
+against 2.00-2.43, no direction). The RAM tier, clocked for the first time here, reads 0.00 ms a window on every
+launch on both arms: the ~430 resident blobs a window cost nothing measurable. Against a waitB of 33-41 ms a window,
+the whole source side is under 6 percent of it, and it is the part that did not move.
+
+Speed, as the rule reports it: `read_sweep_warm.py` - the tool the bat names - cannot separate the arms. Its own
+batch floor is 3.7% (four repeats of one command), the largest gap among the arms is 5.2%, and the per-turn
+distributions overlap; its verdict stands as printed. The tool of record (`summarize_ab_sweep.py`) gives +2.7 / +3.2 /
++1.8 / +2.2 / +4.2 per round, median +2.2%, inside its own floor of 3.2%; the sign holds in five of five, which is the
+part of the rule that can be satisfied here. This batch is not the gate and does not re-met it; it replicates the
+mechanism's direction and not its magnitude.
+
+**What (c) asks, and what the data points at.** The plan made the code change conditional on (a)-(b) pointing at one.
+They do point at one, and not at the one the mechanism named: not the drive, not the read path, not the source tier -
+the copy itself. Fewer blobs cross the bus (3.66 to 2.58 per layer-window), each of them already resident, each
+costing zero at the source; the time saved is in the submitting and copying of them, not in finding them. And for
+exactly that there is already a knob, built and documented and never run as a proper batch: `STRATA_DMA_BATCH` in
+`docs/BATCHED_DMA.md`, batched submission through `cudaMemcpyBatchAsync`, recorded there as "an experiment to reduce
+host submission overhead, not a demonstrated increase". The next step is to run it as an arm the same way - it is a
+measurement, not a code change.
+
 ## Item 3's re-run, the one the section above asked for (2026-10-22)
 
 The automatic share against 0.35 alone, five rounds, two runs each, agent test only, profiler on
