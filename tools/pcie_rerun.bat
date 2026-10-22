@@ -13,14 +13,18 @@ rem (0.4-38.6%) was enough to overlap.  Three launches cannot settle that; five 
 rem which is what the plan asked for.  0.25 and 0.45 are not here: they straddle zero, so
 rem they are not candidates, and 0.60 is known worse (-7.6%).
 rem
-rem Why the profiler stamps go in the config, not in the arms.  The window split (waitB,
-rem waitCPU, doorbell) is printed by the engine only when STRATA_VERIFY_PROFILE=1 and
+rem Why the run points at strata-pcieprof.json and not the live strata.json.  The window split
+rem (waitB, waitCPU, doorbell) is printed by the engine only when STRATA_VERIFY_PROFILE=1 and
 rem STRATA_DECODE_TIMING=1 are in the config's `env` block - bench/results/
-rem window-profile-2026-10-21/ was read that way, and strata.json's env block is empty
-rem tonight, so put both in it before starting this file, and take them out afterwards.
-rem Both arms get them, so the arms are measured the same way; the stamps add their own
+rem window-profile-2026-10-21/ was read that way.  strata.json has no env block and nothing on
+rem this machine had one until strata-profile.json, which is the October run's own config and
+rem differs from the live one (no Discord, no conversation store, no vision), so its tok/s would
+rem not be comparable to the batch this one is settling.  So the run gets a copy of the live
+rem config with ONLY the env block added - byte-identical otherwise, checked - pinned below, and
+rem the live config is left alone: nothing to remember to take out afterwards.
+rem Both arms get the stamps, so the arms are measured the same way; the stamps add their own
 rem time, so read the SHARES and not the absolute milliseconds, and compare arms to arms
-rem only - these tok/s are not comparable to the October batch's.
+rem only - these tok/s are not comparable to the October batch's, which ran unstamped.
 rem
 rem What was written down before the first launch, so it cannot be decided afterwards:
 rem the arm's gap has to beat this batch's own noise: the five baseline launches are the
@@ -39,9 +43,10 @@ cd /d J:\Strata-work\Strata-0140
 echo.
 echo This is what will be stopped. Nothing is killed yet.
 echo.
-echo Before starting: strata.json's `env` block needs STRATA_VERIFY_PROFILE=1 and
-echo   STRATA_DECODE_TIMING=1, or the window split will not be printed and the
-echo   waitB-per-arm half of this run is lost.
+echo The run uses J:\Strata-work\strata-pcieprof.json - a copy of the live config with
+echo   the profiler env block added (STRATA_VERIFY_PROFILE, STRATA_DECODE_TIMING), so
+echo   the engine prints the window split and the waitB half of this run is measured.
+echo   If that file is gone, the run reads the live config instead and loses half of it.
 echo.
 python tools\noise_floor_unattended.py --check --log bench\results\pcie-frac-rerun.log
 
@@ -49,7 +54,7 @@ echo.
 pause
 
 python tools\noise_floor_unattended.py --log bench\results\pcie-frac-rerun.log ^
-  --harness-args "--sweep pcie-frac-rerun --rounds 5 --runs 10 --noise-floor 0 --out bench/results/ab-pcie-frac-rerun"
+  --harness-args "--config J:/Strata-work/strata-pcieprof.json --sweep pcie-frac-rerun --rounds 5 --runs 10 --noise-floor 0 --out bench/results/ab-pcie-frac-rerun"
 
 echo.
 echo Run finished.  The log is:

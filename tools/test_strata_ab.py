@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
 import shlex
 import sys
 import unittest
@@ -306,6 +307,23 @@ class ThePcieRerunBatchFile(TheBatchFile):
         self.assertIn("five baseline launches", text)
         self.assertIn("STRATA_VERIFY_PROFILE=1", text)                          # without these, half the run is lost
         self.assertIn("STRATA_DECODE_TIMING=1", text)
+
+    def test_it_pins_a_config_that_actually_has_the_env_block_the_stamps_need(self):
+        # the driver's default command names the live config, which has no env block, so the engine would
+        # print no window split at all and the waitB half of this run would be lost; argparse takes the
+        # LAST --config, so the batch file pins its own copy - and that copy has to really carry the keys.
+        argv = self.harness_args()
+        cfg = [argv[i + 1] for i, x in enumerate(argv) if x == "--config"]
+        self.assertEqual(len(cfg), 2, "the driver's default, and the batch file pinning its own")
+        path = Path(cfg[-1])
+        self.assertNotEqual(path.name, "strata.json", "the live config has no env block")
+        self.assertTrue(path.exists(), f"{path} is the config the run will read, so it has to be there")
+        env = json.loads(path.read_text(encoding="utf-8")).get("env", {})
+        self.assertEqual(env.get("STRATA_VERIFY_PROFILE"), "1")
+        self.assertEqual(env.get("STRATA_DECODE_TIMING"), "1")
+        live = json.loads((path.parent / "strata.json").read_text(encoding="utf-8"))
+        self.assertEqual({k: v for k, v in json.loads(path.read_text(encoding="utf-8")).items()
+                          if k != "env"}, live, "the stamps are the only difference from the live config")
 
 
 class TestRepeatOfBaseline(unittest.TestCase):
