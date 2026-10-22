@@ -171,6 +171,25 @@ SWEEPS = {
                  ("pcie-frac 0.45", ["--pcie-frac 0.45"]),
                  ("pcie-frac 0.60", ["--pcie-frac 0.60"])],
     },
+    # The same question, asked again of one arm. The 2026-10-21 batch above put 0.35 five rounds... three rounds
+    # into the lead on the warm column (+5.3/+7.4/+11.6, three for three) while the tool's distribution test still
+    # said "not separated", because that batch's own noise rows topped out at 3.5% and the arm's per-turn spread
+    # (0.4-38.6%) overlapped them. Three launches is not enough to settle it, so this batch is the plan's own open
+    # step: the baseline and 0.35, five rounds, the arms taking turns, with the profiler stamps in the config's env
+    # block (STRATA_VERIFY_PROFILE=1, STRATA_DECODE_TIMING=1) so the window split is read per arm.
+    # The batch measures its own noise: the baseline's five launches are the same command run five times, and their
+    # spread is the limit the arm has to beat - the 24.3% floor is for a batch of six, so it is the ceiling here.
+    # Pre-registered before the first launch: the arm's gap must beat that five-launch spread, the sign must hold in
+    # at least four of the five round-pairs, and the arm's waitB per window must actually fall - a speed gap with
+    # waitB unchanged did not come from the bus share, whatever the tok/s say.
+    "pcie-frac-rerun": {
+        "note": ("Does the PCIe share of the missed experts shorten the decode window, on the arm the last batch led on? "
+                 "The automatic share against a fixed 0.35, five rounds, the arms taking turns, both arms with the "
+                 "profiler stamps on (so read the shares, not the absolute milliseconds, and compare arms to arms only). "
+                 "The baseline's five launches are the batch's own noise."),
+        "arms": [("as configured", []),
+                 ("pcie-frac 0.35", ["--pcie-frac 0.35"])],
+    },
     "noise-interleaved": {
         "note": ("The same arm twice, the two taking turns (round 1 A B, round 2 B A, round 3 A B) so the machine's "
                  "drift is not the same variable as an arm's position.  Nothing about the engine changes between the "

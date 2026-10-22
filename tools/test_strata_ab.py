@@ -252,6 +252,62 @@ class TheCacheOffBatchFile(TheBatchFile):
         self.assertIn("--expert-cache 1", out)
 
 
+class ThePcieRerunBatchFile(TheBatchFile):
+    """The same checks, run against tools/pcie_rerun.bat's own line - see TheCacheOffBatchFile for why
+    every batch file needs this class and not just the one.  The labels and the counts differ, so the
+    schedule test and the noise-floor test are overridden below.
+    """
+
+    BAT = ROOT / "tools" / "pcie_rerun.bat"
+
+    def test_the_batch_file_cancels_the_drivers_default_noise_floor(self):
+        argv = self.harness_args()
+        nf = [argv[i + 1] for i, x in enumerate(argv) if x == "--noise-floor"]
+        self.assertEqual(len(nf), 2, "the driver's default, and the batch file cancelling it")
+        self.assertEqual(nf[-1], "0")
+        self.assertEqual(argv[argv.index("--sweep") + 1], "pcie-frac-rerun")
+
+    def test_the_command_it_runs_launches_both_arms_and_lands_each_at_both_positions(self):
+        rc, out, err = dry_run(*self.harness_args())
+        self.assertEqual(rc, 0, err)
+        labels = [l.split(":")[1].split("  (round")[0].strip() for l in out.splitlines() if l.startswith("launch ")]
+        self.assertEqual(len(labels), 10)                                       # five rounds x two arms
+        for rnd in range(5):
+            self.assertEqual(sorted(labels[rnd * 2:(rnd + 1) * 2]), ["as configured", "pcie-frac 0.35"])
+        for label in ("as configured", "pcie-frac 0.35"):
+            pos = [n for n, l in enumerate(labels) if l == label]
+            self.assertEqual(len(pos), 5)
+            self.assertNotEqual(pos[0] % 2, pos[1] % 2)                         # sits at both positions, which is the point
+        self.assertIn("runs 2 x", out)                                          # 10 runs over 5 rounds
+
+    def test_it_keeps_the_shape_the_cold_warm_split_needs(self):
+        # read_sweep_warm.py splits each arm's cold run (the first of each launch) from its warm ones, so a
+        # launch has to contain at least two runs for that split to exist at all.  This is the whole reason
+        # the batch file asks for --runs 10 and not the driver's default 6: 6 over 5 rounds is one run a
+        # launch, every run is then a cold run, and the split the last batch was read by disappears.
+        argv = self.harness_args()
+        runs = [argv[i + 1] for i, x in enumerate(argv) if x == "--runs"]
+        self.assertEqual(runs[-1], "10")                                        # the batch file's own, not the default
+        self.assertEqual(int(runs[-1]) // 5, 2)
+
+    def test_it_writes_somewhere_other_than_the_batch_it_is_not_comparable_to(self):
+        # bench/results/ab-pcie-frac holds the three-launch batch this one is settling, and it ran without
+        # the profiler stamps; a run that landed there would be read beside numbers taken a different way.
+        argv = self.harness_args()
+        out = [argv[i + 1] for i, x in enumerate(argv) if x == "--out"]
+        self.assertEqual(len(out), 1, "the batch file names its own output folder")
+        self.assertEqual(Path(out[0]).name, "ab-pcie-frac-rerun")
+
+    def test_the_batch_asks_its_own_noise_and_says_so_before_running(self):
+        # the plan's rule: an arm is stated as it measures, and the figure it has to beat is the batch's own
+        # noise.  With two arms there is no repeat row, so the batch's floor is the baseline's own five
+        # launches - which is only true if the baseline is launched five times, i.e. the rounds.
+        text = self.BAT.read_text(encoding="utf-8")
+        self.assertIn("five baseline launches", text)
+        self.assertIn("STRATA_VERIFY_PROFILE=1", text)                          # without these, half the run is lost
+        self.assertIn("STRATA_DECODE_TIMING=1", text)
+
+
 class TestRepeatOfBaseline(unittest.TestCase):
     # a repeat of the baseline is the same command run again, so the gap on its row IS the
     # noise floor and the row cannot be judged as an arm.  The two sweeps label it
