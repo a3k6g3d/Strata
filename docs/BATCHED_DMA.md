@@ -112,3 +112,59 @@ and the [CUDA `cudaMemcpyBatchAsync` contract](https://docs.nvidia.com/cuda/cuda
 The helper and tests here are new;
 no NCCL source was transplanted. NCCL's multi-GPU performance claims are not
 used as predictions for this single-GPU path.
+
+## End-to-end A/B on the RTX 5070 (2026-10-22): the batch runs, and it buys nothing measurable
+
+Two sweeps of `tools/strata_ab.py --sweep dma-batch`, six launches each (three rounds x two arms,
+rounds alternating), instrumented engine `J:/Strata-work/build-0145/strata-instr.exe` rebuilt
+2026-10-22 16:20, config `J:/Strata-work/strata-instr.json`, nine requests per launch, same model,
+context, PCIe fraction and MTP as the tier-split batch. Run 1 `bench/results/ab-dma-batch`, the
+baseline arm left the variable unset (so mode 0, the loop) and the other arm set 1. Run 2
+`bench/results/ab-dma-batch-2`, both arms set explicitly: 0 for the loop, 1 for the batch.
+
+The submission counters, read from the engine's own log `J:/Strata-work/strata.log` (the launch folders
+hold only the startup excerpt), segmented by the per-launch PCIe-probe line, totals over the whole
+launch, ~31 windows each:
+
+| run | the arm that reaches the counter | submissions / blobs / batched | blobs per submission | % batched |
+| --- | --- | --- | --- | --- |
+| 1 | batch (= 1) | 1333 / 5626 / 1036 | 4.22 | 78 |
+| 1 | batch (= 1) | 1484 / 6636 / 1160 (32 windows) | 4.47 | 78 |
+| 1 | batch (= 1) | 1427 / 6524 / 1131 | 4.57 | 79 |
+| 1 | unset (= 0, the loop) | 0 / 0 / 0, all three launches | - | - |
+| 2 | batch (= 1) | 1341 / 5459 / 1018 | 4.07 | 76 |
+| 2 | batch (= 1) | 1433 / 6484 / 1139 | 4.52 | 79 |
+| 2 | batch (= 1) | 1296 / 5426 / 1000 (30 windows) | 4.19 | 77 |
+| 2 | loop (= 0, set by hand) | 0 / 0 / 0, all three launches | - | - |
+
+So the batched arm's half of the mechanism test is met, on all six of its launches across both runs:
+about four blobs per submission and three quarters of submissions through `cudaMemcpyBatchAsync`. The
+knob engages and the batch genuinely runs.
+
+The other half — the rule as written, "both sets of counters non-zero" — is unsatisfiable as the
+counters stand, and run 2 proves it: the loop arm was given the variable explicitly this time and read
+exactly what the unset arm read in run 1, zero on every window of every launch. `verify.cpp:3050` runs
+mode 0 as a plain loop of `cudaMemcpyAsync` with no counter on it; only the `else` branch reaches
+`copy_expert_blobs`, which is where the counters live. Mode 0 cannot read non-zero. Its zeros mean "no
+counter on this path", not "nothing ran" — it copies at normal speed.
+
+Speed, `tools/read_sweep_warm.py`, warm medians against the batch as baseline:
+
+| run | the loop arm's rows | largest gap among the arms | the batch's own noise (repeat rows) |
+| --- | --- | ---: | ---: |
+| 1 | +2.7%, +6.3%, +3.1% | 6.3% | 1.2% |
+| 2 | +5.5%, -4.0%, -1.8% | 5.5% | 5.7% |
+
+Neither run separates the arms: in both, the arm's per-turn distribution overlaps the repeat rows'
+range, which is what the tool of record says out loud. Run 1's loop rows all lean one way and run 2's
+do not, and run 2's own noise grew to 5.7%, bigger than the 5.5% it is being asked to beat.
+
+**Verdict: no measured win, and no basis to run this a third time for the speed number.** The default
+stays 0, which is what the code says it should be (0 until a measured win makes it 1). The counters did
+their job on the arm they can see; to see the loop arm at all, `verify.cpp:3050` needs the same two
+atomics the batch path has.
+
+One asymmetry belongs to the code and cannot be arm-ed away: mode != 0 also turns adaptive overlap off
+(`generate.cpp:9501`), so the arm is "batch AND overlap off" against "loop WITH overlap". If the batch
+were free and overlap were worth a few percent, this is exactly what it would look like. The arm is the
+product question; it is not a clean measurement of the batch alone.

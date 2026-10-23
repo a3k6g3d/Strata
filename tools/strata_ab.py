@@ -210,7 +210,14 @@ SWEEPS = {
                  "one per group (far more).  One asymmetry is the code's own and cannot be arm-ed away: mode != 0 turns "
                  "adaptive overlap off (generate.cpp:9501), so the arm is the flag as shipped - batch AND overlap off - "
                  "against the loop WITH overlap.  That is the product question; the counters only say whether the batch "
-                 "itself ran."),
+                 "itself ran.  RAN TWICE (bench/results/ab-dma-batch and -2, 2026-10-22) and both "
+                 "answers are in docs/BATCHED_DMA.md: the batched arm's counters are solid on all six "
+                 "of its launches (~4 blobs per submission, ~78% batched), and the rule failed again "
+                 "because it cannot pass - mode 0 runs as a plain cudaMemcpyAsync loop "
+                 "(verify.cpp:3050) with no counter, so the loop arm reads 0 no matter what it does.  "
+                 "Speed: neither run separates the arms (largest gap 6.3% and 5.5%, against their own "
+                 "repeat-noise of 1.2% and 5.7%).  Default stays 0; do not run this a third time for "
+                 "the speed number."),
         "arms": [("dma loop", ["--pcie-mode dma", "--engine-env=STRATA_DMA_BATCH=0"]),
                  ("dma batched", ["--pcie-mode dma", "--engine-env=STRATA_DMA_BATCH=1"])],
     },
