@@ -20,6 +20,7 @@
 //! scattered into blobs).
 
 pub mod ffi;
+pub mod transient;
 
 use std::collections::{HashMap, VecDeque};
 use std::os::raw::c_void;
@@ -58,6 +59,30 @@ impl Buffer {
     /// memory it did not allocate.
     pub unsafe fn borrowed(base: *mut u8, len: usize) -> Buffer {
         Buffer { base, len, owned: false }
+    }
+
+    /// `len` bytes of fresh, page-aligned memory this buffer owns and frees on drop.  None if the system refuses.
+    pub fn aligned(len: usize) -> Option<Buffer> {
+        #[cfg(windows)]
+        {
+            if len == 0 {
+                return None;
+            }
+            // SAFETY: a fresh reservation; nothing owns this memory yet, and VirtualAlloc's return is either a
+            // page-aligned pointer or null.
+            let base = unsafe {
+                win::VirtualAlloc(std::ptr::null_mut(), len, win::MEM_COMMIT_RESERVE, win::PAGE_READWRITE)
+            };
+            if base.is_null() {
+                return None;
+            }
+            Some(Buffer { base: base as *mut u8, len, owned: true })
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = len;
+            None
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -296,15 +321,7 @@ impl DirectFile {
             if len == 0 || len as u64 % SECTOR != 0 || len > self.capacity as usize * BLOB_WINDOW as usize {
                 return None;
             }
-            // SAFETY: a fresh reservation; nothing owns this memory yet, and VirtualAlloc's return is either a
-            // page-aligned pointer or null.
-            let base = unsafe {
-                win::VirtualAlloc(std::ptr::null_mut(), len, win::MEM_COMMIT_RESERVE, win::PAGE_READWRITE)
-            };
-            if base.is_null() {
-                return None;
-            }
-            return Some(Buffer { base: base as *mut u8, len, owned: true });
+            return Buffer::aligned(len);
         }
         #[cfg(not(windows))]
         {
