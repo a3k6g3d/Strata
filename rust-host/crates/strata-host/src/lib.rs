@@ -24,7 +24,7 @@ pub mod transient;
 pub mod window;
 pub mod protocol;
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::os::raw::c_void;
 use std::path::Path;
 use strata_abi::{Ring, Status};
@@ -166,14 +166,19 @@ impl Waker {
 struct Pending {
     buffer: Buffer,
     tag: u64,
-    #[cfg(windows)]
-    overlapped: Box<win::Overlapped>,
 }
+
+/// Completions taken from the port per kernel call (GetQueuedCompletionStatusEx) - the C++ reader's batch too.
+const REAP_BATCH: usize = 64;
 
 /// A direct-access file and the completion port its reads report to.
 ///
 /// Single-threaded on purpose, for now: one ring, one serving thread, which is what the plan's host is.  The
 /// buffers it owns are what make that safe - nothing can free them behind its back.
+///
+/// The request slots are allocated once, `capacity` of them: an OVERLAPPED per slot at a fixed address (the kernel
+/// requires the address to stay put for the read's life), found again from a completion by pointer arithmetic.
+/// So a read costs no allocation and no map lookup, and completions come off the port up to REAP_BATCH per call.
 pub struct DirectFile {
     #[cfg(windows)]
     file: win::Handle,
@@ -181,9 +186,17 @@ pub struct DirectFile {
     port: win::Handle,
     capacity: usize,
     size: u64,
-    pending: HashMap<usize, Pending>,
-    /// Completions this ring has already reaped and could not park in the caller's full ring.  Nothing is
-    /// dropped; the caller owns the retry, and this is where the retry waits.
+    /// One per request slot; Some while that slot's read is in flight.
+    slots: Vec<Option<Pending>>,
+    free: Vec<usize>,
+    in_flight: usize,
+    /// `capacity` OVERLAPPEDs, one allocation, never moved; freed in Drop.
+    #[cfg(windows)]
+    ovs: *mut win::Overlapped,
+    #[cfg(windows)]
+    entries: Vec<win::OverlappedEntry>,
+    /// Completions reaped and not yet handed out - first the ones a caller's full ring refused, then a batch's
+    /// rest.  Nothing is dropped; the caller owns the retry, and this is where it waits.
     held: VecDeque<Completion>,
 }
 
@@ -223,8 +236,6 @@ mod win {
         pub fn CreateFileW(name: *const u16, access: Dword, share: Dword, security: *mut c_void,
                            disposition: Dword, flags: Dword, template: Handle) -> Handle;
         pub fn CreateIoCompletionPort(file: Handle, port: Handle, key: UlongPtr, threads: Dword) -> Handle;
-        pub fn GetQueuedCompletionStatus(port: Handle, bytes: *mut Dword, key: *mut UlongPtr,
-                                         overlapped: *mut *mut Overlapped, ms: Dword) -> Bool;
         pub fn ReadFile(file: Handle, buf: *mut c_void, len: Dword, read: *mut Dword,
                         overlapped: *mut Overlapped) -> Bool;
         pub fn CancelIoEx(file: Handle, overlapped: *const Overlapped) -> Bool;
@@ -235,11 +246,23 @@ mod win {
         pub fn GetFileSizeEx(file: Handle, size: *mut i64) -> Bool;
         pub fn PostQueuedCompletionStatus(port: Handle, bytes: Dword, key: UlongPtr,
                                           overlapped: *mut Overlapped) -> Bool;
+        pub fn GetQueuedCompletionStatusEx(port: Handle, entries: *mut OverlappedEntry, count: u32, removed: *mut u32,
+                                           ms: Dword, alertable: Bool) -> Bool;
     }
 
-    /// A read that ran into the end of the file.  The C++ reader treats it as a legal short read at the last
-    /// page (direct_file.cpp, STATUS_END_OF_FILE), and so must this one, or the table's last page reads as an error.
-    pub const ERROR_HANDLE_EOF: Dword = 38;
+    /// OVERLAPPED_ENTRY on x64: the key, the OVERLAPPED, its Internal (the read's NTSTATUS), the byte count.
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct OverlappedEntry {
+        pub key: UlongPtr,
+        pub overlapped: *mut Overlapped,
+        pub internal: UlongPtr,
+        pub bytes: Dword,
+    }
+
+    /// STATUS_END_OF_FILE: the NTSTATUS of a read that ran into the end of the file - legal at the table's last page.
+    pub const STATUS_END_OF_FILE: UlongPtr = 0xC000_0011;
+
 }
 
 /// A path to the wide form CreateFileW wants.
@@ -286,12 +309,19 @@ impl DirectFile {
                 }
                 return Err(Status::DeviceUnavailable);
             }
+            let ovs: Box<[win::Overlapped]> = (0..capacity)
+                .map(|_| win::Overlapped { internal: 0, internal_high: 0, anon: [0], event: std::ptr::null_mut() })
+                .collect();
             return Ok(DirectFile {
                 file,
                 port,
                 capacity,
                 size: size as u64,
-                pending: HashMap::new(),
+                slots: (0..capacity).map(|_| None).collect(),
+                free: (0..capacity).rev().collect(),
+                in_flight: 0,
+                ovs: Box::into_raw(ovs) as *mut win::Overlapped,
+                entries: vec![win::OverlappedEntry { key: 0, overlapped: std::ptr::null_mut(), internal: 0, bytes: 0 }; REAP_BATCH],
                 held: VecDeque::new(),
             });
         }
@@ -349,33 +379,30 @@ impl DirectFile {
             if offset % SECTOR != 0 || buffer.len as u64 % SECTOR != 0 || !buffer.is_aligned() {
                 return Err((Status::BufferTooShort, buffer));
             }
-            if self.pending.len() >= self.capacity {
+            let Some(i) = self.free.pop() else {
                 return Err((Status::WouldBlock, buffer)); // the caller owns the retry; nothing was consumed
-            }
-
-            let overlapped = Box::new(win::Overlapped {
-                internal: 0,
-                internal_high: 0,
-                anon: [offset as usize], // {Offset, OffsetHigh} at the same address
-                event: std::ptr::null_mut(),
-            });
-            let key = Box::as_ref(&overlapped) as *const win::Overlapped as usize;
-            self.pending.insert(key, Pending { buffer, tag, overlapped });
-            let slot = self.pending.get_mut(&key).unwrap();
-
-            // SAFETY: the handle is ours; the buffer is inside `pending` and will stay there until its
-            // completion is reaped (which is what makes the pointer legal for the whole call); the OVERLAPPED is
-            // in a Box so its address is stable, as the kernel requires it to be.
-            let ok = unsafe {
-                win::ReadFile(self.file, slot.buffer.base as *mut c_void, slot.buffer.len as win::Dword,
-                              std::ptr::null_mut(), &mut *slot.overlapped)
             };
+            let (base, len) = (buffer.base, buffer.len);
+            self.slots[i] = Some(Pending { buffer, tag });
+            self.in_flight += 1;
+            // SAFETY: slot i is free (it came off the free list), so no read in flight uses its OVERLAPPED; `ovs`
+            // is `capacity` OVERLAPPEDs that never move, which is what the kernel requires of the address.
+            let ov = unsafe {
+                let ov = self.ovs.add(i);
+                ov.write(win::Overlapped { internal: 0, internal_high: 0, anon: [offset as usize], event: std::ptr::null_mut() });
+                ov
+            };
+            // SAFETY: the handle is ours; the buffer is in slot i and stays there until its completion is reaped,
+            // which is what makes the pointer legal for the whole read.
+            let ok = unsafe { win::ReadFile(self.file, base as *mut c_void, len as win::Dword, std::ptr::null_mut(), ov) };
             if ok == 0 {
                 // SAFETY: GetLastError immediately after a failed call.
                 let err = unsafe { win::GetLastError() };
                 if err != win::ERROR_IO_PENDING {
                     // The read never started, so no packet will come for it and the buffer is the caller's again.
-                    let p = self.pending.remove(&key).unwrap();
+                    let p = self.slots[i].take().unwrap();
+                    self.in_flight -= 1;
+                    self.free.push(i);
                     return Err((Status::DeviceUnavailable, p.buffer));
                 }
             }
@@ -398,18 +425,17 @@ impl DirectFile {
     pub fn wait_into(&mut self, ring: &mut Ring<Completion>, max: usize, timeout_ms: u32) -> usize {
         let mut pushed = 0;
         while pushed < max {
-            let completion = match self.held.pop_front() {
-                Some(c) => Some(c),
-                None => self.reap(timeout_ms),
-            };
-            let Some(completion) = completion else { break };
+            if self.held.is_empty() && self.reap_batch(timeout_ms) == 0 {
+                break; // nothing arrived within the timeout
+            }
+            let Some(completion) = self.held.pop_front() else { break };
             match ring.push(completion) {
                 Ok(()) => pushed += 1,
                 // The ring's rule, kept end to end: the refusal hands the completion back by value, so the one it
                 // could not hold is held here - not dropped, which for a completion would mean freeing its
                 // buffer - and offered first next time.
                 Err((_, c)) => {
-                    self.held.push_back(c);
+                    self.held.push_front(c);
                     break;
                 }
             }
@@ -417,47 +443,75 @@ impl DirectFile {
         pushed
     }
 
-    /// One trip to the completion port, or None if nothing arrived.
+    /// The C++ reader's contract, for the C exports: up to `max` completions, waiting at most `timeout_ms` for the
+    /// first (u32::MAX: forever) and taking whatever else has already arrived without waiting again.  Each goes to
+    /// `f` as it is taken - no ring in between, and no allocation.
+    pub fn wait_with(&mut self, max: usize, timeout_ms: u32, mut f: impl FnMut(Completion)) -> usize {
+        let mut n = 0;
+        while n < max {
+            if self.held.is_empty() && self.reap_batch(if n == 0 { timeout_ms } else { 0 }) == 0 {
+                break;
+            }
+            let Some(c) = self.held.pop_front() else { break };
+            f(c);
+            n += 1;
+        }
+        n
+    }
+
+    /// One trip to the completion port for up to REAP_BATCH completions, appended to `held`.  Returns how many
+    /// arrived (0: the timeout passed with none).
     #[cfg(windows)]
-    fn reap(&mut self, timeout_ms: u32) -> Option<Completion> {
-        let mut bytes: win::Dword = 0;
-        let mut key: win::UlongPtr = 0;
-        let mut overlapped: *mut win::Overlapped = std::ptr::null_mut();
+    fn reap_batch(&mut self, timeout_ms: u32) -> usize {
         let ms = if timeout_ms == u32::MAX { win::INFINITE } else { timeout_ms };
-        // SAFETY: all four out-params are ours; the port is ours.
+        let mut got: u32 = 0;
+        // SAFETY: `entries` has REAP_BATCH elements and is ours; the port is ours.
         let ok = unsafe {
-            win::GetQueuedCompletionStatus(self.port, &mut bytes, &mut key, &mut overlapped, ms)
+            win::GetQueuedCompletionStatusEx(self.port, self.entries.as_mut_ptr(), REAP_BATCH as u32, &mut got, ms, 0)
         };
-        if ok == 0 && overlapped.is_null() {
-            return None; // a timeout: nothing arrived, and there is nothing to hand back
+        if ok == 0 {
+            return 0; // a timeout: nothing arrived
         }
-        if overlapped.is_null() {
-            // A packet with no OVERLAPPED is a `Waker::wake` - the C++ reader's WAKE_TAG, kept with the same
-            // value so a caller that switches readers reads the same tag.  It owns no memory.
-            // SAFETY: a null, zero-length, unowned buffer; dropping it frees nothing.
-            let buffer = unsafe { Buffer::borrowed(std::ptr::null_mut(), 0) };
-            return Some(Completion { tag: WAKE_TAG, bytes: 0, status: Status::Ok, buffer });
+        let base = self.ovs as usize;
+        let size = std::mem::size_of::<win::Overlapped>();
+        let mut n = 0;
+        for k in 0..got as usize {
+            let e = self.entries[k];
+            if e.overlapped.is_null() {
+                // A packet with no OVERLAPPED is a `Waker::wake` - the C++ reader's WAKE_TAG, kept with the same
+                // value so a caller that switches readers reads the same tag.  It owns no memory.
+                // SAFETY: a null, zero-length, unowned buffer; dropping it frees nothing.
+                let buffer = unsafe { Buffer::borrowed(std::ptr::null_mut(), 0) };
+                self.held.push_back(Completion { tag: WAKE_TAG, bytes: 0, status: Status::Ok, buffer });
+                n += 1;
+                continue;
+            }
+            // The key is the file handle, the same for every read; the OVERLAPPED's address names the slot.  One
+            // that is not in our array, or names a slot with nothing in flight, is not ours to answer for.
+            let off = (e.overlapped as usize).wrapping_sub(base);
+            let i = off / size;
+            if off % size != 0 || i >= self.capacity {
+                continue;
+            }
+            let Some(p) = self.slots[i].take() else { continue };
+            self.in_flight -= 1;
+            self.free.push(i);
+            // The read's own NTSTATUS: success, or STATUS_END_OF_FILE - a legal short read at the last page.
+            let ok = e.internal == 0 || e.internal == win::STATUS_END_OF_FILE;
+            self.held.push_back(Completion {
+                tag: p.tag,
+                bytes: e.bytes as usize,
+                status: if ok { Status::Ok } else { Status::DeviceUnavailable },
+                buffer: p.buffer,
+            });
+            n += 1;
         }
-        // The key is what was registered with the port - the file handle here, so the same for every read on it -
-        // and therefore cannot tell one read from another.  The OVERLAPPED pointer can, and that is what the
-        // pending table is keyed by.  A completion naming an OVERLAPPED that is not ours is not ours to answer
-        // for, and is left where it is.
-        // Read the error before anything else can overwrite it: a failed dequeue of a real read sets it.
-        let err = if ok == 0 { unsafe { win::GetLastError() } } else { 0 };
-        let Some(p) = self.pending.remove(&(overlapped as usize)) else {
-            return None;
-        };
-        Some(Completion {
-            tag: p.tag,
-            bytes: bytes as usize,
-            status: if ok != 0 || err == win::ERROR_HANDLE_EOF { Status::Ok } else { Status::DeviceUnavailable },
-            buffer: p.buffer,
-        })
+        n
     }
 
     #[cfg(not(windows))]
-    fn reap(&mut self, _timeout_ms: u32) -> Option<Completion> {
-        None
+    fn reap_batch(&mut self, _timeout_ms: u32) -> usize {
+        0
     }
 }
 
@@ -472,10 +526,11 @@ impl Drop for DirectFile {
             // quiet second is not enough to give up: keep waiting while reads are pending, and only after thirty
             // quiet seconds in a row (a device that has stopped answering) let the ring go.
             let mut quiet = 0;
-            while !self.pending.is_empty() && quiet < 30 {
+            while self.in_flight > 0 && quiet < 30 {
                 // SAFETY: valid handle; null means "everything on this handle".
                 unsafe { win::CancelIoEx(self.file, std::ptr::null()) };
-                quiet = if self.reap(1000).is_none() { quiet + 1 } else { 0 };
+                quiet = if self.reap_batch(1000) == 0 { quiet + 1 } else { 0 };
+                self.held.clear(); // reaped while closing: nobody will ask for them, and their buffers may go now
             }
             if !self.port.is_null() {
                 // SAFETY: handles are ours, and nothing is using them now.
@@ -483,6 +538,12 @@ impl Drop for DirectFile {
             }
             if self.file != win::INVALID_HANDLE_VALUE {
                 unsafe { win::CloseHandle(self.file) };
+            }
+            // The OVERLAPPEDs go last, and only when no read can still name one - after thirty quiet seconds with
+            // reads still out (a device that stopped answering) they are leaked rather than freed under the kernel.
+            if self.in_flight == 0 && !self.ovs.is_null() {
+                // SAFETY: the pointer came from Box::into_raw of a boxed slice of `capacity` OVERLAPPEDs.
+                unsafe { drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(self.ovs, self.capacity))) };
             }
         }
     }

@@ -21,7 +21,7 @@ use crate::{Buffer, Completion, DirectFile, Waker, SECTOR};
 use std::cell::{RefCell, UnsafeCell};
 use std::ffi::{c_char, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use strata_abi::{Ring, Status, ABI_VERSION};
+use strata_abi::{Status, ABI_VERSION};
 
 /// Mirror of `struct strata_host_completion`.  The buffer is not in it: the engine knows its buffers by tag, as
 /// the C++ reader does, and the ring has handed the memory back by the time this is written.
@@ -146,17 +146,14 @@ pub unsafe extern "C" fn strata_host_file_wait(file: *mut HostFile, out: *mut Ho
         }
         *got_out = 0;
         let ring = &mut *(*file).ring.get();
-        let mut parked: Ring<Completion> = Ring::new(max as usize);
         let first = if timeout_ms < 0 { u32::MAX } else { timeout_ms as u32 };
-        if ring.wait_into(&mut parked, 1, first) == 1 {
-            ring.wait_into(&mut parked, max as usize - 1, 0);
-        }
         let mut n = 0;
-        while let Some(c) = parked.pop() {
-            // The buffer is the engine's again from here; dropping our hold on it frees nothing.
+        // Straight into the caller's array, no ring and no allocation in between.  The buffer is the engine's
+        // again from here; dropping our hold on it frees nothing.
+        ring.wait_with(max as usize, first, |c: Completion| {
             *out.add(n) = HostCompletion { tag: c.tag, bytes: c.bytes as u32, status: c.status as i32 };
             n += 1;
-        }
+        });
         *got_out = n as i32;
         Ok(())
     })
