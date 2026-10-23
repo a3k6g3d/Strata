@@ -216,8 +216,14 @@ SWEEPS = {
                  "because it cannot pass - mode 0 runs as a plain cudaMemcpyAsync loop "
                  "(verify.cpp:3050) with no counter, so the loop arm reads 0 no matter what it does.  "
                  "Speed: neither run separates the arms (largest gap 6.3% and 5.5%, against their own "
-                 "repeat-noise of 1.2% and 5.7%).  Default stays 0; do not run this a third time for "
-                 "the speed number."),
+                 "repeat-noise of 1.2% and 5.7%), and three pairings against a 4.4% floor is no power "
+                 "either way.  THIRD RUN 2026-10-23 (bench/results/ab-dma-batch-3, five rounds x two "
+                 "arms = ten launches): the loop path is counted now - two atomic increments added at "
+                 "verify.cpp:3050, in place, behaviour untouched - so the both-arms-non-zero rule can "
+                 "actually pass, and ten pairings is the first version of this with power against the "
+                 "floor.  The counter cost is not symmetric (loop ~156 atomics a window vs a handful, "
+                 "~3 us in a 60 ms window) and that is not what is being tested; say so in the "
+                 "writeup.  Default stays 0."),
         "arms": [("dma loop", ["--pcie-mode dma", "--engine-env=STRATA_DMA_BATCH=0"]),
                  ("dma batched", ["--pcie-mode dma", "--engine-env=STRATA_DMA_BATCH=1"])],
     },

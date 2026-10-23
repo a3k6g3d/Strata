@@ -22,20 +22,37 @@ rem Both then reach the submission path, which is what the sweep's own note has 
 rem knob needs (--pcie-mode dma stays on both arms for the same reason).
 rem
 rem What was written down before the first launch, so it cannot be decided afterwards.
+rem --- updated 2026-10-23 for the run below, still before any of it was launched ---
+rem The third run (this one) is FIVE rounds x two arms = TEN launches, into
+rem bench/results/ab-dma-batch-3 (the two earlier outputs, ab-dma-batch and -2, are kept and
+rem are NOT overwritten).  It is five rounds for a reason: the two runs that failed the
+rem mechanism rule each had three pairings, which is no power at all against a 4.4% floor; ten
+rem pairings is the first version of this question that could answer the speed half.
+rem The other thing that changed is the reason the rule could not pass.  Mode 0 runs as a plain
+rem cudaMemcpyAsync loop (verify.cpp:3050) and had no counter there, so the loop arm read 0 no
+rem matter what it did - both prior runs failed on exactly that.  Two atomic increments are now
+rem in that loop, in place, behaviour untouched (the loop ignores errors, so it cannot route
+rem through the batched path), and strata-instr.exe was rebuilt on 2026-10-23 07:55:38.  So for
+rem the first time both arms print, and the rule below can actually pass.
+rem Write the asymmetry down now, before the numbers: the loop arm pays ~156 atomic increments a
+rem window (one per blob) and the batched arm a handful (one per group) - about 3 us inside a
+rem 60 ms window, so well under the floor, but it is not zero and it is not the thing being
+rem tested.  Say so in the writeup rather than letting it look like a discovered effect.
 rem The floor is not a guess any more: the live config, three launches, 2026-10-22 17:57-18:12,
 rem warm medians 35.0 / 36.55 / 35.4 tps - about 4.4%, and the launches logged a power cap and
 rem mean clocks of 1882/1686/1570 MHz, so that is the GPU coming off idle, not a broken meter.
-rem Write down what that means before running: nine runs an arm cannot settle a ~2% question
-rem against a 4.4% floor.  So the COUNTERS are the claim - they are exact, no noise floor
-rem applies to them, and this is the rule that failed last time - and the speed column is a
-rem direction, reported as one, not a result.  If the speed does clear 4.4% that is news, but
-rem it was not what this batch was built to decide.
-rem Three rounds, three runs a launch, nine runs an arm.
-rem The speed rule: the arm's gap has to beat the spread of the three baseline launches (the
-rem same command run three times - the batch's own noise), the sign has to hold in ALL THREE
-rem round-pairs - with three rounds there is no room for a dissent, and one would stop the
-rem claim - and the tool's own distribution test gets the last word: the warm column, run 2
-rem of each launch, since the tool cannot separate arms inside its own 3.7% batch floor.
+rem Write down what that means before running: against a 4.4% floor, three pairings settle
+rem nothing (both prior runs proved that: gaps of 7.8%/6.3%/5.5% against repeat-noise of
+rem 1.2%/5.7%, sign flipping in 2 of 3).  TEN pairings is where a speed claim can start to be
+rem made, so the speed rule below is written for ten - the COUNTERS are still the primary claim
+rem (exact, no noise floor applies to them), and the speed column is a direction, reported as
+rem one, unless it clears the floor.
+rem Five rounds, three runs a launch, fifteen runs an arm.
+rem The speed rule: the arm's gap has to beat the 4.4% floor (the three-launch noise measurement
+rem above - the same command run three times), the sign has to hold in at least 8 of the 10
+rem round-pairs - and the tool's own distribution test gets the last word: the warm column, run
+rem 2 of each launch, since the tool cannot separate arms inside its own 3.7% batch floor.  A
+rem gap under the floor is no finding, not a small finding.
 rem The mechanism rule is the new one, and it is the one that failed last time, so it is the
 rem one to look at first: the instrumented build stamps the submissions per window in BOTH
 rem arms (two atomics at the submission point, so the counts are exact - no noise floor
@@ -46,7 +63,9 @@ rem and the stamp says whether it did - and then whatever the speed says, it did
 rem the batch, and say so.
 rem New for this run, from what the last one showed: BOTH arms' counters have to be non-zero.
 rem A baseline reading 0 means it never reached the submission path - the exact way the last run
-rem failed - and the run is void for the mechanism question, whatever the speed says.
+rem failed - and the run is void for the mechanism question, whatever the speed says.  That rule
+rem is now actually satisfiable: the loop path is counted (see above), so a 0 on the loop side is
+rem a real failure to run, not the instrumentation's blind spot as it was in the two prior runs.
 rem And one asymmetry is the code's own, not an arm, so write it down: mode != 0 turns adaptive
 rem overlap off (generate.cpp:9501 prints "adaptive overlap: off: not with STRATA_DMA_BATCH").
 rem So the arm is the flag as shipped - batch AND overlap off - against the loop WITH overlap.
@@ -54,10 +73,11 @@ rem That is the product question and it is fine to answer it, but the counters s
 rem batch ran and the overlap line says what else moved; do not report the gap as the batch's.
 rem One more, mechanical: a launch whose engine-log has no "strata decode submissions" line is
 rem void for this question - it did not print, so it measured nothing.  The binary that stamps
-rem it is build-0145/strata-instr.exe, rebuilt on 2026-10-22 16:20; the previous batch's logs
-rem predate that build and carry the tier line but not this one.
+rem it is build-0145/strata-instr.exe, rebuilt on 2026-10-23 07:55:38 (the 2026-10-22 16:20 build
+rem stamped only the batched path); the previous batches' logs predate both builds and carry the
+rem tier line but not this one.
 rem
-rem About 35 minutes now: six launches (three rounds x two arms) at the ~5 min a launch this
+rem About an hour now: ten launches (five rounds x two arms) at the ~5 min a launch this
 rem run takes, plus the 20 s gaps.  The chat you are in does not just drop when the server
 rem stops, it closes: the --check pass below names strata-vision.exe - this window - in the
 rem kill list, and only the server is restarted afterwards.
@@ -68,7 +88,7 @@ echo.
 echo This is what will be stopped. Nothing is killed yet.
 echo.
 echo The run uses J:\Strata-work\strata-instr.json - the live config, the INSTRUMENTED exe
-echo   (J:/Strata-work/build-0145/strata-instr.exe, rebuilt 2026-10-22 16:20 with the
+echo   (J:/Strata-work/build-0145/strata-instr.exe, rebuilt 2026-10-23 07:55 with the
 echo   submission counter) and the env block (STRATA_VERIFY_PROFILE, STRATA_DECODE_TIMING,
 echo   STRATA_RAM_TIER_CLOCK), so both arms print the per-window stamps.  If that file is
 echo   gone, the run reads the live config instead - the uninstrumented exe, no env block -
@@ -80,14 +100,14 @@ echo.
 pause
 
 python tools\noise_floor_unattended.py --log bench\results\dma-batch.log ^
-  --harness-args "--config J:/Strata-work/strata-instr.json --sweep dma-batch --rounds 3 --runs 9 --noise-floor 0 --out bench/results/ab-dma-batch-2"
+  --harness-args "--config J:/Strata-work/strata-instr.json --sweep dma-batch --rounds 5 --runs 9 --noise-floor 0 --out bench/results/ab-dma-batch-3"
 
 echo.
 echo Run finished.  The log is:
 echo   J:\Strata-work\Strata-0140\bench\results\dma-batch.log
 echo   J:\Strata-work\Strata-0140\bench\results\dma-batch-harness-out.log
-echo Results: J:\Strata-work\Strata-0140\bench\results\ab-dma-batch-2\
+echo Results: J:\Strata-work\Strata-0140\bench\results\ab-dma-batch-3\
 echo   read the counters with:  python tools\read_window_profile.py ^<launch^>\engine-log.txt
-echo   and the speed with:      python tools\read_sweep_warm.py bench/results/ab-dma-batch-2
+echo   and the speed with:      python tools\read_sweep_warm.py bench/results/ab-dma-batch-3
 echo.
 pause
