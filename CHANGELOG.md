@@ -7,6 +7,12 @@ dated, and the fork's releases follow [SemVer](https://semver.org) once it tags 
 
 ## Unreleased - 2026-10-10
 
+### Measured (2026-10-23, the CPU expert pool is not compute-bound)
+- AVX-512 i-quant rows (the default on an AVX-512 CPU) against the AVX2 rows (`STRATA_NO_IQ512=1`), six interleaved
+  launches on an i7-11700K: AVX2 -0.1% at the round median, inside the noise. The pool is bound by memory, so a CPU
+  kernel tuned for this processor buys nothing measurable; faster RAM is the lever. `docs/CPU_KERNEL_AB.md`, raw in
+  `bench/results/ab-iq512/`, sweep `iq512` in `tools/strata_ab.py`.
+
 ### Added (2026-10-13, Monitor shows the expert cache hit rate)
 - The Monitor page now shows the expert cache as a line of its own: hit rate since start, hits of looked-up layers over the layers that ask for
   them, hit/miss/evicted/loaded counts, offloaded experts, pinned layers, a layer resident in VRAM and the budget it spends. The numbers come from
