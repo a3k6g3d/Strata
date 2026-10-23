@@ -4,6 +4,8 @@
 //! codes the facade returns, and the one data structure the host layer owns outright: the completion ring.
 //! Everything here is std-only so it builds without network access.
 
+pub mod header;
+
 /// Mirror of `#define STRATA_ABI_VERSION` in include/strata/c/abi.h. tests/abi_header.rs parses the header and
 /// fails the build if the two ever disagree — that test is the reason this constant exists twice.
 pub const ABI_VERSION: u32 = 1;

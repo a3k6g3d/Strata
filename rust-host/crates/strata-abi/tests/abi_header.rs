@@ -82,6 +82,26 @@ fn struct_fields(src: &str, name: &str) -> Vec<(String, String)> {
     out
 }
 
+/// The calls the facade exports, as the header declares them.  Until this test, nothing parsed the function list:
+/// a parameter changed in the header and not in the Rust callers' fn types would have been caught by nobody
+/// (GetProcAddress finds a symbol by name, never by signature).  The Rust types these must agree with are the
+/// `Fn*` aliases in tests/link_facade.rs and strata-host's tests/vertical_slice.rs; a change here is a change there.
+#[test]
+fn facade_function_list_matches_the_header() {
+    let got: Vec<String> = strata_abi::header::prototypes(&header(), "STRATA_API").iter().map(|p| p.line()).collect();
+    assert_eq!(
+        got,
+        vec![
+            "int strata_abi_version()",
+            "const char *strata_abi_last_error()",
+            "int strata_facade_probe_policy(int t_mtp, int lookup_k, int match, int *lookup_out, int *t_out)",
+            "int strata_facade_cudart_version(int *runtime_version_out)",
+            "int strata_facade_expert_apply(const strata_expert_ref *ref, const float *x, unsigned long long x_len, float *out, unsigned long long out_cap)",
+        ],
+        "the facade's export list moved; update the Rust fn types that call it, then this list"
+    );
+}
+
 #[test]
 fn version_constant_matches_the_header() {
     assert_eq!(define_value(&header(), "STRATA_ABI_VERSION"), ABI_VERSION);

@@ -19,6 +19,8 @@
 //! pads.  The C++ reader does the same thing for the same reason (`expert_source.hpp`, the 4 KiB-aligned windows
 //! scattered into blobs).
 
+pub mod ffi;
+
 use std::collections::{HashMap, VecDeque};
 use std::os::raw::c_void;
 use std::path::Path;
@@ -40,9 +42,24 @@ pub const BLOB_WINDOW: u64 = 1_384_448; // 338 * 4096
 pub struct Buffer {
     base: *mut u8,
     len: usize,
+    /// False for memory the C++ side lent across the seam (`Buffer::borrowed`): the ring still holds it by value
+    /// while the read is in flight, but dropping it frees nothing, because the allocation was never this module's.
+    owned: bool,
 }
 
 impl Buffer {
+    /// Memory the caller owns, held by the ring for exactly as long as a read is in flight.  This is the shape
+    /// the C exports need: the engine passes a pointer it allocated, and gets it back inside a completion.
+    ///
+    /// # Safety
+    /// `base` must point to `len` writable bytes that stay valid, and that nobody else reads or writes, until the
+    /// completion carrying this buffer has been reaped or the ring has been dropped.  Across the C ABI that is the
+    /// header's rule for `strata_host_file_submit`; here it is the caller's promise, because Rust cannot check
+    /// memory it did not allocate.
+    pub unsafe fn borrowed(base: *mut u8, len: usize) -> Buffer {
+        Buffer { base, len, owned: false }
+    }
+
     pub fn len(&self) -> usize {
         self.len
     }
@@ -72,7 +89,7 @@ impl Buffer {
 impl Drop for Buffer {
     fn drop(&mut self) {
         #[cfg(windows)]
-        if !self.base.is_null() {
+        if self.owned && !self.base.is_null() {
             // SAFETY: this is the allocation VirtualAlloc made, whole (the second argument is 0 because the whole
             // region is being released, which is what MEM_RELEASE requires).
             unsafe {
@@ -98,6 +115,26 @@ pub struct Completion {
     pub buffer: Buffer,
 }
 
+/// The tag a wake shows up with - `platform::DirectFile::WAKE_TAG` on the C++ side, the same value.
+pub const WAKE_TAG: u64 = u64::MAX;
+
+/// Posts a wake to a ring's completion port.  The port is the only state it touches, and posting to a port is
+/// thread-safe, which is what lets the reader's other threads hand its I/O thread new work.
+#[derive(Debug, Clone, Copy)]
+pub struct Waker {
+    port: usize,
+}
+
+impl Waker {
+    pub fn wake(&self) {
+        #[cfg(windows)]
+        // SAFETY: the port belongs to a live ring (the `waker` contract); a packet with no OVERLAPPED is legal.
+        unsafe {
+            win::PostQueuedCompletionStatus(self.port as win::Handle, 0, 0, std::ptr::null_mut());
+        }
+    }
+}
+
 /// A submitted read whose completion has not been reaped yet.
 struct Pending {
     buffer: Buffer,
@@ -116,12 +153,11 @@ pub struct DirectFile {
     #[cfg(windows)]
     port: win::Handle,
     capacity: usize,
+    size: u64,
     pending: HashMap<usize, Pending>,
     /// Completions this ring has already reaped and could not park in the caller's full ring.  Nothing is
     /// dropped; the caller owns the retry, and this is where the retry waits.
     held: VecDeque<Completion>,
-    /// Reads that completed before the call to `wait_into` (Windows may finish a read synchronously).
-    done: VecDeque<Completion>,
 }
 
 #[cfg(windows)]
@@ -169,7 +205,14 @@ mod win {
         pub fn VirtualAlloc(addr: *mut c_void, len: usize, typ: Dword, protect: Dword) -> *mut c_void;
         pub fn VirtualFree(addr: *mut c_void, len: usize, typ: Dword) -> Bool;
         pub fn GetLastError() -> Dword;
+        pub fn GetFileSizeEx(file: Handle, size: *mut i64) -> Bool;
+        pub fn PostQueuedCompletionStatus(port: Handle, bytes: Dword, key: UlongPtr,
+                                          overlapped: *mut Overlapped) -> Bool;
     }
+
+    /// A read that ran into the end of the file.  The C++ reader treats it as a legal short read at the last
+    /// page (direct_file.cpp, STATUS_END_OF_FILE), and so must this one, or the table's last page reads as an error.
+    pub const ERROR_HANDLE_EOF: Dword = 38;
 }
 
 /// A path to the wide form CreateFileW wants.
@@ -207,13 +250,22 @@ impl DirectFile {
                 unsafe { win::CloseHandle(file) };
                 return Err(Status::DeviceUnavailable);
             }
+            let mut size: i64 = 0;
+            // SAFETY: valid handle, and `size` is ours.
+            if unsafe { win::GetFileSizeEx(file, &mut size) } == 0 {
+                unsafe {
+                    win::CloseHandle(port);
+                    win::CloseHandle(file);
+                }
+                return Err(Status::DeviceUnavailable);
+            }
             return Ok(DirectFile {
                 file,
                 port,
                 capacity,
+                size: size as u64,
                 pending: HashMap::new(),
                 held: VecDeque::new(),
-                done: VecDeque::new(),
             });
         }
         #[cfg(not(windows))]
@@ -221,6 +273,20 @@ impl DirectFile {
             let _ = (path, capacity);
             Err(Status::DeviceUnavailable) // no IOCP here; this machine's host is the Windows one
         }
+    }
+
+    /// A handle that can make a thread blocked in `wait_into` return, from any thread.  It is valid for as long as
+    /// this ring is: the port it posts to is closed when the ring drops, so a waker must not outlive it.
+    pub fn waker(&self) -> Waker {
+        #[cfg(windows)]
+        return Waker { port: self.port as usize };
+        #[cfg(not(windows))]
+        Waker { port: 0 }
+    }
+
+    /// The file's length in bytes, read once at open - what `platform::DirectFile::size()` answers on the C++ side.
+    pub fn size(&self) -> u64 {
+        self.size
     }
 
     /// Allocate a buffer legal to hand to a direct read: page-aligned, and a whole number of sectors.
@@ -238,7 +304,7 @@ impl DirectFile {
             if base.is_null() {
                 return None;
             }
-            return Some(Buffer { base: base as *mut u8, len });
+            return Some(Buffer { base: base as *mut u8, len, owned: true });
         }
         #[cfg(not(windows))]
         {
@@ -252,16 +318,20 @@ impl DirectFile {
     /// `buffer` is moved in rather than borrowed, and comes back from `wait_into` inside the completion.  That is
     /// the rule the plan cares about, and it is not a comment: a caller that tried to free the buffer here would
     /// be freeing memory the ring still holds.
-    pub fn submit(&mut self, offset: u64, buffer: Buffer, tag: u64) -> Result<(), Status> {
+    ///
+    /// A refusal hands the buffer back by value, the way `Ring::push` does: a read that was not queued produces no
+    /// completion, so the error is the only place the buffer can come home.  (It used to be dropped on the
+    /// alignment and full-ring paths - freed, for an owned buffer - and reported twice on a failed `ReadFile`.)
+    pub fn submit(&mut self, offset: u64, buffer: Buffer, tag: u64) -> Result<(), (Status, Buffer)> {
         #[cfg(windows)]
         {
             // The contract of direct access, checked rather than assumed: a violation is an error here, not a
             // silent short read or a ERROR_INVALID_PARAMETER from the kernel much later.
             if offset % SECTOR != 0 || buffer.len as u64 % SECTOR != 0 || !buffer.is_aligned() {
-                return Err(Status::BufferTooShort);
+                return Err((Status::BufferTooShort, buffer));
             }
-            if self.pending.len() + self.done.len() >= self.capacity {
-                return Err(Status::WouldBlock); // the caller owns the retry; nothing was consumed
+            if self.pending.len() >= self.capacity {
+                return Err((Status::WouldBlock, buffer)); // the caller owns the retry; nothing was consumed
             }
 
             let overlapped = Box::new(win::Overlapped {
@@ -285,23 +355,21 @@ impl DirectFile {
                 // SAFETY: GetLastError immediately after a failed call.
                 let err = unsafe { win::GetLastError() };
                 if err != win::ERROR_IO_PENDING {
-                    // The read never started, so the buffer is the caller's again - the rule says the entry was
-                    // not consumed, and that has to be true of the buffer too.
+                    // The read never started, so no packet will come for it and the buffer is the caller's again.
                     let p = self.pending.remove(&key).unwrap();
-                    self.done.push_back(Completion { tag: p.tag, bytes: 0, status: Status::DeviceUnavailable, buffer: p.buffer });
-                    return Err(Status::DeviceUnavailable);
+                    return Err((Status::DeviceUnavailable, p.buffer));
                 }
-            } else {
-                // Completed before the call returned. Rare, legal, and it must not be missed: park it as done.
-                let p = self.pending.remove(&key).unwrap();
-                self.done.push_back(Completion { tag: p.tag, bytes: p.buffer.len, status: Status::Ok, buffer: p.buffer });
             }
+            // A read that finished before ReadFile returned (ok != 0) stays pending too.  The handle is bound to a
+            // port without FILE_SKIP_COMPLETION_PORT_ON_SUCCESS, so the port still gets its packet, and that packet
+            // is what reaps it.  Reaping it here instead used to free the OVERLAPPED while its packet was still
+            // queued - and a later read whose Box landed at the same address would have been completed by it.
             return Ok(());
         }
         #[cfg(not(windows))]
         {
-            let _ = (offset, tag, buffer);
-            Err(Status::DeviceUnavailable)
+            let _ = (offset, tag);
+            Err((Status::DeviceUnavailable, buffer))
         }
     }
 
@@ -311,8 +379,7 @@ impl DirectFile {
     pub fn wait_into(&mut self, ring: &mut Ring<Completion>, max: usize, timeout_ms: u32) -> usize {
         let mut pushed = 0;
         while pushed < max {
-            let next = self.held.pop_front().or_else(|| self.done.pop_front());
-            let completion = match next {
+            let completion = match self.held.pop_front() {
                 Some(c) => Some(c),
                 None => self.reap(timeout_ms),
             };
@@ -345,17 +412,26 @@ impl DirectFile {
         if ok == 0 && overlapped.is_null() {
             return None; // a timeout: nothing arrived, and there is nothing to hand back
         }
+        if overlapped.is_null() {
+            // A packet with no OVERLAPPED is a `Waker::wake` - the C++ reader's WAKE_TAG, kept with the same
+            // value so a caller that switches readers reads the same tag.  It owns no memory.
+            // SAFETY: a null, zero-length, unowned buffer; dropping it frees nothing.
+            let buffer = unsafe { Buffer::borrowed(std::ptr::null_mut(), 0) };
+            return Some(Completion { tag: WAKE_TAG, bytes: 0, status: Status::Ok, buffer });
+        }
         // The key is what was registered with the port - the file handle here, so the same for every read on it -
         // and therefore cannot tell one read from another.  The OVERLAPPED pointer can, and that is what the
         // pending table is keyed by.  A completion naming an OVERLAPPED that is not ours is not ours to answer
         // for, and is left where it is.
+        // Read the error before anything else can overwrite it: a failed dequeue of a real read sets it.
+        let err = if ok == 0 { unsafe { win::GetLastError() } } else { 0 };
         let Some(p) = self.pending.remove(&(overlapped as usize)) else {
             return None;
         };
         Some(Completion {
             tag: p.tag,
             bytes: bytes as usize,
-            status: if ok != 0 { Status::Ok } else { Status::DeviceUnavailable },
+            status: if ok != 0 || err == win::ERROR_HANDLE_EOF { Status::Ok } else { Status::DeviceUnavailable },
             buffer: p.buffer,
         })
     }
@@ -372,12 +448,15 @@ impl Drop for DirectFile {
         // them and waits for each one to come back before the buffers - and their VirtualAlloc'd memory - go.
         #[cfg(windows)]
         {
-            while !self.pending.is_empty() {
+            // A cancelled read still reports to the port, and until it has, the kernel may write its buffer - which
+            // since the C exports is memory the engine lent us and will reuse the moment close returns.  So one
+            // quiet second is not enough to give up: keep waiting while reads are pending, and only after thirty
+            // quiet seconds in a row (a device that has stopped answering) let the ring go.
+            let mut quiet = 0;
+            while !self.pending.is_empty() && quiet < 30 {
                 // SAFETY: valid handle; null means "everything on this handle".
                 unsafe { win::CancelIoEx(self.file, std::ptr::null()) };
-                if self.reap(1000).is_none() {
-                    break; // cancelled, and the port says so; the buffers drop with the ring
-                }
+                quiet = if self.reap(1000).is_none() { quiet + 1 } else { 0 };
             }
             if !self.port.is_null() {
                 // SAFETY: handles are ours, and nothing is using them now.
