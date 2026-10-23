@@ -73,3 +73,6 @@ desktop/tauri/src-tauri/gen/
 
 # local Windows HIP packaging output
 dist-hip/
+
+# cargo build output of the rust-host workspace (the sources under rust-host/crates are tracked)
+rust-host/target/
