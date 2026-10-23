@@ -7,6 +7,12 @@ dated, and the fork's releases follow [SemVer](https://semver.org) once it tags 
 
 ## Unreleased - 2026-10-10
 
+### Measured (2026-10-23, the CPU expert pool is not compute-bound)
+- AVX-512 i-quant rows (the default on an AVX-512 CPU) against the AVX2 rows (`STRATA_NO_IQ512=1`), six interleaved
+  launches on an i7-11700K: AVX2 -0.1% at the round median, inside the noise. The pool is bound by memory, so a CPU
+  kernel tuned for this processor buys nothing measurable; faster RAM is the lever. `docs/CPU_KERNEL_AB.md`, raw in
+  `bench/results/ab-iq512/`, sweep `iq512` in `tools/strata_ab.py`.
+
 ### Fixed (2026-10-18, a long chat summarized its whole history every turn)
 - A chat that has outgrown the context pays for it every turn, and until now it paid in full: the summary cache found
   last turn's summary, but when that summary no longer fitted on its own the code re-summarized the entire middle -
