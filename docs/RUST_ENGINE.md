@@ -92,6 +92,41 @@ on the calling thread where the pool issues from four.
 asked in and the next one or two. Gate: M5's, plus a test that a consumer keeping a blob too long fails loudly
 rather than silently.
 
+*The type, 2026-10-23:* `rust-host/crates/strata-host/src/transient.rs` - a reference into a slot cannot live
+across a layer advance (a `compile_fail` doctest pins E0502), and a lease kept past its window is refused with
+`BadSlot`, never answered with the next blob's bytes (the gate's test). Not wired in.
+
+*The audit, before wiring it in, 2026-10-23.* The question was whether today's C++ breaks the rule at all - which
+decides whether M6 is a fix or a rail. `STRATA_STAGE_AUDIT=1` (opt-in; off, one counter per fill that nothing reads)
+checks the stage buffers of the native GGUF source from both sides: the source counts a recycle of a buffer it handed
+out fewer than three layers ago; the CPU pool stamps every blob before it reads it and checks the stamp after. One
+bench suite (chat + agent, two runs, 5.3 min, Swift 1.5 IQ3_S, 0.1.45 + this branch, 36.8 tok/s chat decode):
+
+| | |
+|---|---|
+| layer steps | 32,768 |
+| pool reads checked | 4,980 |
+| **pool reads whose buffer was refilled under them** | **0** |
+| recycles | 12,355 |
+| recycles 0 / 1 / 2 layers after the last hand-out | 5,418 / 2 / 0 |
+
+So the source *does* break the comment's promise - but where nobody is holding a pointer. The recycle rule is "three
+layers *or* 256 assemblies, whichever comes first", and the layer clock only ticks in decode (`begin_layer`); at
+startup (the GPU cache fill: 2,066 of them before the first decode) and while a long prompt is read (the rest arrive
+with the 647- and 3,972-token prompts), the clock stands still and the 256-assembly rule recycles at "age 0". Those
+blobs are copied the moment they are handed out (cache fills), and the prompt path never holds a transient pointer -
+it has the source copy each blob (`prefill.cpp`, CS-T). In decode, two recycles one layer after hand-out in 32,768
+steps, and no pool read disturbed.
+
+Reading: **no consumer breaks the rule today**; the comment describes it less exactly than the code does ("layers"
+is only a clock in decode). Wiring the Rust ring in would therefore be a rail against a future consumer, not the fix
+of a present bug - which is worth knowing before paying for it on the hot path.
+
+Found on the way, not fixed (a default-path change, so its own decision): the reset that hands the startup's stage
+buffers back when the mapped tier takes over (`expert_source.cpp`, after `close_direct`) clears `stage_buf_` but not
+`stage_idx_` or the per-buffer events, where the other reset clears all three (`stage_free_events`). A later
+`note_async_read` with a pointer that matches a stale entry indexes `stage_buf_[v]` before it checks anything.
+
 **M7, the planner and the window.** The depth-1..4 prefetch window becomes a type with a capacity and a drop impl.
 The invariant "a prediction only ever warms" gets a test: a prediction must never change *what* is computed, only
 *when* the bytes arrive.

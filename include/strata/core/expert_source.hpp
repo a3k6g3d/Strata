@@ -182,6 +182,12 @@ public:
     /// pointers are never recycled ignores it.  (#1237: a page-locked stage buffer is read by the DMA after the copy call
     /// returned, where a pageable one is staged by the driver before it returns.)
     virtual void note_async_read(const uint8_t* blob, void* stream) { (void) blob; (void) stream; }
+    /// STRATA_STAGE_AUDIT=1 (RUST_ENGINE.md M6, the audit): which fill of a recycled stage buffer `blob` points into
+    /// right now - a number that changes every time the buffer is refilled - or 0 when `blob` is not a stage
+    /// buffer or the audit is off.  A consumer stamps a blob before it reads it and again after; a different stamp
+    /// means the buffer was recycled under it.  `audit_check` does the comparing and the counting.
+    virtual uint64_t audit_stamp(const uint8_t* blob) { (void) blob; return 0; }
+    virtual void audit_check(const uint8_t* blob, uint64_t before) { (void) blob; (void) before; }
 
     /// Blobs touched, for the driver to report.  A source that does not count returns 0.
     virtual int64_t reads() const { return 0; }
@@ -822,6 +828,8 @@ public:
     const uint8_t* blob_stable(int64_t layer, int64_t expert) override;
     int blob_parts(int64_t layer, int64_t expert, BlobPart* out) override;
     void note_async_read(const uint8_t* blob, void* stream) override;
+    uint64_t audit_stamp(const uint8_t* blob) override;
+    void audit_check(const uint8_t* blob, uint64_t before) override;
     /// Windows, opt-in with STRATA_FILE_RELEASE=1: trim the file mapping's full pages after their expert reaches
     /// VRAM. Never touches the resident complement or staging buffers. Disabled by default.
     uint64_t release(int64_t layer, int64_t expert) override;
@@ -941,6 +949,13 @@ private:
     std::vector<int64_t> stage_key_;
     std::vector<uint64_t> stage_epoch_, stage_used_;
     std::vector<char> stage_busy_;            ///< being filled (outside stage_mu_): never a victim
+    std::vector<uint64_t> stage_gen_;         ///< per stage buffer: how many times it has been filled (the audit's stamp)
+    // STRATA_STAGE_AUDIT=1: the transient-blob rule ("valid for the layer it was asked in and the next one or two"),
+    // checked from both sides.  Source: a recycle of a buffer last handed out fewer than kStageAge layers ago, by age.
+    // Consumer: a stamp that moved between before and after a read (and whether the refill was the same blob).
+    uint64_t audit_recycles_ = 0, audit_early_[3] = {0, 0, 0}, audit_said_ = 0;
+    std::atomic<uint64_t> audit_checks_{0}, audit_moved_{0}, audit_moved_same_{0};
+    void audit_summary(const char* when);
     std::condition_variable stage_cv_;
     int fetch_threads_ = 8;
     std::atomic<uint64_t> file_blob_bytes_{0}, file_us_{0};

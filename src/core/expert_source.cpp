@@ -1068,6 +1068,7 @@ void FileExpertSource::close() {
         stage_epoch_.clear();
         stage_used_.clear();
         stage_busy_.clear();
+        stage_gen_.clear();
         stage_pf_.clear();
         stage_of_.clear();
         stage_blob_ = 0;
@@ -1261,6 +1262,14 @@ bool FileExpertSource::copy_from_files(int64_t layer, int64_t expert, uint8_t* d
 // prompt in the 0.1.41 release gate (48 tokens of id 0; off = identical to 0.1.40.4): with page-locked buffers the cache-fill
 // copy is truly asynchronous, so a recycled stage buffer can be overwritten before its copy finishes.  Off until that is fixed.
 #define STAGE_PIN_DEFAULT 0
+
+// STRATA_STAGE_AUDIT=1 (RUST_ENGINE.md M6): count where the transient-blob rule is broken, from the source's side
+// (claim_stage) and the consumer's (audit_stamp / audit_check around the CPU pool's reads).  Off: one counter per
+// fill that nothing reads, and no other work.
+static bool stage_audit_on() {
+    static const bool on = [] { const char* v = std::getenv("STRATA_STAGE_AUDIT"); return v != nullptr && std::atoi(v) != 0; }();
+    return on;
+}
 constexpr uint64_t kStagePinFloor = 3ull << 30;   // RAM left available after a pinned stage buffer
 void FileExpertSource::StageBufFree::operator()(uint8_t* p) const noexcept {
     if (pinned) (void) cudaFreeHost(p);
@@ -1330,6 +1339,7 @@ bool FileExpertSource::claim_stage(int64_t key, size_t& v, bool& fill, bool ahea
         stage_epoch_.push_back(0);
         stage_used_.push_back(0);
         stage_busy_.push_back(0);
+        stage_gen_.push_back(0);
         stage_pf_.push_back(0);
         if (stage_buf_.size() == 512 && !stage_grew_) {
             stage_grew_ = true;
@@ -1337,6 +1347,21 @@ bool FileExpertSource::claim_stage(int64_t key, size_t& v, bool& fill, bool ahea
                          stage_buf_.size(), (double) stage_buf_.size() * (double) stage_blob_ / 1073741824.0);
         }
     } else {
+        if (stage_audit_on()) {
+            // the rule's promise, broken from the source's side: this buffer was last handed out fewer than
+            // kStageAge layers ago, and is recycled anyway because 256 assemblies have passed (kStageSeq)
+            ++audit_recycles_;
+            const uint64_t age = epoch_ - stage_epoch_[v];
+            if (age < kStageAge) {
+                ++audit_early_[age];
+                if (audit_said_ < 10) {
+                    ++audit_said_;
+                    std::fprintf(stderr, "stage audit: buffer %zu recycled %llu layer(s) after it was last handed out "
+                                 "(%llu assemblies since; the rule promises %llu layers)\n", v, (unsigned long long) age,
+                                 (unsigned long long) (seq - stage_used_[v]), (unsigned long long) (kStageAge - 1));
+                }
+            }
+        }
         stage_of_.erase(stage_key_[v]);
         if (stage_pf_[v]) { stage_pf_[v] = 0; io_pf_unused_.fetch_add(1, std::memory_order_relaxed); }   // read ahead, never asked for
         // #1237: a page-locked buffer is read by the DMA after the copy call returned: it is refilled only once the
@@ -1357,6 +1382,7 @@ bool FileExpertSource::claim_stage(int64_t key, size_t& v, bool& fill, bool ahea
     stage_epoch_[v] = epoch_;
     stage_used_[v] = seq;
     stage_busy_[v] = 1;
+    ++stage_gen_[v];
     stage_of_[key] = v;
     fill = true;
     return false;
@@ -1409,6 +1435,41 @@ void FileExpertSource::note_async_read(const uint8_t* blob, void* stream) {
         return;
     }
     stage_ev_live_[v] = 1;
+}
+
+uint64_t FileExpertSource::audit_stamp(const uint8_t* blob) {
+    if (!stage_audit_on() || blob == nullptr) return 0;
+    std::lock_guard<std::mutex> lk(stage_mu_);
+    const auto it = stage_idx_.find(blob);
+    if (it == stage_idx_.end() || it->second >= stage_gen_.size()) return 0;   // the mapping or the resident arena
+    // the fill count in the high bits, the key in the low ones: a refill with the same blob is told apart from
+    // one with another blob without a second lookup
+    return (stage_gen_[it->second] << 24) | ((uint64_t) stage_key_[it->second] & 0xFFFFFFull);
+}
+
+void FileExpertSource::audit_check(const uint8_t* blob, uint64_t before) {
+    if (before == 0) return;
+    audit_checks_.fetch_add(1, std::memory_order_relaxed);
+    const uint64_t after = audit_stamp(blob);
+    if (after == before) return;
+    audit_moved_.fetch_add(1, std::memory_order_relaxed);
+    const bool same = (after & 0xFFFFFFull) == (before & 0xFFFFFFull);
+    if (same) audit_moved_same_.fetch_add(1, std::memory_order_relaxed);
+    std::lock_guard<std::mutex> lk(stage_mu_);
+    if (audit_said_ < 20) {
+        ++audit_said_;
+        std::fprintf(stderr, "stage audit: a CPU pool read's buffer was refilled while it was in use (%s blob) at layer "
+                     "epoch %llu\n", same ? "the same" : "ANOTHER", (unsigned long long) epoch_);
+    }
+}
+
+void FileExpertSource::audit_summary(const char* when) {
+    std::fprintf(stderr, "stage audit (%s): %llu layer steps, %zu stage buffers, %llu recycles, early %llu/%llu/%llu "
+                 "(0/1/2 layers after hand-out), pool reads checked %llu, refilled under the read %llu (same blob %llu)\n",
+                 when, (unsigned long long) epoch_, stage_buf_.size(), (unsigned long long) audit_recycles_,
+                 (unsigned long long) audit_early_[0], (unsigned long long) audit_early_[1],
+                 (unsigned long long) audit_early_[2], (unsigned long long) audit_checks_.load(),
+                 (unsigned long long) audit_moved_.load(), (unsigned long long) audit_moved_same_.load());
 }
 
 void FileExpertSource::stage_free_events() {
@@ -1859,6 +1920,7 @@ bool FileExpertSource::end_startup_unbuffered(std::string& why) {
         stage_epoch_.clear();
         stage_used_.clear();
         stage_busy_.clear();
+        stage_gen_.clear();
         stage_pf_.clear();
         stage_of_.clear();
         stage_blob_ = 0;
@@ -2477,6 +2539,7 @@ void FileExpertSource::begin_layer(int64_t layer, const int32_t* ids, int64_t k)
     if (layer != last_layer_) {
         ++epoch_;
         last_layer_ = layer;
+        if (stage_audit_on() && epoch_ % 4096 == 0) audit_summary("so far");   // ~85 decode windows at 48 layers
     }
 }
 
@@ -4084,8 +4147,14 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
     if (d.plan != nullptr) d.plan->cpu_jobs = njobs;
     pt("run", njobs);
     if (njobs > 0) {
+        // STRATA_STAGE_AUDIT: stamp each job's blob before the pool reads it and check it after (empty when off)
+        static thread_local std::vector<uint64_t> stamps;
+        stamps.clear();
+        if (stage_audit_on())
+            for (int j = 0; j < njobs; ++j) stamps.push_back(d.src->audit_stamp(d.jobs_multi[(size_t) j].blob));
         if (native) d.pool->run_split_multi_native(lay.fmt[(size_t) d.layers], d.jobs_multi.data(), njobs);
         else d.pool->run_split_multi(d.jobs_multi.data(), njobs);
+        for (size_t j = 0; j < stamps.size(); ++j) d.src->audit_check(d.jobs_multi[j].blob, stamps[j]);
     }
     if (d.remote_count > 0) {
         static thread_local std::string remote_error;
