@@ -209,6 +209,12 @@ SWEEPS = {
         "arms": [("as configured", []),
                  ("as configured (repeat)", [])],
     },
+    "iq512": {
+        "note": ("Is the CPU expert pool compute-bound?  The engine's AVX-512 i-quant rows (the default on this CPU) against "
+                 "the AVX2 rows (STRATA_NO_IQ512=1), taking turns.  Nothing else differs."),
+        "arms": [("as configured (AVX-512 rows)", []),
+                 ("AVX2 rows (STRATA_NO_IQ512=1)", ["--engine-env=STRATA_NO_IQ512=1"])],
+    },
 }
 
 
@@ -301,7 +307,7 @@ def main(argv=None) -> int:
     # valid Win32 application"), which is how the first attempt at this died in three seconds without loading a model.
     if a.dry_run:
         for i, (rnd, _, (name, extra)) in enumerate(plan):
-            print(f"launch {i + 1}/{len(plan)}: {name}  (round {rnd} of {rounds})\n  " + " ".join(cmd for cmd in [*cfg, *(f"--engine-arg={x}" for x in extra)])
+            print(f"launch {i + 1}/{len(plan)}: {name}  (round {rnd} of {rounds})\n  " + " ".join(cmd for cmd in [*cfg, *(x if x.startswith("--engine-") else f"--engine-arg={x}" for x in extra)])
                   + f"\n  runs {runs_each} x {a.tests} on port {a.port}, out: {parent}")
         print("\nNothing has run yet.  Drop --dry-run when the GPU is free.")
         return 0
@@ -313,7 +319,10 @@ def main(argv=None) -> int:
         # `--engine-arg VALUE` would not survive an argument that starts with a dash: argparse reads the next token as a
         # flag rather than as the value, so the per-layer arm (--expert-cache-per-layer) died at its argument line while
         # the others, whose values start with a letter, ran fine.  The `=` form always takes the value as written.
-        cmd = [*base, "--arm", name] + sum([[f"--engine-arg={x}"] for x in extra], [])
+        # an arm's items reach the launched server as --engine-arg; an item that is already one of the benchmark's own arm
+        # switches (--engine-env=KEY=VALUE, written without a space for the same reason as above) passes through as itself,
+        # so an arm can be an environment knob and not only a command-line argument.
+        cmd = [*base, "--arm", name] + sum([[x if x.startswith("--engine-") else f"--engine-arg={x}"] for x in extra], [])
         print(f"\n=== launch {i + 1}/{len(plan)}: {name}" + (f"  (round {rnd} of {rounds})" if rounds > 1 else "") + " ===")
         print("  " + " ".join(cmd[1:]) + "\n", flush=True)
         since = time.time() - 1

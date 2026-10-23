@@ -81,5 +81,21 @@ class Options(unittest.TestCase):
             self.assertIn("at least", err)
 
 
+class EngineEnvArms(unittest.TestCase):
+    """An arm can be an environment variable (--engine-env) as well as an engine argument, and the iq512 sweep uses it."""
+
+    def test_an_arm_item_that_is_already_an_arm_switch_passes_through_as_itself(self):
+        # the arm's items reach the server as --engine-arg; --engine-env is the benchmark's own switch and has to survive
+        # the trip as itself, or the arm would ask the engine for an argument named "--engine-env ..."
+        rc, out, _ = dry_run("--sweep", "iq512", "--rounds", "1")
+        self.assertEqual(rc, 0)
+        self.assertIn("--engine-env=STRATA_NO_IQ512=1", out)
+        self.assertNotIn("--engine-arg=--engine-env", out)
+
+    def test_the_iq512_arms_differ_by_exactly_the_variable(self):
+        arms = dict(A.SWEEPS["iq512"]["arms"])
+        self.assertEqual(sorted(arms.values(), key=len), [[], ["--engine-env=STRATA_NO_IQ512=1"]])
+
+
 if __name__ == "__main__":
     unittest.main()
