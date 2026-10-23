@@ -81,6 +81,30 @@ rem About an hour now: ten launches (five rounds x two arms) at the ~5 min a lau
 rem run takes, plus the 20 s gaps.  The chat you are in does not just drop when the server
 rem stops, it closes: the --check pass below names strata-vision.exe - this window - in the
 rem kill list, and only the server is restarted afterwards.
+rem
+rem WHAT IT SAID (2026-10-23, ran 08:05:56-08:57:5x, exit 0, 51.9 min, ten launches, output
+rem bench/results/ab-dma-batch-3).  Full writeup: docs/BATCHED_DMA.md.
+rem   The mechanism rule PASSED, on both arms, for the first time across all three runs.  Loop
+rem   1.00 blobs per submission on all five of its launches - read that for what it is: the
+rem   counter there increments once per blob, so 1.00 is true by construction and what it
+rem   establishes is that the loop path ran and was counted, which the two prior runs could not
+rem   show.  Batch 4.37-4.74 at 78-80% batched on all five, the same as the prior runs' eleven.
+rem   The overlap caveat above DID NOT FIRE: the loop arm prints "adaptive overlap: off: not in
+rem   the resident RAM mode unless STRATA_ADAPT_OVERLAP_RESIDENT=1", so overlap was off on BOTH
+rem   arms in this config and these ten launches differ by the batch alone.  The counter cost
+rem   came in at ~196 increments a window on the loop arm (not the ~156 written above), batched
+rem   ~45 submissions plus ~35 batch calls - still under the floor, still not the thing tested.
+rem   Speed: the two statistics disagree, and that is the finding.  The tool's own warm column (a
+rem   mean) puts the loop +7.5%, over the 4.4% floor; per-run medians put it +4.9%, on the floor and
+rem   not over it - and the cold phase points the other way on both bases (per-run medians -2.3%,
+rem   the tool's own column +5.7%), so neither phase settles it.  Sign + for the loop in 4
+rem   of 5 pairs either way, and the tool's own distribution test says the arms' per-turn distributions
+rem   overlap its repeat rows (largest gap 13.1% against 11.5% batch noise), so on its own terms
+rem   it cannot separate them.  A verdict that turns on mean versus median of the same ten numbers
+rem   has no power for the question.  The sign clause asked for 8 of 10 round-pairs when ten launches
+rem   make five: unsatisfiable as written, same species of slip as the rule that failed the two
+rem   prior runs, and reported as it stands.  Verdict: the batch runs and buys nothing
+rem   measurable.  Default stays 0.
 
 cd /d J:\Strata-work\Strata-0140
 

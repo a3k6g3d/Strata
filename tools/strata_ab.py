@@ -223,7 +223,19 @@ SWEEPS = {
                  "actually pass, and ten pairings is the first version of this with power against the "
                  "floor.  The counter cost is not symmetric (loop ~156 atomics a window vs a handful, "
                  "~3 us in a 60 ms window) and that is not what is being tested; say so in the "
-                 "writeup.  Default stays 0."),
+                 "writeup.  THIRD RUN RAN 2026-10-23 (ten launches, harness exit 0): the rule PASSED on both "
+                 "arms for the first time - loop 1.00 blobs per submission on all five of its launches (which is "
+                 "true by construction, one increment per blob, so what it proves is that the loop path ran and "
+                 "was counted), batch 4.37-4.74 at 78-80% batched on all five.  Two things written here before the "
+                 "run turned out wrong and are corrected in docs/BATCHED_DMA.md: the overlap asymmetry does NOT "
+                 "fire in this config (the loop arm prints \"adaptive overlap: off: not in the resident RAM mode\", so "
+                 "overlap is off on BOTH arms and these ten launches differ by the batch alone), and the loop pays "
+                 "~196 increments a window, not ~156.  Speed: the two statistics disagree, and that is the finding - the tool's own "
+                 "warm column (a mean) puts the loop +7.5%, over the 4.4% floor, per-run medians put it +4.9%, on "
+                 "the floor and not over it - sign in 4 of 5 pairs either way, and the tool's own distribution test "
+                 "says the distributions overlap its repeat rows, so it cannot separate them; the sign clause asked for 8 of "
+                 "10 pairs when ten launches make five, unsatisfiable as written and reported as it stands.  "
+                 "Verdict: the batch runs and buys nothing measurable.  Default stays 0."),
         "arms": [("dma loop", ["--pcie-mode dma", "--engine-env=STRATA_DMA_BATCH=0"]),
                  ("dma batched", ["--pcie-mode dma", "--engine-env=STRATA_DMA_BATCH=1"])],
     },

@@ -390,14 +390,14 @@ class TheDmaBatchFile(TheBatchFile):
         rc, out, err = dry_run(*self.harness_args())
         self.assertEqual(rc, 0, err)
         labels = [l.split(":")[1].split("  (round")[0].strip() for l in out.splitlines() if l.startswith("launch ")]
-        self.assertEqual(len(labels), 6)                                        # three rounds x two arms
-        for rnd in range(3):
+        self.assertEqual(len(labels), 10)                                       # five rounds x two arms
+        for rnd in range(5):
             self.assertEqual(sorted(labels[rnd * 2:(rnd + 1) * 2]), ["dma batched", "dma loop"])
         for label in ("dma loop", "dma batched"):
             pos = [n for n, l in enumerate(labels) if l == label]
-            self.assertEqual(len(pos), 3)
+            self.assertEqual(len(pos), 5)
             self.assertNotEqual(pos[0] % 2, pos[1] % 2)                         # sits at both positions, which is the point
-        self.assertIn("runs 3 x", out)                                          # 9 runs over 3 rounds
+        self.assertIn("runs 2 x", out)                                          # 10 runs over 5 rounds
 
     def test_it_keeps_the_shape_the_cold_warm_split_needs(self):
         # see ThePcieRerunBatchFile: one run a launch would make every run a cold run, and the
@@ -408,12 +408,13 @@ class TheDmaBatchFile(TheBatchFile):
         self.assertEqual(int(runs[-1]) // 3, 3)
 
     def test_it_writes_somewhere_other_than_the_batch_it_is_not_comparable_to(self):
-        # bench/results/ab-dma-batch is the run whose baseline never reached the submission path; its numbers are
-        # on the record and must not be overwritten by the rerun, which is why the rerun names a new folder.
+        # bench/results/ab-dma-batch and -2 are the runs whose counters never ran (the second because the
+        # variable was left unset on one arm); their numbers are on the record and must not be overwritten
+        # by the rerun, which is why the rerun names a new folder.
         argv = self.harness_args()
         out = [argv[i + 1] for i, x in enumerate(argv) if x == "--out"]
         self.assertEqual(len(out), 1, "the batch file names its own output folder")
-        self.assertEqual(Path(out[0]).name, "ab-dma-batch-2")
+        self.assertEqual(Path(out[0]).name, "ab-dma-batch-3")
 
     def test_it_pins_a_config_that_actually_has_the_env_block_the_stamps_need(self):
         # the driver's default command names the live config, which has no env block and points at the
@@ -431,11 +432,13 @@ class TheDmaBatchFile(TheBatchFile):
 
     def test_the_batch_asks_its_own_noise_and_says_so_before_running(self):
         # the plan's rule: an arm is stated as it measures, and the figure it has to beat is the batch's own
-        # noise - the baseline's own three launches.  And the mechanism rule is the one that failed last time,
-        # so it is stated here, before the first launch, with the void clause that goes with it.
+        # noise - the three committed noise-floor launches, 4.4%, measured before this batch was written.
+        # And the mechanism rule is the one that failed last time, so it is stated here, before the first
+        # launch, with the void clause that goes with it.
         text = self.BAT.read_text(encoding="utf-8")
-        self.assertIn("three baseline launches", text)
-        self.assertIn("ALL THREE", text)                                        # three rounds leave no room for a dissent
+        self.assertIn("three launches", text)                                   # the floor this batch asks its own against
+        self.assertIn("4.4%", text)                                             # and the figure it got
+        self.assertIn("8 of the 10", text)                                      # the sign rule, stated before launch
         self.assertIn("blobs-per-submission", text)
         self.assertIn("void", text)
         self.assertIn("strata decode submissions", text)
