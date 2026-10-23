@@ -1391,6 +1391,7 @@ void FileExpertSource::note_async_read(const uint8_t* blob, void* stream) {
     const auto it = stage_idx_.find(blob);
     if (it == stage_idx_.end()) return;                 // not a stage buffer: the mapping or the resident arena
     const size_t v = it->second;
+    if (v >= stage_buf_.size()) return;                 // an index entry no buffer answers to: never index past the end
     if (!stage_buf_[v].get_deleter().pinned) return;    // pageable: the driver copied it before the call returned
     if (stage_ev_[v] == nullptr) {
         cudaEvent_t ev = nullptr;
@@ -1852,6 +1853,10 @@ bool FileExpertSource::end_startup_unbuffered(std::string& why) {
     direct_.clear();
     {   // the mapped tier hands out the mapping: the startup's stage buffers go
         std::lock_guard<std::mutex> lk(stage_mu_);
+        // ...and with them their index and copy events, as close() does: left behind, the index named freed buffers
+        // and the events were matched to the wrong ones (stage_ev_ is indexed like stage_buf_)
+        if (!stage_ev_.empty()) (void) cudaDeviceSynchronize();   // the buffers' last copies end before they are freed (#1237)
+        stage_free_events();
         stage_buf_.clear();
         stage_key_.clear();
         stage_epoch_.clear();

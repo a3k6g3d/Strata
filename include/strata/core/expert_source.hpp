@@ -803,6 +803,12 @@ public:
     /// False when the view could not be mapped again: then the file tier stays unbuffered, `why` says so.
     bool end_startup_unbuffered(std::string& why);
     bool startup_unbuffered() const { return startup_ub_; }
+    /// Entries in the pointer -> stage buffer index (note_async_read's lookup).  It must equal the number of stage
+    /// buffers: an entry left behind by a reset names memory that has been freed.  For tests and diagnostics.
+    size_t stage_index_size() {
+        std::lock_guard<std::mutex> lk(stage_mu_);
+        return stage_idx_.size();
+    }
     /// Every expert's bytes (n_layers x n_expert blobs).
     uint64_t expert_bytes() const;
     /// #286, unbuffered: assembles the blobs of these pairs ahead of the `blob` calls that will ask for them (the
