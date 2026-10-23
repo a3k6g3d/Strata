@@ -28,6 +28,11 @@ public:
     DirectFile& operator=(const DirectFile&) = delete;
 
     bool open(const std::string& path, std::string& err);
+    /// Close the file.  Drain your own reads first (wait until every submitted tag has completed), as
+    /// PleReader::close does: the platforms differ on what close() promises about reads still in flight.  POSIX
+    /// joins its threads, each mid-pread, so close returns after the last read.  The Windows pool only joins the
+    /// threads that *issue* reads; an issued overlapped read may still land in its buffer after close returns.
+    /// The Rust host (STRATA_HOST_DLL) waits for them.
     void close();
     bool is_open() const;
     uint64_t size() const;

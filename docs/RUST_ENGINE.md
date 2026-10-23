@@ -64,6 +64,30 @@ from warm, and never lets an errored run vote.
 behind the existing engine, opt-in, the default path byte-identical to the last release. Gate: the same answers as
 today, from the fingerprint tool, on the prompts its rule allows.
 
+*Done 2026-10-23.* The tier is the n-gram table - `platform::DirectFile`'s one production user
+(`src/ngram/ple_reader.cpp`). `STRATA_HOST_DLL=<absolute path to strata_host.dll>` routes it through the Rust ring;
+unset, the reader runs the code it ran before. Built as a DLL the engine loads (a staticlib needs `onecoreuap.lib`
+in the engine's link; the commit message has the measurement). `abi.h` carries both directions, and both function
+lists are now parsed by a drift test. `tests/platform/direct_file_win.cpp` passes on both readers.
+
+The gate, run one server at a time (two do not fit in RAM), 5 runs per prompt, seed 1234, greedy, on an i7-11700K
+and RTX 5070 with Swift 1.5 IQ3_S: arm A the branch's engine, default path; B the same exe through the Rust host
+(its log says so); C the live 0.1.45 build; A2 arm A relaunched, the control. Thirteen prompts - the sweeps' three
+plus ten exact-answer ones, added because the first run of this gate had only one prompt the engine reproduced:
+
+| pair | match | mismatch | not comparable |
+|---|---|---|---|
+| A vs A2 (control) | 10 | 0 | 3 |
+| **A vs B (the gate)** | **10** | **0** | 3 |
+| A2 vs B | 10 | 0 | 3 |
+| A vs C (default path vs the last build) | 10 | 0 | 3 |
+
+The three not comparable are chat1, chat2 and one exact prompt ("strawberry" backwards, which screened stable on the
+live server and then changed answer at run 3): no arm reproduced them, so the rule sets them aside. No speed is
+claimed. One load-time probe each put the n-gram reads at 96,952 rows/s on the C++ pool and 83,336 through Rust,
+which is a single number, not a measurement - and the expected direction, since the Rust ring issues every read
+on the calling thread where the pool issues from four.
+
 **M6, the lifetime rule as a borrow.** The blob the Rust side hands down is provably alive for the layer it was
 asked in and the next one or two. Gate: M5's, plus a test that a consumer keeping a blob too long fails loudly
 rather than silently.
