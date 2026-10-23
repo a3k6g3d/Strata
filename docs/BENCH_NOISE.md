@@ -158,7 +158,7 @@ re-run to be worth anything.
 
 ## What the tools do about it now (2026-10-16)
 
-Items 1 to 4 above, and a way to wait for a run, are in the tools; item 5 is not.
+Items 1 to 4 above, and a way to wait for a run, are in the tools; item 5 is too now (see the note under it).
 
 | | |
 |---|---|
@@ -170,8 +170,10 @@ Items 1 to 4 above, and a way to wait for a run, are in the tools; item 5 is not
 | one record per run | `tools/strata_bench.py` appends one JSON line per run to `runs.jsonl` next to the result folders (`tools/bench_record.py`): the arm, the launch line, when it started, how long the PC had been up, the machine state, decode speed (the client's and the engine's own), time to first token, expert-cache, PCIe, prompt-reuse and draft figures, every turn's decode speed, and a digest of the `STATE_HASH` lines when the log excerpt has them. `summarize_ab_sweep.py runs.jsonl` reads it in place of the folders. |
 | waiting | `tools/wait_for.py --file run.log --pattern "ALL DONE" [--pid N] [--timeout S]` blocks until the pattern is written, the process ends or the time is up, then prints the tail. One call instead of a poll loop. |
 
-Not done: item 5 (output text or a fingerprint). A hash of generated tokens cannot be compared across arms here: two launches of the same
-configuration generated different token counts at temperature 0 (`REJECTED_PROPOSALS.md`, item 6), so the fingerprints never line up. The parity
+Item 5 is done (2026-10-19), see the note under it. A hash of generated tokens still cannot be compared across arms on most
+of the sweep prompts: two launches of the same configuration generated different token counts at temperature 0
+(`REJECTED_PROPOSALS.md`, item 6), so the fingerprints never line up - which is why `output_fingerprint.py` compares only the
+prompts an arm reproduces on its own and reports the rest as not comparable. The parity
 gate `tools/conversation_cache_parity.py` is a different thing: an A/B/A test that loads its own engines one after another in one process and compares
 the engine's `STATE_HASH` lines for its own scenarios; it neither needs nor replaces a sweep-wide gate.
 
