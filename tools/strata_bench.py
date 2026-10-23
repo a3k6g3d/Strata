@@ -1266,6 +1266,10 @@ def main(argv=None) -> int:
     ap.add_argument("--engine-arg", metavar="ARGS", action="append", default=[],
                     help="arguments to ADD to the engine when the benchmark starts the server, repeatable and applied in order, "
                          "eg --engine-arg " + '"--expert-cache 0"' + " to measure one change (needs --config, no --url)")
+    ap.add_argument("--engine-env", metavar="KEY=VALUE", action="append", default=[],
+                    help="an environment variable to ADD to the engine's when the benchmark starts the server, repeatable, "
+                         "eg --engine-env STRATA_DMA_BATCH=1, for the knobs that are environment and not command line; the "
+                         "same arm machinery as --engine-arg (needs --config, no --url)")
     ap.add_argument("--arm", metavar="LABEL", help="what this arm changed: written into the report title, the results.json and "
                                                   "the results folder name, so the arms of one experiment cannot be mixed up")
     ap.add_argument("--note", help="a sentence or two for the report: the question this experiment answers, or what to read in it")
@@ -1287,9 +1291,9 @@ def main(argv=None) -> int:
         return 0
 
     cfg_path, cfg, proc, log_path = None, None, None, None
-    if a.engine_arg and (a.url or not a.config):
-        print("--engine-arg needs the benchmark to start the server itself from a configuration you name: give --config FILE and "
-              "drop --url (the extra arguments are added to that configuration, which is written aside unchanged).", file=sys.stderr)
+    if (a.engine_arg or a.engine_env) and (a.url or not a.config):
+        print("--engine-arg and --engine-env need the benchmark to start the server itself from a configuration you name: give "
+              "--config FILE and drop --url (the extras are added to that configuration, which is written aside unchanged).", file=sys.stderr)
         return 2
     if a.config or not a.url:
         if a.config:
@@ -1307,11 +1311,19 @@ def main(argv=None) -> int:
                   "or give --url of a running server.", file=sys.stderr)
             return 2
         cfg = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
-        if a.engine_arg:
-            # One arm of an A/B: the SAME configuration plus the arguments under test, written to a sibling file so the install's
-            # own config is never touched and the launch line in the report shows exactly what ran.  A later arm with the same
-            # arguments overwrites this file, which is what you want: one file per arm, named after the arm.
+        if a.engine_arg or a.engine_env:
+            # One arm of an A/B: the SAME configuration plus the arguments and the environment under test, written to a sibling
+            # file so the install's own config is never touched and the launch line in the report shows exactly what ran.  A
+            # later arm with the same arguments overwrites this file, which is what you want: one file per arm, named after
+            # the arm.  The engine reads its own environment, so an arm can be an environment variable too - and the config
+            # loader only accepts the keys it knows about (STRATA_*, HIP_*, CUDA_*), so insist on one of those.
             cfg["args"] = list(cfg.get("args") or []) + [x for args in a.engine_arg for x in args.split()]
+            for kv in a.engine_env:
+                k, sep, v = kv.partition("=")
+                if not sep or not k or not k.startswith(("STRATA_", "HIP_", "CUDA_")):
+                    print(f"--engine-env {kv}: want KEY=VALUE, KEY one of the ones the configuration's env block accepts", file=sys.stderr)
+                    return 2
+                (cfg.setdefault("env", {}))[k] = v
             cfg_path = cfg_path.with_name("bench-arm" + ("-" + slug(a.arm, 24) if a.arm else "") + ".json")
             cfg_path.write_text(json.dumps(cfg, indent=1), encoding="utf-8")
             say(f"Engine arguments added for this run: {' '.join(x for args in a.engine_arg for x in args.split())}")
@@ -1374,12 +1386,14 @@ def main(argv=None) -> int:
                "params": {"runs": suite.runs, "think": a.think, "clients": a.clients, "long": a.long, "started_server": started,
                           "tests": sorted(suite.tests), "arm": a.arm or "", "note": a.note or "",
                           "engine_arg": [x for args in a.engine_arg for x in args.split()],
+                          "engine_env": list(a.engine_env),
                           "command": "python tools/strata_bench.py" + "".join(
                               f" {x}" for x in (f"--clients {a.clients}" if a.clients else "", "--long" if a.long else "",
                                                 "--think" if a.think else "", f"--runs {a.runs}" if a.runs != 3 else "",
                                                 f"--tests {a.tests}" if a.tests else "",
                                                 f"--config {Path(a.config).name}" if a.config else "",
                                                 *(f'--engine-arg "{args}"' for args in a.engine_arg),
+                                                *(f"--engine-env {kv}" for kv in a.engine_env),
                                                 f"--arm {a.arm}" if a.arm else "") if x)},
                "elapsed_s": time.time() - t0, "machine": machine, "results": out,
                "state": {"start": state_start, "end": bench_state.snapshot() if bench_state else None,

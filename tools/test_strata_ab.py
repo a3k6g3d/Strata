@@ -326,6 +326,142 @@ class ThePcieRerunBatchFile(TheBatchFile):
                           if k != "env"}, live, "the stamps are the only difference from the live config")
 
 
+class DmaBatch(unittest.TestCase):
+    """The batch that tests the submission batch directly: both arms on the DMA path, the only difference
+    being whether the group's uploads go out one by one or as one cudaMemcpyBatchAsync.  The knob is an
+    environment variable, so this is also the first sweep whose arm is spelled --engine-env."""
+
+    def setUp(self):
+        self.arms = A.SWEEPS["dma-batch"]["arms"]
+
+    def test_both_arms_are_on_the_dma_path(self):
+        # the knob only has something to act on under --pcie-mode dma; the configuration as it stands runs
+        # the copy kernel, where the batch never runs - a baseline left there would measure the same code
+        # twice and call the difference a win.
+        self.assertEqual(len(self.arms), 2)
+        for _, args in self.arms:
+            self.assertIn("--pcie-mode dma", args)
+
+    def test_the_two_arms_differ_by_exactly_the_knob(self):
+        base, arm = [args for _, args in self.arms]
+        # both arms name the variable - the last run's baseline left it unset and never reached the
+        # submission path - so the only difference left is its value: the loop's 0 against the batch's 1.
+        self.assertEqual(sorted(set(arm) - set(base)), ["--engine-env=STRATA_DMA_BATCH=1"])
+        self.assertEqual(sorted(set(base) - set(arm)), ["--engine-env=STRATA_DMA_BATCH=0"])
+
+    def test_the_note_states_the_reading_that_failed_last_time(self):
+        # the previous batch's mechanism rule died because the source side did not move; this one reads the
+        # submissions themselves, exactly, so the note has to say what number proves what.
+        note = A.SWEEPS["dma-batch"]["note"]
+        self.assertIn("STRATA_DMA_BATCH", note)
+        self.assertIn("--pcie-mode dma", note)
+        self.assertIn("submission", note.lower())
+
+    def test_the_rounds_put_the_arms_in_a_different_order(self):
+        plan = A.schedule(self.arms, 3)
+        self.assertEqual([a[0] for _, _, a in plan],
+                         ["dma loop", "dma batched", "dma batched", "dma loop", "dma loop", "dma batched"])
+
+    def test_an_arm_item_that_is_already_an_arm_switch_passes_through_as_itself(self):
+        # the arm's items reach the server as --engine-arg; --engine-env is the benchmark's own switch and
+        # has to survive the trip as itself, or the arm would ask for an argument named "--engine-env ..."
+        rc, out, _ = dry_run("--sweep", "dma-batch", "--rounds", "1")
+        self.assertEqual(rc, 0)
+        self.assertIn("--engine-env=STRATA_DMA_BATCH=1", out)
+        self.assertNotIn("--engine-arg=--engine-env", out)
+
+
+class TheDmaBatchFile(TheBatchFile):
+    """The same checks, run against tools/dma_batch.bat's own line - see TheCacheOffBatchFile for why
+    every batch file needs this class and not just the one.  The labels and the counts differ, so the
+    schedule test and the noise-floor test are overridden below.
+    """
+
+    BAT = ROOT / "tools" / "dma_batch.bat"
+
+    def test_the_batch_file_cancels_the_drivers_default_noise_floor(self):
+        argv = self.harness_args()
+        nf = [argv[i + 1] for i, x in enumerate(argv) if x == "--noise-floor"]
+        self.assertEqual(len(nf), 2, "the driver's default, and the batch file cancelling it")
+        self.assertEqual(nf[-1], "0")
+        self.assertEqual(argv[argv.index("--sweep") + 1], "dma-batch")
+
+    def test_the_command_it_runs_launches_both_arms_and_lands_each_at_both_positions(self):
+        rc, out, err = dry_run(*self.harness_args())
+        self.assertEqual(rc, 0, err)
+        labels = [l.split(":")[1].split("  (round")[0].strip() for l in out.splitlines() if l.startswith("launch ")]
+        self.assertEqual(len(labels), 6)                                        # three rounds x two arms
+        for rnd in range(3):
+            self.assertEqual(sorted(labels[rnd * 2:(rnd + 1) * 2]), ["dma batched", "dma loop"])
+        for label in ("dma loop", "dma batched"):
+            pos = [n for n, l in enumerate(labels) if l == label]
+            self.assertEqual(len(pos), 3)
+            self.assertNotEqual(pos[0] % 2, pos[1] % 2)                         # sits at both positions, which is the point
+        self.assertIn("runs 3 x", out)                                          # 9 runs over 3 rounds
+
+    def test_it_keeps_the_shape_the_cold_warm_split_needs(self):
+        # see ThePcieRerunBatchFile: one run a launch would make every run a cold run, and the
+        # cold/warm split the last batch was read by would disappear.
+        argv = self.harness_args()
+        runs = [argv[i + 1] for i, x in enumerate(argv) if x == "--runs"]
+        self.assertEqual(runs[-1], "9")                                         # the batch file's own, not the default
+        self.assertEqual(int(runs[-1]) // 3, 3)
+
+    def test_it_writes_somewhere_other_than_the_batch_it_is_not_comparable_to(self):
+        # bench/results/ab-dma-batch is the run whose baseline never reached the submission path; its numbers are
+        # on the record and must not be overwritten by the rerun, which is why the rerun names a new folder.
+        argv = self.harness_args()
+        out = [argv[i + 1] for i, x in enumerate(argv) if x == "--out"]
+        self.assertEqual(len(out), 1, "the batch file names its own output folder")
+        self.assertEqual(Path(out[0]).name, "ab-dma-batch-2")
+
+    def test_it_pins_a_config_that_actually_has_the_env_block_the_stamps_need(self):
+        # the driver's default command names the live config, which has no env block and points at the
+        # uninstrumented exe: no per-window stamps at all, and no submission counter.  argparse takes the
+        # LAST --config, so the batch file pins its own - and that copy has to really carry the keys.
+        argv = self.harness_args()
+        cfg = [argv[i + 1] for i, x in enumerate(argv) if x == "--config"]
+        self.assertEqual(len(cfg), 2, "the driver's default, and the batch file pinning its own")
+        path = Path(cfg[-1])
+        self.assertNotEqual(path.name, "strata.json", "the live config has no env block")
+        self.assertTrue(path.exists(), f"{path} is the config the run will read, so it has to be there")
+        env = json.loads(path.read_text(encoding="utf-8-sig")).get("env", {})
+        for key in ("STRATA_VERIFY_PROFILE", "STRATA_DECODE_TIMING", "STRATA_RAM_TIER_CLOCK"):
+            self.assertEqual(env.get(key), "1", f"{path} prints the per-window stamps only with {key}")
+
+    def test_the_batch_asks_its_own_noise_and_says_so_before_running(self):
+        # the plan's rule: an arm is stated as it measures, and the figure it has to beat is the batch's own
+        # noise - the baseline's own three launches.  And the mechanism rule is the one that failed last time,
+        # so it is stated here, before the first launch, with the void clause that goes with it.
+        text = self.BAT.read_text(encoding="utf-8")
+        self.assertIn("three baseline launches", text)
+        self.assertIn("ALL THREE", text)                                        # three rounds leave no room for a dissent
+        self.assertIn("blobs-per-submission", text)
+        self.assertIn("void", text)
+        self.assertIn("strata decode submissions", text)
+
+    def test_both_arms_set_the_variable_so_both_reach_the_submission_path(self):
+        # the run that failed left the baseline's variable unset and its counters read 0 on every
+        # window - it never reached copy_blobs, so the arms were different code paths.  The fix is
+        # that both arms name the variable, 0 against 1; the dry-run prints each arm's command.
+        rc, out, err = dry_run(*self.harness_args())
+        self.assertEqual(rc, 0, err)
+        cmds = {l.split(":")[1].split("  (round")[0].strip(): c
+                for l, c in zip(out.splitlines(), out.splitlines()[1:]) if l.startswith("launch ")}
+        self.assertIn("STRATA_DMA_BATCH=0", cmds["dma loop"])
+        self.assertIn("STRATA_DMA_BATCH=1", cmds["dma batched"])
+        for label in ("dma loop", "dma batched"):
+            self.assertIn("--pcie-mode dma", cmds[label])
+
+    def test_the_binary_it_runs_is_the_one_that_stamps_the_counter(self):
+        # the counter line is stamped by the instrumented build; the batch runs the exe the pinned config
+        # names, so that exe has to carry the stamp, or every launch is void for this question.
+        argv = self.harness_args()
+        path = Path([argv[i + 1] for i, x in enumerate(argv) if x == "--config"][-1])
+        exe = Path(json.loads(path.read_text(encoding="utf-8-sig"))["exe"].replace("/", "\\"))
+        self.assertTrue(exe.exists(), f"{exe} is the exe the run will start, so it has to be there")
+        self.assertIn(b"decode submissions", exe.read_bytes(), "the exe the config names does not stamp the counter")
+
 class TestRepeatOfBaseline(unittest.TestCase):
     # a repeat of the baseline is the same command run again, so the gap on its row IS the
     # noise floor and the row cannot be judged as an arm.  The two sweeps label it

@@ -20,6 +20,11 @@ its own clock.  The counts are the strong half (they cost nothing); the millisec
 tier's clock is a steady_clock::now() around every resident hit and so is partly measuring itself.  Both arms of a run
 get the same env block, so arms compare to arms; nothing here compares to a run of the uninstrumented binary.
 
+An instrumented engine prints a fourth line per request - `strata decode submissions (per window): ...` - counting the
+submissions the copy path handed to the runtime and the blobs inside them.  The counts are exact (two atomics at the
+submission point), which makes them the strongest thing this reader prints; the ratio is the reading - ~1 blob per
+submission is the one-by-one loop, far more is the batch.
+
     python tools/read_window_profile.py bench/results/window-profile-2026-10-21/engine-log.txt
 """
 import argparse
@@ -39,6 +44,11 @@ TIMING = {
     "PCIe experts / layer-window": r"PCIe ([\d.]+); adapt",
 }
 WAITS = ("waitA", "waitB", "waitCPU")
+
+# the submissions the copy path handed to the runtime, stamped per window by the instrumented build; the counts are exact,
+# and blobs per submission is the reading (~1 is the loop, far more is the batch).  Printed only when the log stamped it.
+SUB = re.compile(r"(\d+) submissions, (\d+) blobs, (\d+) batched")
+SUBS = (("submissions/window", 1), ("blobs/window", 2), ("batched submissions/window", 3))
 
 # The two tiers of the copy path, printed per window beside the stage table when the engine is the instrumented one.
 # Counts are the strong half (they cost nothing); the milliseconds are the weak half - the RAM tier's clock is a
@@ -100,6 +110,15 @@ def main(argv=None) -> int:
         print(f"\nthe two tiers of the copy path, per window ({len(tiers)} requests printed it):")
         for label, g in TIERS:
             print(f"  {label:28s} {spread([float(m.group(g)) for m in tiers])}")
+    subs = [SUB.search(l) for l in lines if l.startswith("strata decode submissions (per window):")]
+    subs = [m for m in subs if m]
+    if subs:
+        print(f"\nwhat the copy path handed to the runtime, per window ({len(subs)} requests printed it):")
+        for label, g in SUBS:
+            print(f"  {label:28s} {spread([float(m.group(g)) for m in subs])}")
+        ratio = [float(m.group(2)) / float(m.group(1)) for m in subs if float(m.group(1))]
+        if ratio:
+            print(f"  {'blobs per submission':28s} {spread(ratio)}   <- the reading: ~1 is the loop, far more is the batch")
     return 0
 
 

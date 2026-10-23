@@ -46,5 +46,25 @@ class ReadWindowProfile(unittest.TestCase):
         self.assertEqual(rc, 1)
 
 
+    def test_the_submission_counts_are_read_and_the_ratio_is_the_reading(self):
+        # the instrumented build stamps the submissions per window; the counts are exact, and blobs per
+        # submission is what proves which path ran - ~1 is the loop, far more is the batch.
+        rc, out = run(TIMING + "\n" + STAGES + "\n"
+                      "strata decode submissions (per window): 4 submissions, 9 blobs, 3 batched\n")
+        self.assertEqual(rc, 0)
+        self.assertIn("what the copy path handed to the runtime", out)
+        self.assertRegex(out, r"submissions/window +median +4\.00")
+        self.assertRegex(out, r"blobs/window +median +9\.00")
+        self.assertRegex(out, r"batched submissions/window +median +3\.00")
+        self.assertRegex(out, r"blobs per submission +median +2\.25 .*~1 is the loop")
+
+    def test_a_log_that_never_stamped_submissions_prints_nothing_about_them(self):
+        # the previous batch's binary did not stamp this line; a reader that invented a section for a log
+        # that never printed it would read a zero as a finding
+        rc, out = run(TIMING + "\n" + STAGES + "\n")
+        self.assertEqual(rc, 0)
+        self.assertNotIn("handed to the runtime", out)
+
+
 if __name__ == "__main__":
     unittest.main()
