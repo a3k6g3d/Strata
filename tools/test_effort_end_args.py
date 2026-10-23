@@ -72,6 +72,24 @@ class EffortEndArgs(unittest.TestCase):
         exe.write_bytes(ENGINE_WITHOUT)
         self.assertIsNone(self.call({"effort_position": "end"}, exe))
 
+    def test_the_rust_host_proxy_is_read_through_to_its_engine(self):
+        # strata-hostd never names the option; the engine it starts does.  Read off the proxy, the server would
+        # leave the effort turn at the top and drop --tail-role-token - a different request than without the proxy.
+        proxy = Path(self.tmp.name) / "strata-hostd.exe"
+        proxy.write_bytes(b"MZ ... strata-hostd ...")
+        engine = Path(self.tmp.name) / "strata.exe"
+        engine.write_bytes(ENGINE_WITH)
+        cfg = {"effort_position": "end", "env": {"STRATA_HOSTD_ENGINE": str(engine)}}
+        self.assertEqual(self.call(cfg, proxy), ["--tail-role-token", "42"])
+        engine.write_bytes(ENGINE_WITHOUT)
+        self.assertIsNone(self.call(cfg, proxy))
+
+    def test_a_proxy_whose_engine_is_missing_is_read_as_itself(self):
+        proxy = Path(self.tmp.name) / "strata-hostd.exe"
+        proxy.write_bytes(b"MZ ... strata-hostd ...")
+        cfg = {"effort_position": "end", "env": {"STRATA_HOSTD_ENGINE": str(Path(self.tmp.name) / "nope.exe")}}
+        self.assertIsNone(self.call(cfg, proxy))
+
     def test_start_is_the_default(self):
         (self.repo / "build-sycl-aot" / "strata").write_bytes(ENGINE_WITH)
         self.assertIsNone(self.call({}, self.launcher))
