@@ -13535,6 +13535,10 @@ int main(int argc, char** argv) {
             const int64_t ram0 = src.ram_reads(), files0 = src.file_reads();
             const uint64_t file_bytes0 = src.file_read_bytes();
             const double fms0 = src.file_ms(), rms0 = src.ram_ms();   // the two tiers' clocks, for the per-window line
+            // the submissions the copy path handed to the runtime, for the per-window line below (both arms counted)
+            const long long sub0 = strata::core::dma_counters().submissions.load(std::memory_order_relaxed);
+            const long long blo0 = strata::core::dma_counters().blobs.load(std::memory_order_relaxed);
+            const long long bat0 = strata::core::dma_counters().batched.load(std::memory_order_relaxed);
             const int64_t decode_look0 = drive.d.cache_hits + drive.d.cache_admitted + drive.d.cache_refused;
             const int64_t offload0 = drive.d.offload_entries;   // #588
             pcie_auto.mark(drive.d.ms_run, drive.d.multi_misses);   // the prompt's windows are not the decode's
@@ -14475,6 +14479,13 @@ int main(int argc, char** argv) {
                                  (long long) ((src.ram_reads() - ram0) / w), (src.ram_ms() - rms0) / w,
                                  (long long) ((src.file_reads() - files0) / w), (src.file_ms() - fms0) / w,
                                  src.ram_clock_on() ? "" : " (RAM clock off: STRATA_RAM_TIER_CLOCK)");
+                // CS-D: the submissions the copy path handed to the runtime, per window.  The ratio is the reading:
+                // blobs per submission ~1 on the loop, up to 128 on a batch.  Both arms counted, cost is two atomics.
+                if (srcp == &src)
+                    std::fprintf(stderr, "strata decode submissions (per window): %lld submissions, %lld blobs, %lld batched\n",
+                                 (long long) ((strata::core::dma_counters().submissions.load(std::memory_order_relaxed) - sub0) / w),
+                                 (long long) ((strata::core::dma_counters().blobs.load(std::memory_order_relaxed) - blo0) / w),
+                                 (long long) ((strata::core::dma_counters().batched.load(std::memory_order_relaxed) - bat0) / w));
             }
             if (drive.d.fs) std::fprintf(stderr, "strata serve: %s\n", drive.d.fs->report().c_str());
             if (!cancelled) {

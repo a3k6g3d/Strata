@@ -16,6 +16,7 @@
 #include <cuda_runtime.h>
 
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -24,6 +25,19 @@
 #include <unordered_map>
 
 namespace strata::core {
+
+// How many submissions the copy path actually made, and how many blobs went in them: the reading the batched arm is
+// tested on.  Two atomic increments at each submission point (a batch is one, the loop is n), so the ratio says which
+// path ran; the instrumented build prints them per window beside the tier line, both arms counted the same way.
+struct DmaCounters {
+    std::atomic<long long> submissions{0};   // calls that reached the runtime, batched or one by one
+    std::atomic<long long> blobs{0};         // blobs inside those calls
+    std::atomic<long long> batched{0};       // of the calls, those that went through cudaMemcpyBatchAsync
+};
+inline DmaCounters& dma_counters() {
+    static DmaCounters c;
+    return c;
+}
 
 /// The mode: STRATA_DMA_BATCH (0, 1, 2); unset = the engine's default (`default_mode`, set at the call site's first
 /// use; 0 until a measured win makes it 1).
@@ -83,7 +97,12 @@ inline cudaError_t copy_blobs(void* const* dst, const void* const* src, const si
             std::array<size_t, cap> sizes{};
             for (size_t i = 0; i < n; ++i) { dsts[i] = dst[i]; sizes[i] = bytes[i]; }
             const cudaError_t e = cudaMemcpyBatchAsync(dsts.data(), srcs.data(), sizes.data(), n, &attr, &first, 1, stream);
-            if (e == cudaSuccess) return cudaSuccess;
+            if (e == cudaSuccess) {
+                dma_counters().submissions.fetch_add(1, std::memory_order_relaxed);
+                dma_counters().batched.fetch_add(1, std::memory_order_relaxed);
+                dma_counters().blobs.fetch_add((long long) n, std::memory_order_relaxed);
+                return cudaSuccess;
+            }
             static bool warned = false;
             if (!warned) {
                 warned = true;
@@ -99,6 +118,8 @@ inline cudaError_t copy_blobs(void* const* dst, const void* const* src, const si
     for (size_t i = 0; i < n; ++i) {
         const cudaError_t e = cudaMemcpyAsync(dst[i], src[i], bytes[i], cudaMemcpyHostToDevice, stream);
         if (e != cudaSuccess) return e;
+        dma_counters().submissions.fetch_add(1, std::memory_order_relaxed);
+        dma_counters().blobs.fetch_add(1, std::memory_order_relaxed);
     }
     return cudaSuccess;
 }
@@ -112,6 +133,8 @@ inline cudaError_t copy_expert_blobs(uint8_t* dst, const uint8_t* const* src, in
         for (int i = 0; i < n; ++i) {
             const cudaError_t e = cudaMemcpyAsync(dst + (size_t) i * bytes, src[i], bytes, cudaMemcpyHostToDevice, stream);
             if (e != cudaSuccess) return e;
+            dma_counters().submissions.fetch_add(1, std::memory_order_relaxed);
+            dma_counters().blobs.fetch_add(1, std::memory_order_relaxed);
         }
         return cudaSuccess;
     }
