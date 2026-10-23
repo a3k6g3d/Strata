@@ -1997,6 +1997,18 @@ if(STRATA_BUILD_TESTS)
     target_link_libraries(direct_file_async_test PRIVATE Threads::Threads)
     add_test(NAME direct_file_async_test COMMAND direct_file_async_test)
   endif()
+  if(WIN32)
+    # The same contract on Windows, against the C++ pool; and, when STRATA_HOST_DLL_TEST names a built
+    # strata_host.dll (absolute path), a second run of the same binary through the Rust host (RUST_ENGINE.md M5).
+    add_executable(direct_file_win_test tests/platform/direct_file_win.cpp src/platform/direct_file.cpp)
+    target_include_directories(direct_file_win_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    add_test(NAME direct_file_win_test COMMAND direct_file_win_test)
+    set(STRATA_HOST_DLL_TEST "" CACHE FILEPATH "strata_host.dll for direct_file_win_rust_host_test (empty: not run)")
+    if(STRATA_HOST_DLL_TEST)
+      add_test(NAME direct_file_win_rust_host_test COMMAND direct_file_win_test)
+      set_tests_properties(direct_file_win_rust_host_test PROPERTIES ENVIRONMENT "STRATA_HOST_DLL=${STRATA_HOST_DLL_TEST}")
+    endif()
+  endif()
   # --aux-cpus: the CPU-set derivation (pure) and the placement of live threads; header-only, no GPU
   add_executable(aux_cpus_test tests/platform/aux_cpus_test.cpp)
   target_include_directories(aux_cpus_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)

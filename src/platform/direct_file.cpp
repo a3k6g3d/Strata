@@ -1,15 +1,18 @@
 // src/platform/direct_file.cpp - see include/strata/platform/direct_file.hpp.
 #include "strata/platform/direct_file.hpp"
 #include "strata/platform/aux_cpus.hpp"
+#include "strata/c/abi.h"
 
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <mutex>
 #include <thread>
+#include <type_traits>
 #include <vector>
 
 #if defined(_WIN32)
@@ -76,9 +79,76 @@ struct Req {
     OVERLAPPED ov;
     uint64_t tag;
 };
+
+/// RUST_ENGINE.md M5, opt-in: STRATA_HOST_DLL=<absolute path to strata_host.dll> routes every DirectFile on Windows
+/// through the Rust host's own IOCP ring instead of the pool below.  Unset (the default), nothing here runs and the
+/// reader is byte-identical to the last release.  The DLL is loaded by absolute path and its names resolved with
+/// GetProcAddress - never linked - so an engine built without the Rust side still builds and links, and a DLL that
+/// is not where the variable says is a loud open() failure, not a silent fallback.
+struct RustHost {
+    decltype(&strata_host_abi_version) abi_version = nullptr;
+    decltype(&strata_host_last_error) last_error = nullptr;
+    decltype(&strata_host_file_open) open = nullptr;
+    decltype(&strata_host_file_submit) submit = nullptr;
+    decltype(&strata_host_file_wait) wait = nullptr;
+    decltype(&strata_host_file_wake) wake = nullptr;
+    decltype(&strata_host_file_close) close = nullptr;
+    std::string error;   // why it did not load; empty when it did
+};
+
+/// The Rust host, loaded once per process on first use.  Null when STRATA_HOST_DLL is unset.
+const RustHost* rust_host() {
+    static const RustHost* host = []() -> const RustHost* {
+        const char* dll = std::getenv("STRATA_HOST_DLL");
+        if (dll == nullptr || *dll == '\0') return nullptr;
+        static RustHost h;
+        const std::string path = dll;
+        const bool absolute = (path.size() > 2 && path[1] == ':' && (path[2] == '\\' || path[2] == '/')) ||
+                              path.rfind("\\\\", 0) == 0;
+        if (!absolute) {
+            h.error = "STRATA_HOST_DLL must be an absolute path (got " + path + ")";
+            return &h;
+        }
+        const int wlen = MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, nullptr, 0);
+        std::wstring wpath((size_t) (wlen > 0 ? wlen : 1), L'\0');
+        MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, wpath.data(), wlen);
+        HMODULE m = LoadLibraryW(wpath.c_str());   // never freed: it lives as long as the process
+        if (m == nullptr) {
+            h.error = "STRATA_HOST_DLL: cannot load " + path + " (error " + std::to_string(GetLastError()) + ")";
+            return &h;
+        }
+        bool all = true;
+        auto sym = [&](auto& fn, const char* name) {
+            fn = reinterpret_cast<std::remove_reference_t<decltype(fn)>>(reinterpret_cast<void*>(GetProcAddress(m, name)));
+            if (fn == nullptr && all) {
+                h.error = "STRATA_HOST_DLL: " + path + " has no " + name;
+                all = false;
+            }
+        };
+        sym(h.abi_version, "strata_host_abi_version");
+        sym(h.last_error, "strata_host_last_error");
+        sym(h.open, "strata_host_file_open");
+        sym(h.submit, "strata_host_file_submit");
+        sym(h.wait, "strata_host_file_wait");
+        sym(h.wake, "strata_host_file_wake");
+        sym(h.close, "strata_host_file_close");
+        if (all && h.abi_version() != STRATA_ABI_VERSION)
+            h.error = "STRATA_HOST_DLL: " + path + " speaks ABI " + std::to_string(h.abi_version()) +
+                      ", this engine " + std::to_string(STRATA_ABI_VERSION);
+        if (h.error.empty()) std::fprintf(stderr, "strata: DirectFile reads go through the Rust host (%s)\n", path.c_str());
+        return &h;
+    }();
+    return host;
+}
+
+/// The ring depth asked of the Rust host.  The C++ pool queues without limit; the reader bounds itself
+/// (ple_reader's max_inflight), so this only has to be deeper than any reader asks for.
+constexpr int RUST_RING_DEPTH = 4096;
 }  // namespace
 
 struct DirectFile::Impl {
+    const RustHost* rust_host = nullptr;   // set, with `rust`, only when STRATA_HOST_DLL routed this file to Rust
+    strata_host_file* rust = nullptr;
     HANDLE file = INVALID_HANDLE_VALUE;
     HANDLE port = nullptr;
     uint64_t size = 0;
@@ -161,6 +231,20 @@ bool DirectFile::open(const std::string& path, std::string& err) {
     const int wlen = MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, nullptr, 0);
     std::wstring wpath((size_t) (wlen > 0 ? wlen : 1), L'\0');
     MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, wpath.data(), wlen);
+    if (const RustHost* rh = rust_host()) {
+        if (!rh->error.empty()) { err = rh->error; return false; }
+        unsigned long long size = 0;
+        strata_host_file* f = nullptr;
+        const int rc = rh->open((const unsigned short*) wpath.c_str(), RUST_RING_DEPTH, &f, &size);
+        if (rc != STRATA_OK) {
+            err = std::string("DirectFile (Rust host): ") + rh->last_error();
+            return false;
+        }
+        impl_->rust_host = rh;
+        impl_->rust = f;
+        impl_->size = size;
+        return true;
+    }
     // NO_BUFFERING: the cache manager never holds these pages, so the table cannot grow into RAM.
     // RANDOM_ACCESS: no read-ahead. OVERLAPPED: many reads in flight, completed through the port below.
     impl_->file = CreateFileW(wpath.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
@@ -190,6 +274,11 @@ bool DirectFile::open(const std::string& path, std::string& err) {
 }
 
 void DirectFile::close() {
+    if (impl_->rust != nullptr) {
+        impl_->rust_host->close(impl_->rust);   // returns only once no read can still write a caller's buffer
+        impl_->rust = nullptr;
+        impl_->rust_host = nullptr;
+    }
     impl_->stop_pool();
     if (impl_->port != nullptr) CloseHandle(impl_->port);
     if (impl_->file != INVALID_HANDLE_VALUE) CloseHandle(impl_->file);
@@ -200,7 +289,7 @@ void DirectFile::close() {
     impl_->queue.clear();
 }
 
-bool DirectFile::is_open() const { return impl_->file != INVALID_HANDLE_VALUE; }
+bool DirectFile::is_open() const { return impl_->file != INVALID_HANDLE_VALUE || impl_->rust != nullptr; }
 uint64_t DirectFile::size() const { return impl_->size; }
 
 bool DirectFile::submit(uint64_t offset, void* buffer, uint32_t length, uint64_t tag, std::string& err) {
@@ -208,6 +297,25 @@ bool DirectFile::submit(uint64_t offset, void* buffer, uint32_t length, uint64_t
     if (offset % alignment() || length % alignment() || ((uintptr_t) buffer) % alignment() || length == 0) {
         err = "DirectFile: unaligned request";
         return false;
+    }
+    if (impl_->rust != nullptr) {
+        // The C++ contract is that submit only queues: a read at or past the end of the file, or one that fails to
+        // start, still comes back as exactly one completion (ok and zero bytes, or failed) - see issue() above.
+        // The Rust ring answers those at submit time instead, so they are turned back into completions here.
+        int rc = STRATA_OK;
+        if (offset < impl_->size)
+            rc = impl_->rust_host->submit(impl_->rust, offset, (unsigned char*) buffer, length, tag);
+        if (rc == STRATA_OK && offset < impl_->size) return true;
+        if (rc == STRATA_ERR_WOULD_BLOCK || rc == STRATA_ERR_BUFFER_TOO_SHORT) {
+            err = std::string("DirectFile (Rust host): ") + impl_->rust_host->last_error();
+            return false;
+        }
+        {
+            std::lock_guard<std::mutex> lk(impl_->mu);
+            impl_->immediate.push_back(Completion{tag, 0, offset >= impl_->size});
+        }
+        impl_->rust_host->wake(impl_->rust);   // as issue() posts a nudge: a waiter must come back to collect it
+        return true;
     }
     {
         std::lock_guard<std::mutex> lk(impl_->mu);
@@ -227,6 +335,15 @@ int DirectFile::wait(Completion* out, int max, int timeout_ms) {
         }
     }
     if (n == max || !is_open()) return n;
+    if (impl_->rust != nullptr) {
+        strata_host_completion got[64];
+        const int want = max - n < 64 ? max - n : 64;
+        int k = 0;
+        if (impl_->rust_host->wait(impl_->rust, got, want, n > 0 ? 0 : timeout_ms, &k) != STRATA_OK) return n;
+        // The Rust ring already reports a wake with WAKE_TAG and an end-of-file short read as ok.
+        for (int i = 0; i < k; ++i) out[n++] = Completion{got[i].tag, got[i].bytes, got[i].status == STRATA_OK};
+        return n;
+    }
     OVERLAPPED_ENTRY entries[64];
     const ULONG want = (ULONG) (max - n < 64 ? max - n : 64);
     ULONG got = 0;
@@ -256,6 +373,7 @@ int DirectFile::wait(Completion* out, int max, int timeout_ms) {
 }
 
 void DirectFile::wake() {
+    if (impl_->rust != nullptr) { impl_->rust_host->wake(impl_->rust); return; }
     if (impl_->port != nullptr) PostQueuedCompletionStatus(impl_->port, 0, 0, nullptr);
 }
 
