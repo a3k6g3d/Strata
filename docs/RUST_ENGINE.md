@@ -147,6 +147,30 @@ in; as with M6, the engine's warms are hints with no path into what is computed,
 <ids>` in, `T <id>` out (`serve/server.py:681`), same port. "`serve/` unchanged" is the property that makes the
 whole thing safe to run while it is built, so it is kept to the end.
 
+*Option A, done 2026-10-23.* Scoped with the owner against B (the engine as a library: carving upstream's 16k-line
+`generate.cpp`, which every merge would fight) and C (Rust answers `GEN` and hands the rest on: two owners of one
+engine state). A is `strata-hostd` (`rust-host/crates/strata-host/src/bin/strata-hostd.rs`): the config's `exe`
+points at it, `STRATA_HOSTD_ENGINE` at the engine, and it sits between the pipes - every byte forwarded as it came,
+the request state machine checked (`protocol.rs`; a broken rule is a stderr line, the stream unchanged), the engine
+in a kill-on-close job so it never outlives the proxy, and the engine's exit code passed through. `serve/` and the
+engine unchanged, but for one line it turned out to need (below).
+
+The gate's first run found a difference, and it was not the proxy: the server's `effort_position` probe reads the
+`exe`'s bytes for `--tail-role-token`, read the proxy, and judged the engine too old - so through the proxy the
+server sent a different prompt (chat0 at 34 tokens instead of 76) and no `--tail-role-token`, and chat0's answer
+differed 5 of 5. `engine_binary()` now reads through `strata-hostd` to its engine, as it already reads through the
+Intel launcher; two tests. The run was stopped and redone:
+
+| | |
+|---|---|
+| fingerprints, direct vs through the proxy | **10 match, 0 mismatch**, 3 not comparable (the control, direct vs direct: the same) |
+| rule breaks reported by the proxy | **0**, over the fingerprint arm and three bench launches |
+| decode, six interleaved launches D P P D D P | through the proxy **+2.1% median, inside the noise** (the direct arm's own spread: 9.4%) |
+
+So the proxy costs nothing measurable and changes nothing in the output. What it buys is the protocol's rules
+checked on every request, and an engine that cannot be orphaned. The live config does not use batch slots, so the
+`BGEN`/`BT`/`BDONE` rules were exercised by the fake engine's tests only, not by this gate.
+
 ## What each step must not do
 
 - No kernel rewritten in Rust. No Rust CUDA bindings crate. Rust never compiles a kernel, it calls one.
