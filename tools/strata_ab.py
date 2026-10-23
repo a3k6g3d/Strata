@@ -198,6 +198,17 @@ SWEEPS = {
         "arms": [("as configured", []),
                  ("as configured (repeat)", [])],
     },
+    # Is the CPU expert pool limited by compute or by memory?  On a CPU with AVX-512 (the 11700K) the engine picks its AVX-512
+    # i-quant expert rows by default (native_expert.cpp: cpu_avx512_ok() && no STRATA_NO_IQ512); STRATA_NO_IQ512=1 forces the
+    # AVX2 rows.  The pool read ~17 GB/s of expert bytes against ~42 GB/s of theoretical DDR4-2666 dual-channel bandwidth
+    # (the engine's own PCIe-share line, 2026-10-21), and was 28 of 59 ms of a window on the host side.  If AVX2 is much slower
+    # the pool is compute-bound and CPU kernel work pays; if they are equal it is memory-bound and only faster RAM helps.
+    "iq512": {
+        "note": ("Is the CPU expert pool compute-bound?  The engine's AVX-512 i-quant rows (the default on this CPU) against "
+                 "the AVX2 rows (STRATA_NO_IQ512=1), taking turns.  Nothing else differs."),
+        "arms": [("as configured (AVX-512 rows)", []),
+                 ("AVX2 rows (STRATA_NO_IQ512=1)", ["--engine-env=STRATA_NO_IQ512=1"])],
+    },
     "dma-batch": {
         "note": ("Does one cudaMemcpyBatchAsync of the group's uploads beat the loop of one-copy-each (STRATA_DMA_BATCH, "
                  "F12)?  The first run of this sweep (bench/results/ab-dma-batch, 2026-10-22) did NOT answer it: the "
