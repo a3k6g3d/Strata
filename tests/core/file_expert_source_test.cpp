@@ -531,6 +531,61 @@ void test_unbuffered_reads() {
     source.close();
 }
 
+// The startup's unbuffered reads (begin/end_startup_unbuffered, Windows): the stage buffers they assemble blobs in
+// are freed when the mapped tier takes over, and the pointer -> buffer index must go with them.  It did not: the
+// reset cleared the buffers and left the index and the per-buffer copy events behind (the other reset clears all of
+// them, through stage_free_events), so a later note_async_read with a pointer that matched a stale entry indexed the
+// emptied buffer list.  Found by reading the code during the M6 audit (docs/RUST_ENGINE.md).
+void test_startup_unbuffered_reset() {
+    using namespace strata::core;
+    using namespace strata::kernels::cpu;
+    constexpr int64_t layers = 2;
+    constexpr int64_t experts = 3;
+    const uint64_t layer_bytes = (uint64_t) experts * BLOB;
+    const uint64_t total = (uint64_t) layers * layer_bytes;
+    TempDirectory dir(fs::current_path());
+    std::string err;
+    require(expert_layout_load(dir.path.string(), layers, experts, err), "could not load canonical layout: " + err);
+    std::vector<uint8_t> bytes((size_t) total);
+    uint64_t x = 0xD1B54A32D192ED03ull;
+    for (uint8_t& b : bytes) {
+        x = x * 6364136223846793005ull + 1442695040888963407ull;
+        b = (uint8_t) (x >> 56);
+    }
+    {
+        std::ofstream out(dir.path / "experts.bin", std::ios::binary | std::ios::trunc);
+        out.write((const char*) bytes.data(), (std::streamsize) bytes.size());
+        require((bool) out, "could not write the synthetic experts.bin");
+    }
+    FileExpertSource source;
+    require(source.open(dir.path.string(), layers, experts, err), "could not map the synthetic pack: " + err);
+    std::string why;
+    if (!source.begin_startup_unbuffered(why)) {
+        std::cout << "file_expert_source_test: startup unbuffered reset skipped (" << why << ")\n";
+        source.close();
+        return;
+    }
+    auto expect = [&](int64_t l, int64_t e, const char* when) {
+        const uint8_t* b = source.blob(l, e);
+        require(b != nullptr, std::string("no blob ") + when);
+        require(std::memcmp(b, bytes.data() + (size_t) (l * (int64_t) layer_bytes + e * (int64_t) BLOB), (size_t) BLOB) == 0,
+                std::string("a blob differs from the file ") + when);
+        return b;
+    };
+    const uint8_t* staged = nullptr;
+    for (int64_t l = 0; l < layers; ++l)
+        for (int64_t e = 0; e < experts; ++e) staged = expect(l, e, "during the unbuffered startup");
+    require(source.stage_index_size() > 0, "the unbuffered startup assembled no stage buffers - the test proves nothing");
+    require(source.end_startup_unbuffered(why), "the view could not be mapped again: " + why);
+    require(source.stage_index_size() == 0, "the reset left " + std::to_string(source.stage_index_size()) +
+                                                " entries in the stage index, naming freed buffers");
+    source.note_async_read(staged, nullptr);   // a pointer into a freed stage buffer: must be ignored, not looked up
+    for (int64_t l = 0; l < layers; ++l)
+        for (int64_t e = 0; e < experts; ++e) expect(l, e, "after the mapped tier took over");
+    source.close();
+    std::cout << "startup_unbuffered_reset: PASS\n";
+}
+
 // #633: the host RAM probe with fake /proc and cgroup trees: v2 (a limit, "max", a missing or malformed limit), v1
 // (a limit, unlimited), and no cgroup line at all.  Elsewhere than Linux it reads the machine's RAM.
 void test_host_memory() {
@@ -751,6 +806,7 @@ int main(int argc, char** argv) {
         test_host_memory();
         test_canonical_layout();
         test_unbuffered_reads();
+        test_startup_unbuffered_reset();
         test_io_prefetch();
 #if defined(STRATA_NATIVE_EXPERTS)
         test_native_variable_layout();
