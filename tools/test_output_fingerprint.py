@@ -78,5 +78,18 @@ class CompareTests(unittest.TestCase):
         self.assertIn("unstable", row["why"])                                 # says why, in words
 
 
+class Prompts(unittest.TestCase):
+    def test_the_sweeps_prompts_come_first_and_keep_their_tags(self):
+        # chat0..2 must stay the sweeps' prompts under the same tags, or a gate compares across tool versions wrongly
+        p = F.all_prompts()
+        self.assertEqual([p[f"chat{i}"] for i in range(3)], list(F.A.PROMPTS))
+        self.assertEqual(list(p)[:3], ["chat0", "chat1", "chat2"])
+
+    def test_the_exact_prompts_are_added_unless_asked_not_to(self):
+        self.assertEqual(len(F.all_prompts()), 3 + len(F.EXACT_PROMPTS))
+        self.assertEqual(list(F.all_prompts(chat_only=True)), ["chat0", "chat1", "chat2"])
+        self.assertEqual(len(set(F.EXACT_PROMPTS)), len(F.EXACT_PROMPTS), "a duplicated prompt would vote twice")
+
+
 if __name__ == "__main__":
     unittest.main()

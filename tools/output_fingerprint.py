@@ -39,6 +39,34 @@ import ab_engine as A  # noqa: E402  the fixed prompts, so this checks the same 
 STABLE, WARM_ONLY, UNSTABLE = "stable", "stable once warm", "unstable"
 MAX_TOKENS = 64
 
+# Short prompts with one right answer, asked beside the sweeps' three.  The M5 gate (2026-10-23) ran on the three
+# alone and had one comparable prompt: chat1 and chat2 were unstable in every arm, so the rule - rightly - set them
+# aside, and a pass rested on chat0.  These ten were each asked five times of the live engine (0.1.45, Swift 1.5
+# IQ3_S, seed 1234, greedy) before they were added, and every one gave a single answer - so a gate has prompts the
+# engine reproduces on its own to compare.  Whether an answer is *right* does not matter here ("strawberry"
+# backwards came back "yrberwarts"); only whether it is the same.  The longer ones (counting, primes, days, sort)
+# run more tokens through the engine than the one-word ones, and are the stronger half.
+EXACT_PROMPTS = (
+    "What is 17 times 23? Answer with the number only.",
+    "What is the capital of Australia? Answer with one word.",
+    "Spell the word 'strawberry' backwards. Answer with the reversed word only.",
+    "List the first eight prime numbers, separated by commas, nothing else.",
+    "Translate 'good morning' into French. Answer with the translation only.",
+    "Sort these words alphabetically and output them separated by spaces: pear apple mango banana kiwi",
+    "What is the chemical symbol for gold? Answer with the symbol only.",
+    "Count from 1 to 15 in words, separated by commas, nothing else.",
+    "Convert 255 to hexadecimal. Answer with the value only.",
+    "Write the days of the week in order, separated by commas, nothing else.",
+)
+
+
+def all_prompts(chat_only: bool = False) -> dict:
+    """tag -> prompt: the sweeps' own prompts (chat0..2), then the exact-answer ones (exact0..9) unless chat_only."""
+    out = {f"chat{i}": p for i, p in enumerate(A.PROMPTS)}
+    if not chat_only:
+        out.update({f"exact{i}": p for i, p in enumerate(EXACT_PROMPTS)})
+    return out
+
 
 # ------------------------------------------------------------------------------------------------------------- http
 def ask(url: str, key: str, prompt: str, seed: int, max_tokens: int = MAX_TOKENS, timeout: float = 1800) -> str:
@@ -184,6 +212,8 @@ def main(argv=None) -> int:
     ap.add_argument("--seed", type=int, default=1234, help="must be > 0 to reach the engine")
     ap.add_argument("--max-tokens", type=int, default=MAX_TOKENS)
     ap.add_argument("--out", help="write the per-request fingerprints here (JSON)")
+    ap.add_argument("--chat-only", action="store_true", help="only the sweeps' three prompts (the tool before the "
+                                                                "exact-answer ones were added)")
     ap.add_argument("--selftest", action="store_true", help="check this tool's own arithmetic on answers we made up, and stop")
     a = ap.parse_args(argv)
     if a.selftest:
@@ -193,7 +223,7 @@ def main(argv=None) -> int:
         return 2
 
     arms = [("A", a.url)] + ([("B", a.arm_b)] if a.arm_b else [])
-    prompts = {f"chat{i}": p for i, p in enumerate(A.PROMPTS)}
+    prompts = all_prompts(a.chat_only)
     seen = {name: {p: [] for p in prompts} for name, _ in arms}
     for run in range(a.runs):
         order = arms if run % 2 == 0 else arms[::-1]            # the machine drifts on a schedule; interleave
