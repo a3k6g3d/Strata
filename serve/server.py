@@ -2642,8 +2642,16 @@ def gpu_list(cfg: dict) -> list[int]:
 def engine_binary(exe: str, cfg: dict | None = None) -> str:
     """The file that holds the engine's own option strings, for a feature check that reads it.  The Intel launcher
     (sycl/serve/strata-sycl.sh) is a shell script that runs its repo's STRATA_SYCL_BIN (default build-sycl-aot/strata)
-    in a container, so the check reads that binary, not the script.  Any other `exe` is the engine itself."""
+    in a container, so the check reads that binary, not the script.  strata-hostd (rust-host, RUST_ENGINE.md M8) is a
+    proxy that starts STRATA_HOSTD_ENGINE, so the check reads that engine: read off the proxy, every feature probe
+    answered 'too old', and the server sent a different prompt and different engine arguments through it than
+    without it (the M8 gate found it: chat0 went to the engine as 34 tokens instead of 76).  Any other `exe` is the
+    engine itself."""
     p = Path(exe)
+    if p.name in ("strata-hostd", "strata-hostd.exe"):
+        target = ((cfg or {}).get("env") or {}).get("STRATA_HOSTD_ENGINE") or os.environ.get("STRATA_HOSTD_ENGINE")
+        if target and Path(target).is_file():
+            return str(target)
     if p.name == "strata-sycl.sh":
         rel = ((cfg or {}).get("env") or {}).get("STRATA_SYCL_BIN") or os.environ.get("STRATA_SYCL_BIN") \
             or "build-sycl-aot/strata"
