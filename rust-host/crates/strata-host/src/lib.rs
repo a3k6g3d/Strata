@@ -22,6 +22,7 @@
 pub mod ffi;
 pub mod transient;
 pub mod window;
+pub mod protocol;
 
 use std::collections::{HashMap, VecDeque};
 use std::os::raw::c_void;
