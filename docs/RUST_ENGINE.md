@@ -131,6 +131,18 @@ buffers back when the mapped tier takes over (`expert_source.cpp`, after `close_
 The invariant "a prediction only ever warms" gets a test: a prediction must never change *what* is computed, only
 *when* the bytes arrive.
 
+*The type, 2026-10-23:* `rust-host/crates/strata-host/src/window.rs`. `Window::new(depth)` takes 1..=4 (anything
+else refused, not clamped), holds at most `depth` layers of predictions, and drops - cancelling at the source - a
+prediction when its layer is reached, when a newer one replaces it, when the layer clock wraps to the next forward
+pass, or with the window. Predictions reach a source only through `Warm::warm`, which returns nothing; the compute
+path reads through `Blobs::blob`, which never sees the window. The invariant test runs one computation with correct,
+wrong, thrashing and absent predictions at every depth and requires one answer - and requires correct predictions to
+make most reads warm, so it is not passing by never warming; a second test plants a warm path that fetches the
+neighbouring expert's bytes and requires the answer to move. The wrap rule was found by the type's own capacity
+assertion: the first version carried one pass's predictions into the next. The C++ `RouterLookahead` holds no such
+state (its warms are fire-and-forget page hints, bounded at the last router), so it has no counterpart bug. Not wired
+in; as with M6, the engine's warms are hints with no path into what is computed, so the type is a rail.
+
 **M8, the GEN endpoint.** The Rust host answers the line protocol the Python server already speaks — `GEN <max_new>
 <ids>` in, `T <id>` out (`serve/server.py:681`), same port. "`serve/` unchanged" is the property that makes the
 whole thing safe to run while it is built, so it is kept to the end.
