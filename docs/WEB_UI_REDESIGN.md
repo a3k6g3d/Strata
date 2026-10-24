@@ -114,8 +114,20 @@ My order: **A, then D, then B, then C.** A is the thing in the screenshot that m
 D matters most once the phone works from outside the house; B is small and can go any time; C is the one that touches
 saved data and needs the most care.
 
-## Questions for the owner
+## Decisions (owner, 2026-10-24)
 
-1. Is "Open the preview by itself" right as a default, or should it wait for a click?
-2. Projects: plain groups first (my suggestion), or do you want the per-chat working folder from the start?
-3. Phone: do you want it installable as a home-screen app, which means turning on HTTPS (Tailscale) first?
+1. **The preview opens on a click**, never by itself. (So the file card's **Open** is the only trigger; the "opens by itself"
+   setting in piece A is dropped.)
+2. **Projects get a working folder** - but per *project*, not per chat. A project is a name, a folder and the chats under
+   it (upstream's "workspace": its screenshot has one folder, `pagoda-garden`, with its chats beneath). Checked: the
+   command tool takes a `cwd` for every call (`run_command(command, shell, cwd, timeout_s)`, `run_python(code, cwd,
+   timeout_s)` in `tools/strata_exec_mcp.py`), so no second tool server is needed - the server fills in the project's
+   folder as the default `cwd` for a chat in that project and tells the model which folder it is working in. The files
+   tool's allowed folders (`J:\`, ...) stay as configured; a project folder outside them is refused with the files
+   tool's own message. This replaces "plain groups first": piece C is now **project = name + folder + chats**, about
+   300 lines of JS and 80 of Python, and needs a restart (about 40 s).
+3. **Installable on the phone, so HTTPS.** That needs Tailscale (`tailscale serve` gives the PC a real certificate on a
+   private address; a home-screen app, service workers and clipboard access all need it). Not installed here yet; the
+   installer is Tailscale's own `tailscale-setup-1.104.2.exe`, 1.4 MB from pkgs.tailscale.com. Installing it adds a Windows
+   service and a network adapter, and signing in is to the owner's own Tailscale account, so those two steps are the
+   owner's. Piece D's manifest and icons can be built first and tested over plain `http` as a shortcut.
