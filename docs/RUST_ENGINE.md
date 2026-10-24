@@ -106,6 +106,15 @@ cold launches, -2.7% in its warm one): no case for changing the live config. The
 launches) is too small to trust; read both against BENCH_NOISE's ~10%. What could beat the pool is Windows 11's I/O
 ring - many reads per submission call, the one cost that bounds depth 256 - and is the next thing to try here.
 
+*Later the same evening.* The I/O ring (`STRATA_HOST_IORING=1`, opt-in) gave +10% over the completion port and no
+more: the kernel still issues each read on the submitting thread. What closed the gap was the pool's own idea -
+several issuing threads (`STRATA_IO_THREADS`, default 4, the C++ knob and default). Benchmark, C++ pool / Rust with
+1 / 4 / 8 threads: depth 256 190.6k / 133.8k / 191.2k / 191.0k reads/s, depth 64 175.6k / 137.7k / 177.0k / 177.0k.
+Eight threads add nothing because ~191k random 8 KiB reads/s is this NVMe's ceiling: past parity, no reader in any
+language goes faster here. End to end (one engine, six interleaved launches): the reader through the Rust host with
+four threads -1.7% at the round median, inside the 10.1% spread of the default arm's own launches - where the
+one-thread ring had been -8.2%. So the Rust reader now costs nothing; what it adds is the ownership rules, not speed.
+
 **M6, the lifetime rule as a borrow.** The blob the Rust side hands down is provably alive for the layer it was
 asked in and the next one or two. Gate: M5's, plus a test that a consumer keeping a blob too long fails loudly
 rather than silently.
