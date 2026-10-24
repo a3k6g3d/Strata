@@ -23,6 +23,8 @@ pub mod ffi;
 pub mod transient;
 pub mod window;
 pub mod protocol;
+#[cfg(windows)]
+pub mod ioring;
 
 use std::collections::VecDeque;
 use std::os::raw::c_void;

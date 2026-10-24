@@ -36,8 +36,61 @@ pub struct HostCompletion {
 /// What the engine holds as `strata_host_file *`.  The waker is kept apart from the ring so that `wake`, the one
 /// call another thread may make, reads only it and never forms a reference to the ring the I/O thread is using.
 pub struct HostFile {
-    waker: Waker,
-    ring: UnsafeCell<DirectFile>,
+    waker: Wake,
+    ring: UnsafeCell<Ring>,
+}
+
+/// The two rings the exports can drive: the completion-port one (the default) and, with STRATA_HOST_IORING=1 on a
+/// Windows that has them, the I/O-ring one (`ioring.rs`) - one kernel call per batch of reads instead of per read.
+enum Ring {
+    Iocp(DirectFile),
+    #[cfg(windows)]
+    IoRing(crate::ioring::RingFile),
+}
+
+#[derive(Clone, Copy)]
+enum Wake {
+    Iocp(Waker),
+    #[cfg(windows)]
+    IoRing(crate::ioring::RingWaker),
+}
+
+impl Wake {
+    fn wake(&self) {
+        match self {
+            Wake::Iocp(w) => w.wake(),
+            #[cfg(windows)]
+            Wake::IoRing(w) => w.wake(),
+        }
+    }
+}
+
+impl Ring {
+    fn submit(&mut self, offset: u64, buffer: Buffer, tag: u64) -> Result<(), (Status, Buffer)> {
+        match self {
+            Ring::Iocp(r) => r.submit(offset, buffer, tag),
+            #[cfg(windows)]
+            Ring::IoRing(r) => r.submit(offset, buffer, tag),
+        }
+    }
+
+    fn wait_with(&mut self, max: usize, timeout_ms: u32, f: impl FnMut(Completion)) -> usize {
+        match self {
+            Ring::Iocp(r) => r.wait_with(max, timeout_ms, f),
+            #[cfg(windows)]
+            Ring::IoRing(r) => r.wait_with(max, timeout_ms, f),
+        }
+    }
+}
+
+/// STRATA_HOST_IORING=1 asks for the I/O ring; it is taken only where this Windows has one, else the completion port.
+fn want_ioring() -> bool {
+    #[cfg(windows)]
+    {
+        std::env::var("STRATA_HOST_IORING").is_ok_and(|v| v == "1") && crate::ioring::RingFile::available()
+    }
+    #[cfg(not(windows))]
+    false
 }
 
 thread_local! {
@@ -99,10 +152,24 @@ pub unsafe extern "C" fn strata_host_file_open(path: *const u16, capacity: i32,
         }
         let wide = std::slice::from_raw_parts(path, n);
         let path = String::from_utf16(wide).map_err(|_| (Status::BufferTooShort, "path is not UTF-16".into()))?;
-        let ring = DirectFile::open(std::path::Path::new(&path), capacity as usize)
-            .map_err(|s| (s, format!("cannot open {path} for direct access")))?;
-        *size_out = ring.size();
-        let waker = ring.waker();
+        let p = std::path::Path::new(&path);
+        let (ring, waker, size) = if want_ioring() {
+            #[cfg(windows)]
+            {
+                let r = crate::ioring::RingFile::open(p, capacity as usize)
+                    .map_err(|(s, why)| (s, format!("cannot open {path} through an I/O ring: {why}")))?;
+                let (w, size) = (r.waker(), r.size());
+                eprintln!("strata-host: {path} is read through an I/O ring");
+                (Ring::IoRing(r), Wake::IoRing(w), size)
+            }
+            #[cfg(not(windows))]
+            unreachable!()
+        } else {
+            let r = DirectFile::open(p, capacity as usize).map_err(|s| (s, format!("cannot open {path} for direct access")))?;
+            let (w, size) = (r.waker(), r.size());
+            (Ring::Iocp(r), Wake::Iocp(w), size)
+        };
+        *size_out = size;
         *file_out = Box::into_raw(Box::new(HostFile { waker, ring: UnsafeCell::new(ring) }));
         Ok(())
     })
