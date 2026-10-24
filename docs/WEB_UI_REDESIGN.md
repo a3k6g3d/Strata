@@ -86,6 +86,20 @@ already carries `reasoning_effort`. *Size:* about 80 lines. No server change.
 
 ### C. Projects (chats grouped under a name)
 
+**Built 2026-10-24** as decided below (name + folder + chats). `serve/projects.py` keeps the projects and which chat is
+in which in `<sessions folder>/_projects.json` - not in the chats, because the Discord bot and older pages save chats
+too and would drop a field they do not know (and not `projects.json`: the chat store reads any `*.json` named like a chat
+id as a chat, and quarantined it as damaged - found in the browser). Routes: `GET /projects`, `POST /projects`,
+`/projects/<id>`, `/projects/<id>/delete`, `/projects/assign`, Strata's own page only; a folder must be a full path
+that exists and is not on the no-read list. The page sends `strata_session` with each chat request; for a chat in a
+project the server adds one line to the system message (the project and its folder - the same every turn, so the
+conversation cache keeps reusing the prompt) and `run_with_mcp` fills the folder into each call *before* the approval
+card, the no-read list and the protected paths look at it: a command's missing or relative `cwd`, a files tool's
+relative `path`. In the page: a Projects section at the top of the chat list (fold, `+` for a new chat in it, `⋯` to
+rename, change the folder or remove - its chats stay, nothing on disk is touched) and a drop-down in the bar above the
+chat that moves it (works on a phone, where dragging does not). Checked against the mock server (no tools there); the
+tool-loop part is covered by `serve/test_projects.py` and needs the live server, after a restart, to be seen working.
+
 Upstream's "workspaces" are folders the agent works in. We do not have per-chat working folders: the exec tool server
 has one (`workspace`), so a folder per chat would be a server feature (per-session `cwd` for the exec and files servers).
 **First cut: projects as plain groups** - a name you give a set of chats, collapsible in the list, drag a chat onto one.

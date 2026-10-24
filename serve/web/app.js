@@ -831,7 +831,8 @@ function renderSessions() {
   if (search) { search.hidden = !enough; if (!enough) search.value = ""; }
   const q = (enough && search ? search.value : "").trim().toLowerCase();
   if (q) shown = shown.filter((s) => (s.title || "").toLowerCase().includes(q));
-  for (const s of shown) {
+  if (projectsOn) renderProjects(box, shown, q);
+  for (const s of shown.filter((x) => !projectOf(x.id))) {
     const label = sessionOrdered ? "Your order" : dayLabel(s.updated);
     if (label !== last) {
       const h = document.createElement("div");
@@ -849,34 +850,7 @@ function renderSessions() {
       box.appendChild(h);
       last = label;
     }
-    const row = document.createElement("div");
-    row.className = "sess" + (s.id === current.id ? " sess--current" : "") + (busy && busy.id === s.id ? " sess--writing" : "");
-    row.dataset.id = s.id;
-    row.setAttribute("role", "listitem");
-    if (sessionList.some((x) => x.id === s.id)) wireDrag(row, s.id);
-    const title = document.createElement("button");
-    title.type = "button";
-    title.className = "sess__title";
-    title.textContent = s.id === current.id ? (current.custom ? current.title : autoTitle()) : s.title;
-    title.title = "Open this chat. F2 (or double-click) renames it. Drag to reorder (or Alt+Up / Alt+Down).";
-    title.onkeydown = (e) => {
-      if (e.key === "F2") { e.preventDefault(); renameSession(s.id); return; }   // double-click is invisible to a keyboard
-      if (!e.altKey || (e.key !== "ArrowUp" && e.key !== "ArrowDown")) return;
-      e.preventDefault();
-      const at = sessionList.findIndex((x) => x.id === s.id), to = at + (e.key === "ArrowUp" ? -1 : 1);
-      if (at < 0 || to < 0 || to >= sessionList.length) return;
-      moveSession(s.id, sessionList[to].id, e.key === "ArrowDown");
-      const again = box.querySelector(`.sess[data-id="${s.id}"] .sess__title`);
-      if (again) again.focus();
-    };
-    const del = document.createElement("button");
-    del.type = "button";
-    del.className = "sess__del";
-    del.title = "Delete this chat";
-    del.setAttribute("aria-label", "Delete this chat");
-    del.textContent = "×";
-    row.append(title, writingMark(s.id), del);
-    box.appendChild(row);
+    box.appendChild(sessionRow(s, box));
   }
   if (!shown.length) {
     const e = document.createElement("div");
@@ -889,7 +863,140 @@ function renderSessions() {
       box.appendChild(c); }
   }
   $("chat-title").textContent = current.custom ? current.title : autoTitle();
+  renderChatProject();
 }
+// one chat's row in the list: its title (open, rename, reorder), the "writing" mark and delete
+function sessionRow(s, box) {
+  const row = document.createElement("div");
+  row.className = "sess" + (s.id === current.id ? " sess--current" : "") + (busy && busy.id === s.id ? " sess--writing" : "");
+  row.dataset.id = s.id;
+  row.setAttribute("role", "listitem");
+  if (sessionList.some((x) => x.id === s.id)) wireDrag(row, s.id);
+  const title = document.createElement("button");
+  title.type = "button";
+  title.className = "sess__title";
+  title.textContent = s.id === current.id ? (current.custom ? current.title : autoTitle()) : s.title;
+  title.title = "Open this chat. F2 (or double-click) renames it. Drag to reorder (or Alt+Up / Alt+Down).";
+  title.onkeydown = (e) => {
+    if (e.key === "F2") { e.preventDefault(); renameSession(s.id); return; }   // double-click is invisible to a keyboard
+    if (!e.altKey || (e.key !== "ArrowUp" && e.key !== "ArrowDown")) return;
+    e.preventDefault();
+    const at = sessionList.findIndex((x) => x.id === s.id), to = at + (e.key === "ArrowUp" ? -1 : 1);
+    if (at < 0 || to < 0 || to >= sessionList.length) return;
+    moveSession(s.id, sessionList[to].id, e.key === "ArrowDown");
+    const again = box.querySelector(`.sess[data-id="${s.id}"] .sess__title`);
+    if (again) again.focus();
+  };
+  const del = document.createElement("button");
+  del.type = "button";
+  del.className = "sess__del";
+  del.title = "Delete this chat";
+  del.setAttribute("aria-label", "Delete this chat");
+  del.textContent = "×";
+  row.append(title, writingMark(s.id), del);
+  return row;
+}
+// ---- projects (docs/WEB_UI_REDESIGN.md, piece C): a name, a working folder, and the chats under it.  The server keeps
+// them (GET/POST /projects, serve/projects.py) and gives a project's chats its folder as the tools' working folder.
+let projectsOn = false, projectData = {projects: [], chats: {}};
+const projectFolded = new Set(store.get("projects_folded", []));
+function projectOf(id) {
+  const pid = projectData.chats[id];
+  return pid ? projectData.projects.find((p) => p.id === pid) || null : null;
+}
+async function loadProjects() {
+  try { projectData = await sessionApi("projects"); projectsOn = true; } catch (e) { projectsOn = false; }   // an older server
+}
+function renderProjects(box, shown, q) {
+  const h = document.createElement("div");
+  h.className = "sessions__day";
+  h.textContent = "Projects";
+  const add = document.createElement("button");
+  add.type = "button";
+  add.className = "sessions__reset";
+  add.textContent = "+ New project";
+  add.title = "A name and a folder: the chats in it work in that folder";
+  add.onclick = () => editProject(null);
+  h.appendChild(add);
+  box.appendChild(h);
+  for (const p of projectData.projects) {
+    const chats = shown.filter((s) => projectData.chats[s.id] === p.id);
+    if (q && !chats.length) continue;                                  // searching: only projects with a match
+    const folded = projectFolded.has(p.id) && !q;
+    const row = document.createElement("div");
+    row.className = "proj";
+    row.dataset.project = p.id;
+    row.innerHTML = `<button type="button" class="proj__name" aria-expanded="${!folded}"><span class="proj__caret">${folded ? "\u25b8" : "\u25be"}</span>` +
+      `<span class="proj__label"></span><span class="proj__count">${chats.length}</span></button>` +
+      `<button type="button" class="proj__btn" data-proj="new" title="New chat in this project" aria-label="New chat in this project">+</button>` +
+      `<button type="button" class="proj__btn" data-proj="edit" title="Rename, change the folder, or remove this project" aria-label="Edit this project">\u22ef</button>`;
+    row.querySelector(".proj__label").textContent = p.name;
+    row.querySelector(".proj__name").title = p.folder;
+    box.appendChild(row);
+    if (!folded) for (const s of chats) { const r = sessionRow(s, box); r.classList.add("sess--in-project"); box.appendChild(r); }
+  }
+}
+$("sessions-list").addEventListener("click", async (e) => {
+  const row = e.target.closest(".proj");
+  if (!row) return;
+  const p = projectData.projects.find((x) => x.id === row.dataset.project);
+  if (!p) return;
+  const act = e.target.closest("[data-proj]");
+  if (!act) {                                                          // the name: fold or unfold
+    if (projectFolded.has(p.id)) projectFolded.delete(p.id); else projectFolded.add(p.id);
+    store.set("projects_folded", [...projectFolded]);
+    renderSessions();
+  } else if (act.dataset.proj === "new") {
+    await newSession();
+    await assignProject(current.id, p.id);
+    if (narrow.matches) showSessions(false);
+  } else {
+    editProject(p);
+  }
+});
+// prompt()s, as renaming a chat does: a name, then the folder (it must exist; the server says why one is refused)
+async function editProject(p) {
+  const name = prompt(p ? "Project name:" : "Name the new project:", p ? p.name : "");
+  if (name === null || !name.trim()) return;
+  const folder = prompt(p ? "Its folder (empty the box to remove the project - its chats stay):"
+                          : "Its folder - a full path that exists, for example D:\\work\\my-site:", p ? p.folder : "");
+  if (folder === null) return;
+  try {
+    if (p && !folder.trim()) {
+      if (!confirm(`Remove the project “${p.name}”? Its chats stay, outside any project. Nothing in its folder is touched.`)) return;
+      await sessionApi(`projects/${p.id}/delete`, {});
+    } else {
+      const saved = await sessionApi(p ? `projects/${p.id}` : "projects", {name: name.trim(), folder: folder.trim()});
+      if (!p && current.id && !projectOf(current.id) && !messages.length) await assignProject(current.id, saved.id, true);
+    }
+  } catch (e) {
+    toast("error", p ? "The project was not changed" : "The project was not made", e.message, 8000);
+    return;
+  }
+  await loadProjects();
+  renderSessions();
+}
+async function assignProject(sid, pid, quiet) {
+  try {
+    projectData = await sessionApi("projects/assign", {session: sid, project: pid});
+  } catch (e) {
+    if (!quiet) toast("error", "The chat was not moved", e.message, 6000);
+    return;
+  }
+  renderSessions();
+}
+// the open chat's project, in the bar above it: a drop-down that moves the chat (works on a phone, where dragging does not)
+function renderChatProject() {
+  const sel = $("chat-project"), wrap = $("chat-project-wrap");
+  wrap.hidden = !projectsOn || !projectData.projects.length;
+  if (wrap.hidden) return;
+  const now = projectOf(current.id);
+  sel.innerHTML = `<option value="">No project</option>` +
+    projectData.projects.map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("");
+  sel.value = now ? now.id : "";
+  sel.title = now ? `Tools work in ${now.folder}` : "Not in a project: tools use their own folders";
+}
+$("chat-project").onchange = () => { if (current.id) assignProject(current.id, $("chat-project").value || null); };
 // An answer being written holds its own chat, and only its own chat.  It keeps arriving when you go elsewhere -
 // the stream writes into the chat that asked for it, not into whatever happens to be on screen - so browsing the
 // list, starting a new chat or asking a second question are all allowed while another chat is busy.  What still
@@ -1115,6 +1222,7 @@ async function initSessions() {
   sessionsOn = true;
   sessionList = listing.sessions || [];
   sessionOrdered = !!listing.ordered;
+  await loadProjects();
   $("chat-top").hidden = false;
   showSessions(!narrow.matches && store.get("sessions_open", true));
   const legacy = messages.length ? messages : null;                                      // the one chat the browser kept so far
@@ -1733,6 +1841,7 @@ async function send(ready) {
 
   const body = {model: health.model, messages: apiMessages(), stream: true,
                 reasoning_effort: settings.thinking};
+  if (sessionsOn && current.id) body.strata_session = current.id;    // which chat: a project's chats get its folder
   if (!(settings.temperature > 0)) {
     body.temperature = 0;
   } else if (!samplingUntouched(settings)) {

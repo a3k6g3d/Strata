@@ -66,6 +66,7 @@ from serve import commit as commit_headroom  # noqa: E402
 from serve import logit_bias as bias_api  # noqa: E402
 from serve.winjob import contain  # noqa: E402
 from serve.sessions import MAX_BYTES as SESSION_MAX_BYTES, SessionError, SessionStore, atomic_write_json  # noqa: E402
+from serve.projects import ProjectError, ProjectStore, folder_note, with_folder  # noqa: E402
 from serve.structured import StructuredOutputError, prepare_format, validated_json  # noqa: E402
 from serve import responses as responses_api  # noqa: E402
 from serve.responses import ResponsesError, error_body as responses_error_body  # noqa: E402
@@ -3228,6 +3229,7 @@ class Service:
         self.conv_log = ConvCacheLog()                  # #596: the parked conversations, from the engine's log
         self.config_path = None                         # #564: the run config the web page's Settings view edits
         self.sessions = None                            # the chat page's separate conversations (serve/sessions.py)
+        self.projects = None                            # projects: a name, a working folder, chats (serve/projects.py)
         self.config_lock = threading.Lock()
         # #321: browser pages of these origins may call /v1/* (CORS; "*" = any page - only with an api_key that
         # matters); empty = no CORS headers at all, as before
@@ -4904,7 +4906,7 @@ def needs_nudge(rounds: int, nudged: bool, calls, own_calls: int, finish: str, c
 
 
 def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new, max_req, sampling, cancel,
-                 mcp_names, mode="ask"):
+                 mcp_names, mode="ask", folder=None):
     """Service.run with the MCP tools executed here: the model writes a call to an MCP tool, the server runs it, adds
     the call and its result to the conversation and lets the model continue - up to `max_rounds` times.  Yields what
     Service.run yields (text, thinking, the request's own tool calls) plus ("mcp", {...}) for the tool activity, and
@@ -4916,7 +4918,11 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
 
     `mode`: the permission mode (serve/mcp.py MODES).  Each call is classed read / write / danger and then runs,
     waits for the user's click in the web app (an "approval" event; POST /mcp/approve answers it, or the call is
-    refused after `approval_timeout_s`), or is refused with a result the model reads and can react to."""
+    refused after `approval_timeout_s`), or is refused with a result the model reads and can react to.
+
+    `folder`: the working folder of the chat's project (serve/projects.py), or None.  It is filled into each call's
+    arguments before anything else looks at them, so the approval card, the no-read list and the protected paths all see
+    the folder the call will really use."""
     max_rounds = int(hub.settings["max_rounds"])
     total, rounds, done = 0, 0, None
     nudged = False                                       # the one automatic "carry on" of this turn (needs_nudge)
@@ -4992,6 +4998,8 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
         results = []
         for c in calls:
             s, tool = hub.routes().get(c.name, (None, c.name))
+            if folder and s is not None:
+                c.arguments = with_folder(tool, c.arguments, folder)
             kind_of_tool = hub.kind_of(c.name)
             yield "mcp", {"event": "call", "id": c.id, "name": c.name, "server": s.name if s else None,
                           "tool": tool, "arguments": c.arguments, "round": rounds, "kind": kind_of_tool, "mode": mode}
@@ -5948,6 +5956,9 @@ def make_handler(svc: Service):
             if path == "/sessions" or path.startswith("/sessions/"):
                 self._sessions_get(path)
                 return
+            if path == "/projects":
+                self._projects_get()
+                return
             if path == "/panel/frameable":
                 self._panel_frameable()
                 return
@@ -6152,6 +6163,9 @@ def make_handler(svc: Service):
                 return
             if path == "/sessions-order":
                 self._sessions_order()
+                return
+            if path == "/projects" or path.startswith("/projects/"):
+                self._projects_post(path)
                 return
             if path == "/config":
                 self._config_post()
@@ -6488,6 +6502,44 @@ def make_handler(svc: Service):
                 return
             self._json(200, {"ok": True, "ordered": svc.sessions.get_order() is not None})
 
+        def _projects_get(self):
+            """GET /projects -> {"projects": [{id, name, folder}], "chats": {session id: project id}}.  Strata's own page
+            only, as /sessions: the folders say where the user's work is."""
+            if not self._authorized():
+                return
+            if self._foreign_origin() or svc.projects is None:
+                self._json(403 if svc.projects is not None else 404,
+                           {"error": {"message": "projects are read only by Strata's own page" if svc.projects is not None
+                                                else "no sessions folder (start the server with a config file)"}})
+                return
+            self._json(200, svc.projects.list())
+
+        def _projects_post(self, path):
+            """POST /projects {"name", "folder"}: a new project; POST /projects/<id> {"name", "folder"}: change it;
+            POST /projects/<id>/delete: remove it (its chats stay, outside any project; nothing on disk is touched);
+            POST /projects/assign {"session", "project": id | null}: put a chat into a project or take it out.
+            Strata's own page only (_own_page).  A folder must exist and must not be on the no-read list."""
+            if not self._own_page("projects can be changed") or svc.projects is None:
+                if svc.projects is None:
+                    self._json(404, {"error": {"message": "no sessions folder (start the server with a config file)"}})
+                return
+            rest = path[len("/projects"):].lstrip("/")
+            try:
+                body = json.loads(self._body() or b"{}")
+                if rest == "assign":
+                    svc.projects.assign(body.get("session"), body.get("project"))
+                    self._json(200, svc.projects.list())
+                    return
+                if rest.endswith("/delete"):
+                    self._json(200, {"ok": svc.projects.delete(rest[:-len("/delete")])})
+                    return
+                folder = ProjectStore.check_folder(body.get("folder"))
+                if svc.mcp is not None and svc.mcp.blocked({"path": folder}):
+                    raise ProjectError("that folder is on the no-read list, so the tools could not use it")
+                self._json(200, svc.projects.save(rest or None, body.get("name"), folder))
+            except (ProjectError, ValueError, TypeError) as e:
+                self._json(400, {"error": {"message": str(e)}})
+
         def _mcp_approve(self):
             """POST /mcp/approve {"approval": <token from the approval event>, "allow": true|false, "always": bool}:
             answers a tool call that waits for the user.  From Strata's own page only (_own_page), as /settings."""
@@ -6688,8 +6740,21 @@ def make_handler(svc: Service):
             svc.reasoning_budget(req)                         # a bad value is a 400 before anything is sent
             stop_strings(req)                                 # ... and so is a bad stop / stop_sequences
             check_request_sampling(req)                       # ... and a sampling field of the wrong type
+            project = None
             if use_mcp:
                 messages = list(messages)
+                # a chat in a project (serve/projects.py): the tools work in its folder, and the model is told which
+                if svc.projects is not None and isinstance(req.get("strata_session"), str):
+                    project = svc.projects.project_of(req["strata_session"])
+                if project:
+                    note = folder_note(project["name"], project["folder"])
+                    first = messages[0] if messages else {}
+                    if first.get("role") == "system" and isinstance(first.get("content"), str):
+                        messages[0] = {**first, "content": first["content"].rstrip() + "\n\n" + note}
+                    elif first.get("role") == "system" and isinstance(first.get("content"), list):   # one system message only
+                        messages[0] = {**first, "content": first["content"] + [{"type": "text", "text": note}]}
+                    else:
+                        messages.insert(0, {"role": "system", "content": note})
             cancel = threading.Event()
             self._watch_client(cancel)                       # #430 #431 (#1999: before prepare, which can take long)
             if use_mcp and not prompt_fits(svc, messages, tools, kw):
@@ -6700,7 +6765,7 @@ def make_handler(svc: Service):
                 ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new, force=force, req=req, cancel=cancel)
             _debug_req("openai", req, messages, tools, max_new, thinking, len(ids))
             run = run_with_mcp(svc, svc.mcp, messages, tools, kw, ids, thinking, max_new, max_req, req, cancel,
-                               {t["name"] for t in extra}, mode) if use_mcp else None
+                               {t["name"] for t in extra}, mode, project and project["folder"]) if use_mcp else None
             chunks = openai_chunks(svc, req, ids, thinking, tools, max_new, cancel, run=run, force=force)
             if validator is not None:
                 chunks = structured_chunks(chunks, validator)
@@ -7830,6 +7895,7 @@ def main() -> int:
         svc.config_path = a.config                      # #564: the web page's Settings view
         try:                                            # the chat page's sessions: files next to the config ("sessions_dir")
             svc.sessions = SessionStore(cfg.get("sessions_dir") or Path(a.config).resolve().parent / "sessions")
+            svc.projects = ProjectStore(svc.sessions.root)   # projects and which chats are in them, beside the chats
         except OSError as e:
             print(f"[strata] the chat sessions folder cannot be used ({e}): the page keeps one chat in the browser", flush=True)
     if a.config:                                        # the Chat settings shared with other apps, from last time
