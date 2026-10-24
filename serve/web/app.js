@@ -1005,16 +1005,22 @@ async function renameSession(id) {
     toast("error", "That chat was not renamed", e.message, 6000);
   }
 }
+// Up to 900 px the chat list covers the chat instead of sitting beside it (app.css): there it is a drawer - opened when
+// wanted, closed by picking a chat or tapping beside it, and never remembered open, or a phone would open on the list.
+const narrow = matchMedia("(max-width: 900px)");
 function showSessions(on) {
   $("sessions").hidden = !on;
   $("sessions-toggle").setAttribute("aria-expanded", String(on));
-  store.set("sessions_open", on);
+  if (!narrow.matches) store.set("sessions_open", on);
 }
 $("sessions-list").addEventListener("click", (e) => {
   const row = e.target.closest(".sess");
   if (!row) return;
   if (e.target.closest(".sess__del")) deleteSession(row.dataset.id);
-  else openSession(row.dataset.id);
+  else { openSession(row.dataset.id); if (narrow.matches) showSessions(false); }
+});
+document.addEventListener("pointerdown", (e) => {
+  if (narrow.matches && !$("sessions").hidden && !e.target.closest("#sessions, #sessions-toggle")) showSessions(false);
 });
 $("sessions-list").addEventListener("dblclick", (e) => {
   const row = e.target.closest(".sess");
@@ -1027,7 +1033,7 @@ if ($("sessions-search")) {
     if (e.key === "Escape") { e.preventDefault(); e.target.value = ""; renderSessions(); }   // Esc here empties the box, it does not close the list
   });
 }
-$("session-new").onclick = newSession;
+$("session-new").onclick = () => { newSession(); if (narrow.matches) showSessions(false); };
 $("sessions-toggle").onclick = () => showSessions($("sessions").hidden);
 // leaving the page: what is waiting to be saved goes out now
 addEventListener("pagehide", () => { if (saveTimer || busy) saveWriting(); });
@@ -1068,7 +1074,7 @@ async function initSessions() {
   sessionList = listing.sessions || [];
   sessionOrdered = !!listing.ordered;
   $("chat-top").hidden = false;
-  showSessions(store.get("sessions_open", innerWidth > 900));
+  showSessions(!narrow.matches && store.get("sessions_open", true));
   const legacy = messages.length ? messages : null;                                      // the one chat the browser kept so far
   const wanted = store.get("session", null);
   if (legacy && !sessionList.length) {
@@ -1883,7 +1889,10 @@ function showSelPop() {
   selPop.hidden = false;
   const w = selPop.offsetWidth, h = selPop.offsetHeight;
   const left = Math.max(8, Math.min(innerWidth - w - 8, r.left + r.width / 2 - w / 2));
-  const top = r.top - h - 8 >= 8 ? r.top - h - 8 : r.bottom + 8;      // above the selection, below it at the top edge
+  // above the selection, below it at the top edge; on a touch screen below it (clear of the selection handles), because
+  // the phone's own Copy / Select all bar sits above
+  const above = r.top - h - 8, below = r.bottom + (lastPointer === "touch" ? 28 : 8);
+  const top = lastPointer === "touch" ? (below + h <= innerHeight - 8 ? below : Math.max(8, above)) : (above >= 8 ? above : below);
   selPop.style.left = `${left + scrollX}px`;
   selPop.style.top = `${top + scrollY}px`;
 }
@@ -1891,6 +1900,16 @@ function showSelPop() {
 // selection check above already keeps the bar to Strata's answers
 document.addEventListener("mouseup", (e) => { if (!selPop.contains(e.target)) setTimeout(showSelPop, 0); });  // after the range settles
 document.addEventListener("keyup", (e) => { if (e.shiftKey && e.target !== $("input")) showSelPop(); });   // Shift+arrows
+// A phone selects with a long press and drags handles; no mouseup comes.  There the selection itself is watched, and the
+// bar shown once it has stayed still for a moment (so it does not chase the handles).
+let lastPointer = "mouse", selTimer = 0;
+document.addEventListener("pointerdown", (e) => { lastPointer = e.pointerType; }, true);
+document.addEventListener("selectionchange", () => {
+  if (lastPointer !== "touch") return;
+  clearTimeout(selTimer);
+  selTimer = setTimeout(showSelPop, 400);
+});
+selPop.addEventListener("pointerdown", (e) => e.preventDefault());     // a tap on the bar keeps the selection too
 $("chat-scroll").addEventListener("scroll", hideSelPop, {passive: true});
 document.addEventListener("mousedown", (e) => { if (!selPop.contains(e.target)) hideSelPop(); });
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") hideSelPop(); });

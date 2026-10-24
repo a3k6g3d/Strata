@@ -5481,8 +5481,9 @@ def make_handler(svc: Service):
                 # script is ES modules, and one module imports another by a path, so folders under web/ are
                 # normal now; a path that climbs out of web/ ("../") is still refused.
                 name = path[len("/web/"):]
+                # the manifest and PNG icons let a phone put the page on its home screen (docs/WEB_UI_REDESIGN.md, D)
                 types = {".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8",
-                         ".svg": "image/svg+xml"}
+                         ".svg": "image/svg+xml", ".png": "image/png", ".webmanifest": "application/manifest+json"}
                 web = ROOT / "serve" / "web"
                 f = web / name
                 ext = os.path.splitext(name)[1]
