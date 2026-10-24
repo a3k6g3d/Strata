@@ -131,6 +131,21 @@ main { flex: 1; min-height: 0; display: flex; }
                background-position: calc(100% - 9px) 55%, calc(100% - 5px) 55%; background-size: 4px 4px, 4px 4px; background-repeat: no-repeat; }
 .perm:focus-within { outline: 2px solid var(--st-accent); outline-offset: 1px; }
 .think-chip select { max-width: 90px; }
+/* projects in the chat list (app.js renderProjects) and the open chat's project in the bar above it */
+.proj { display: flex; align-items: center; border-radius: var(--st-r-md); }
+.proj:hover { background: color-mix(in srgb, var(--st-ink) 7%, transparent); }
+.proj__name { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; padding: 8px 10px; background: none; border: 0;
+  color: var(--st-ink); font: inherit; font-size: var(--st-fs-sm); font-weight: var(--st-fw-bold); text-align: left; cursor: pointer; }
+.proj__caret { flex: none; width: 10px; color: var(--st-ink-muted); }
+.proj__label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.proj__count { flex: none; font-size: var(--st-fs-xs); font-weight: normal; color: var(--st-ink-muted); }
+.proj__btn { flex: none; width: 28px; height: 28px; margin-right: 2px; border: 0; border-radius: var(--st-r-sm, 6px); background: none;
+  color: var(--st-ink-muted); font-size: 16px; line-height: 1; cursor: pointer; }
+.proj__btn:hover { color: var(--st-ink); background: var(--st-surface-2); }
+.sess--in-project { margin-left: 14px; }
+.chat-top .chat-project { height: 28px; margin-left: auto; flex: none; }
+.chat-top .chat-project select { max-width: 150px; }
+@media (pointer: coarse) { .proj__btn { width: 40px; height: 40px; } }
 /* a phone's composer bar has room for the controls, not their labels: the chip keeps its value (the drop-down's name
    says Thinking), and Save as Markdown - a desk job - goes */
 @media (max-width: 640px) {
