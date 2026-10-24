@@ -441,3 +441,13 @@ main { flex: 1; min-height: 0; display: flex; }
 .img-results figure{margin:0}
 .img-results img{max-width:100%;border-radius:var(--st-r-lg);display:block}
 .img-results figcaption{font-size:var(--st-fs-sm, 13px);color:var(--st-ink-2, inherit);margin-top:4px}
+
+/* Select text in an answer: Reply / Start a side chat (app.js, selPop) */
+.sel-pop { position: absolute; z-index: 50; display: flex; gap: 2px; padding: 3px; background: var(--st-surface);
+  border: 1px solid var(--st-line); border-radius: var(--st-r-sm); box-shadow: 0 6px 20px rgba(0, 0, 0, .18);
+  animation: st-pop var(--st-dur) var(--st-ease); }
+.sel-pop[hidden] { display: none; }
+.sel-pop button { font: inherit; font-size: var(--st-fs-sm); color: var(--st-ink); background: transparent; border: 0;
+  border-radius: 6px; padding: 5px 10px; cursor: pointer; white-space: nowrap; }
+.sel-pop button:hover { background: var(--st-accent-tint); color: var(--st-accent-text); }
+@media (prefers-reduced-motion: reduce) { .sel-pop { animation: none; } }

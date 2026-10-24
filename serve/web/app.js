@@ -1755,6 +1755,62 @@ function retryFrom(i) {
 function autosize() { const t = $("input"); t.style.height = "auto"; t.style.height = `${Math.min(t.scrollHeight, innerHeight * 0.4)}px`; }
 $("input").addEventListener("input", autosize);
 
+// Select text in one of Strata's answers and a small bar offers Reply (the selection goes into the message box as a
+// quote) and Start a side chat (a new chat that opens with the quote, so this one is left as it is).  Nothing is sent
+// on its own: the quote waits in the box for the question about it.
+const selPop = document.createElement("div");
+selPop.className = "sel-pop";
+selPop.hidden = true;
+selPop.innerHTML = `<button type="button" data-sel="side">Start a side chat</button><button type="button" data-sel="reply">Reply</button>`;
+document.body.appendChild(selPop);
+let selText = "";
+function quoted(text) {
+  return text.trim().split(/\r?\n/).map((l) => `> ${l}`).join("\n") + "\n\n";
+}
+function hideSelPop() { selPop.hidden = true; selText = ""; }
+function showSelPop() {
+  const sel = getSelection();
+  const text = sel && !sel.isCollapsed ? sel.toString() : "";
+  const node = sel && sel.anchorNode && (sel.anchorNode.nodeType === 1 ? sel.anchorNode : sel.anchorNode.parentElement);
+  // only inside an answer (its text or its thinking), and only a real selection - not a stray click
+  if (text.trim().length < 2 || !node || !node.closest(".st-msg--assistant .st-bubble, .st-msg--assistant .thinking")) {
+    hideSelPop();
+    return;
+  }
+  selText = text;
+  const r = sel.getRangeAt(0).getBoundingClientRect();
+  selPop.hidden = false;
+  const w = selPop.offsetWidth, h = selPop.offsetHeight;
+  const left = Math.max(8, Math.min(innerWidth - w - 8, r.left + r.width / 2 - w / 2));
+  const top = r.top - h - 8 >= 8 ? r.top - h - 8 : r.bottom + 8;      // above the selection, below it at the top edge
+  selPop.style.left = `${left + scrollX}px`;
+  selPop.style.top = `${top + scrollY}px`;
+}
+$("chat").addEventListener("mouseup", () => setTimeout(showSelPop, 0));   // after the browser has settled the range
+$("chat").addEventListener("keyup", (e) => { if (e.shiftKey) showSelPop(); });
+$("chat-scroll").addEventListener("scroll", hideSelPop, {passive: true});
+document.addEventListener("mousedown", (e) => { if (!selPop.contains(e.target)) hideSelPop(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") hideSelPop(); });
+selPop.addEventListener("mousedown", (e) => e.preventDefault());         // keep the selection while the button is clicked
+selPop.addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-sel]");
+  if (!b || !selText) return;
+  const q = quoted(selText);
+  hideSelPop();
+  getSelection().removeAllRanges();
+  if (b.dataset.sel === "side") {
+    await newSession();                                        // the draft of this chat stays with it (stashDraft)
+    $("input").value = q;
+  } else {
+    const t = $("input");
+    t.value = q + t.value.replace(/^\s+/, "");
+  }
+  autosize();
+  const t = $("input");
+  t.focus();
+  t.setSelectionRange(t.value.length, t.value.length);
+});
+
 $("chat-empty-asks").addEventListener("click", (e) => {
   const a = e.target.closest("[data-ask]");
   if (!a) return;
