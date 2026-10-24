@@ -35,10 +35,15 @@ Read from `serve/web` on 2026-10-24, against the screenshot of upstream's app (`
 
 ### A. File cards, `+/-` counts, and the preview pane (biggest win, most self-contained)
 
+**Built and checked 2026-10-24** (`ddc2dfe8`): a test chat on a throwaway mock server on another port, in the web app - 3 cards,
+"Ran a command, edited 3 files +18 -2", Open showing an HTML page whose script ran and reported "parent page blocked: yes |
+storage: blocked", the Source switch, a text file, and the card for a file edited from an unseen version disabled. Not
+built: syntax highlighting, and the phase-2 route below.
+
 *What the user sees.* After a turn that wrote or edited files, under the reply: the collapsed line reads "Ran 2
 commands, edited 3 files +5 -5", and a card per file the model created - type badge, name, size, **Open**. **Open**
-shows the file in the side panel: an HTML file runs; code and text show highlighted. On a turn that creates an HTML file the panel
-opens by itself (a setting, on by default, off with one click).
+shows the file in the side panel: an HTML file runs (with a Source switch); anything else is shown as plain monospace
+text - **no syntax highlighting yet**. It opens on that click only, never by itself.
 
 *Data we already have.* The files tool server names its calls `write_file(path, content)` and `edit_file(path, old_text,
 new_text, replace_all)`; both arrive in the chat as tool calls with their arguments. So:
