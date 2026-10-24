@@ -8,6 +8,9 @@ html, body { height: 100%; }
    scroll container; the `hidden` before it is for engines too old to know the word. */
 html { overflow-x: hidden; overflow-x: clip; }
 body { display: flex; flex-direction: column; overflow: hidden; }
+/* installed on a phone's home screen the page runs edge to edge (viewport-fit=cover): keep it clear of the notch and the
+   home bar.  Each inset is 0 in a normal browser tab. */
+body { box-sizing: border-box; padding: env(safe-area-inset-top, 0) env(safe-area-inset-right, 0) env(safe-area-inset-bottom, 0) env(safe-area-inset-left, 0); }
 main { flex: 1; min-height: 0; display: flex; }
 .view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .view[hidden] { display: none; }
@@ -367,6 +370,12 @@ main { flex: 1; min-height: 0; display: flex; }
   .sidepanel { position: absolute; z-index: 25; top: 0; bottom: 0; right: 0; width: min(92vw, 520px); max-width: none; background: var(--st-bg, #111);
                box-shadow: 0 0 40px rgba(0, 0, 0, .35); }
 }
+/* a phone: the side panel is a full-screen sheet (its x closes it) - a strip of chat beside it is too thin to use */
+@media (max-width: 640px) {
+  .sidepanel { width: 100vw; box-shadow: none; }
+  .sidepanel__resize { display: none; }
+  .sessions { width: min(86vw, 320px); }
+}
 
 /* ---------------------------------------------------------------- access and touch */
 /* the skip link: off screen until a keyboard user reaches it */
@@ -384,6 +393,7 @@ main { flex: 1; min-height: 0; display: flex; }
 }
 /* a finger is not a cursor: the small controls grow to a fingertip, the look stays the same */
 @media (pointer: coarse) {
+  .composer-hint { display: none; }   /* "Shift+Enter: new line" / "Enter: queue" name keys a phone does not have */
   .st-btn { min-height: 44px; }
   .st-btn--icon { width: 44px; height: 44px; }
   .st-btn--send { width: 44px; }

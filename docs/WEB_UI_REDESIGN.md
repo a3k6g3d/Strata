@@ -87,6 +87,17 @@ instead). Per-chat working folders can come later, on top. *Size:* about 200 lin
 
 ### D. A phone pass (this is what makes "away from home" pleasant)
 
+**Built 2026-10-24**, checked in the browser at 375 px against the mock server (desktop width rechecked, unchanged). Found
+and fixed: the chat list reopened over the chat whenever it had last been left open and stayed open after picking a chat
+(now a drawer below 900 px: never remembered open, closed by a pick, New chat or a tap beside it); the side panel left a
+30 px strip of chat (full-screen sheet below 640 px, no resize grip); "Shift+Enter: new line" shown on a touch screen
+(hidden there); the select-to-reply bar never appeared on touch (a debounced `selectionchange` on a touch screen, the bar
+placed *below* the selection, clear of the phone's own Copy bar). Added: `viewport-fit=cover` with safe-area padding,
+`interactive-widget=resizes-content` (the composer stays above the keyboard on Android), a manifest and icons
+(`tools/make_web_icons.py`, standard library only). The manifest and PNGs need the `/web/` route's two new file types in
+`serve/server.py`, so **home-screen install works after the next restart**; everything else is live on a page reload.
+Not checked: a real phone (iOS Safari in particular), and over HTTPS.
+
 Not a redesign: a day with the page on a real phone. Expected list, to be confirmed by looking: the chat list as a
 slide-in drawer, the side panel as a full-screen sheet with a back button, the composer pinned above the keyboard with
 safe-area padding, 44 px touch targets (the `pointer: coarse` rule exists - to be checked), no hover-only controls (the
