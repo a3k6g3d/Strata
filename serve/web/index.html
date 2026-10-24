@@ -54,6 +54,11 @@
           placeholder="Search your chats" aria-label="Search your chats">
       </div>
       <div class="sessions__list" id="sessions-list" role="list"></div>
+      <button type="button" class="model-card" id="model-card" hidden>
+        <span class="model-card__dot" aria-hidden="true"></span>
+        <span class="model-card__main"><span class="model-card__name" id="model-name"></span>
+          <span class="model-card__meta" id="model-meta"></span></span>
+      </button>
     </aside>
     <div class="chat-main">
     <div class="chat-top" id="chat-top" hidden>
@@ -94,6 +99,11 @@
             <svg class="st-icon"><use href="web/sprite.svg#i-download"/></svg></button>
           <button type="button" class="st-btn st-btn--icon" id="sampling-btn" title="Sampling and thinking" aria-label="Sampling and thinking">
             <svg class="st-icon"><use href="web/sprite.svg#i-settings"/></svg></button>
+          <label class="perm think-chip" title="How long it thinks before answering (also under Sampling and thinking)">
+            <span aria-hidden="true">Think</span>
+            <select id="think-select" aria-label="Thinking">
+              <option value="none">Off</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option>
+            </select></label>
           <label class="perm" id="perm-wrap" hidden>
             <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-tool"/></svg>
             <select id="perm-select" aria-label="What the model may do with tools"></select></label>

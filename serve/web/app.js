@@ -121,11 +121,30 @@ async function poll() {
       throw new Error(`HTTP ${r.status}`);
     }
   } catch (e) {
-    if (++metricsFailures === 3) setPill("error", "Server not reachable");
+    if (++metricsFailures === 3) { setPill("error", "Server not reachable"); $("model-card").dataset.up = "false"; }
   }
   if (tab === "monitor" && ++mcpTick % 10 === 0) loadMcp();       // server states change rarely: every 10 s
   setTimeout(poll, 1000);
 }
+
+// The model card at the foot of the chat list (docs/WEB_UI_REDESIGN.md, piece B): which model answers, its quantization,
+// the GPU, and a dot that is green while the server answers.  A click opens About, which has the rest.
+function modelQuant(name) {
+  const q = String(name || "").split(/[-.]/).find((p) => /^i?q\d[a-z0-9_]*$/i.test(p)) || "";
+  const at = q ? String(name).search(new RegExp(`(^|[-.])${q}($|[-.])`)) : -1;
+  return {raw: q, at, label: q.toUpperCase().replace(/^(I?Q\d)(?!_)([A-Z].*)$/, "$1_$2")};   // iq3s -> IQ3_S, q4_k_m -> Q4_K_M
+}
+function renderModelCard(eng, st, up) {
+  const name = eng.model || health.model || "", card = $("model-card");
+  card.hidden = !name;
+  if (!name) return;
+  const q = modelQuant(name), quant = q.label, gpu = (st.gpu_name || "").replace(/^NVIDIA\s+(GeForce\s+)?/i, "");
+  $("model-name").textContent = q.at > 0 ? name.slice(0, q.at) : name;          // the name without the quant (and what follows)
+  $("model-meta").textContent = [quant, gpu].filter(Boolean).join(" · ");
+  card.title = `${name}${st.gpu_name ? ` on ${st.gpu_name}` : ""} - details under About`;
+  card.dataset.up = String(up);
+}
+$("model-card").onclick = () => showTab("about");
 
 function setPill(state, text) {
   $("pill").dataset.state = state === "error" ? "queued" : state;
@@ -148,6 +167,7 @@ function render(m) {
   warnCommit(m.commit);
   const live = m.live || {}, hw = m.hardware || {}, st = m.hardware_static || {}, eng = m.engine || {}, h = m.history || {};
   const last = (m.requests || [])[0];
+  renderModelCard(eng, st, true);
   // the header pill
   if (live.state === "reading") {
     const pct = live.prompt_total ? Math.round((100 * live.prompt_read) / live.prompt_total) : null;
@@ -636,6 +656,15 @@ document.addEventListener("click", (e) => {
 // ------------------------------------------------------------------ Chat
 const DEFAULTS = {thinking: "high", temperature: 0.6, top_p: 0.95, top_k: 20, max: "", seed: "", show: true, esp: true, mcp: true};
 let settings = {...DEFAULTS, ...store.get("sampling", {})};
+// the composer's Think chip (piece B): the same setting as Thinking under Sampling, one tap away
+$("think-select").value = settings.thinking;
+$("think-select").onchange = async () => {
+  settings = {...settings, thinking: $("think-select").value};
+  store.set("sampling", settings);
+  if (sharedOn) {                                     // other apps follow this browser's settings: keep them in step
+    try { await saveShared(true, settings); } catch (e) { toast("error", "Other apps keep the old thinking level", e.message, 6000); }
+  }
+};
 let messages = store.get("chat", []);
 let attachments = [];                 // {name, url}
 let busy = null;   // the answer in flight: {id, controller, msg, list, el} - id/list are the chat it belongs to,
@@ -2145,6 +2174,7 @@ $("s-apply").onclick = async () => {
               esp: $("s-esp").getAttribute("aria-checked") === "true",
               mcp: $("s-mcp").getAttribute("aria-checked") === "true"};
   store.set("sampling", settings);
+  $("think-select").value = settings.thinking;
   renderPerm();                                       // "Use tools" off hides the permission drop-down
   const share = $("s-share").getAttribute("aria-checked") === "true";
   openDrawer(false);
