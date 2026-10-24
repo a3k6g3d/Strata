@@ -122,6 +122,27 @@ main { flex: 1; min-height: 0; display: flex; }
                background-image: linear-gradient(45deg, transparent 50%, currentColor 50%), linear-gradient(135deg, currentColor 50%, transparent 50%);
                background-position: calc(100% - 9px) 55%, calc(100% - 5px) 55%; background-size: 4px 4px, 4px 4px; background-repeat: no-repeat; }
 .perm:focus-within { outline: 2px solid var(--st-accent); outline-offset: 1px; }
+.think-chip select { max-width: 90px; }
+/* a phone's composer bar has room for the controls, not their labels: the chip keeps its value (the drop-down's name
+   says Thinking), and Save as Markdown - a desk job - goes */
+@media (max-width: 640px) {
+  .think-chip > span { display: none; }
+  #export-btn { display: none; }
+  /* with tools on, the permission drop-down still does not fit beside them at 375 px: the bar takes a second row then,
+     and the send button stays at the right end of whichever row it lands on */
+  .st-composer__bar { flex-wrap: wrap; row-gap: 6px; }
+  .perm select { max-width: 120px; text-overflow: ellipsis; }
+}
+/* the model card at the foot of the chat list (app.js renderModelCard) */
+.model-card { flex: none; display: flex; align-items: center; gap: 10px; margin: var(--st-s-2); padding: 10px 12px; text-align: left;
+  background: var(--st-surface-2); border: 1px solid var(--st-line); border-radius: var(--st-r-md); color: var(--st-ink);
+  font: inherit; cursor: pointer; }
+.model-card:hover { border-color: var(--st-accent); }
+.model-card__dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--st-ink-muted); }
+.model-card[data-up="true"] .model-card__dot { background: var(--st-accent); box-shadow: 0 0 0 3px var(--st-accent-tint); }
+.model-card__main { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.model-card__name { font-size: var(--st-fs-sm); font-weight: var(--st-fw-bold); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-card__meta { font-size: var(--st-fs-xs); color: var(--st-ink-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .perm[data-mode="full"] { background: var(--st-danger-tint); border-color: color-mix(in srgb, var(--st-danger) 40%, var(--st-line)); color: var(--st-danger-text); }
 .perm[data-mode="edit"] { background: var(--st-warn-tint); border-color: color-mix(in srgb, var(--st-warn) 40%, var(--st-line)); color: var(--st-warn-text); }
 .perm[data-mode="off"] { opacity: .75; }
