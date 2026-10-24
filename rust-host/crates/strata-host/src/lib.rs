@@ -200,6 +200,110 @@ pub struct DirectFile {
     /// Completions reaped and not yet handed out - first the ones a caller's full ring refused, then a batch's
     /// rest.  Nothing is dropped; the caller owns the retry, and this is where it waits.
     held: VecDeque<Completion>,
+    /// The threads that issue the reads (STRATA_IO_THREADS, default 4 - the C++ pool's knob and default); None
+    /// with 1, and `submit` issues on the calling thread as before.
+    #[cfg(windows)]
+    issuers: Option<Issuers>,
+}
+
+/// One read for an issuing thread: plain addresses, so the job crosses threads without a borrow.  The OVERLAPPED is
+/// filled in by `submit` before the job is queued; the issuer only hands it to ReadFile.
+#[cfg(windows)]
+#[derive(Clone, Copy)]
+struct Job {
+    ov: usize,
+    buf: usize,
+    len: u32,
+}
+
+/// The issuing threads.  Why several: at depth the kernel's per-read cost on the issuing thread bounds the rate
+/// (docs/RUST_ENGINE.md: one thread 135k reads/s at depth 256 against the four-thread C++ pool's 190k), and that cost
+/// is per thread, so it spreads.
+#[cfg(windows)]
+struct Issuers {
+    shared: std::sync::Arc<IssueQueue>,
+    threads: Vec<std::thread::JoinHandle<()>>,
+}
+
+#[cfg(windows)]
+struct IssueQueue {
+    jobs: std::sync::Mutex<(VecDeque<Job>, bool)>, // (queued, stop)
+    ready: std::sync::Condvar,
+}
+
+/// Completion keys a packet can carry besides the file's own (registered as the file handle, never 1 or 2): an
+/// issuer posts one of these when ReadFile refused at once, so the read still comes back as exactly one completion.
+#[cfg(windows)]
+const KEY_FAILED: usize = 1;
+#[cfg(windows)]
+const KEY_EOF: usize = 2; // at or past the end of the file: an ok, zero-byte completion, as the C++ reader gives
+
+/// The number of issuing threads: STRATA_IO_THREADS, else 4, clamped to 1..64 - what the C++ pool reads.
+#[cfg(windows)]
+fn io_threads() -> usize {
+    std::env::var("STRATA_IO_THREADS").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(4).clamp(1, 64)
+}
+
+#[cfg(windows)]
+impl Issuers {
+    fn start(n: usize, file: usize, port: usize) -> Issuers {
+        let shared = std::sync::Arc::new(IssueQueue {
+            jobs: std::sync::Mutex::new((VecDeque::new(), false)),
+            ready: std::sync::Condvar::new(),
+        });
+        let threads = (0..n)
+            .map(|_| {
+                let q = shared.clone();
+                std::thread::spawn(move || loop {
+                    let job = {
+                        let mut g = q.jobs.lock().unwrap();
+                        loop {
+                            if let Some(j) = g.0.pop_front() {
+                                break j;
+                            }
+                            if g.1 {
+                                return;
+                            }
+                            g = q.ready.wait(g).unwrap();
+                        }
+                    };
+                    // SAFETY: the file and port belong to a ring that joins this thread before closing them; the
+                    // buffer and the OVERLAPPED are its slot's, untouched by anyone else until the completion.
+                    unsafe {
+                        if win::ReadFile(file as win::Handle, job.buf as *mut c_void, job.len, std::ptr::null_mut(),
+                                         job.ov as *mut win::Overlapped) == 0 {
+                            let err = win::GetLastError();
+                            if err != win::ERROR_IO_PENDING {
+                                // never started: no packet will come, so post one, marked, to keep one per read
+                                let key = if err == win::ERROR_HANDLE_EOF { KEY_EOF } else { KEY_FAILED };
+                                win::PostQueuedCompletionStatus(port as win::Handle, 0, key, job.ov as *mut win::Overlapped);
+                            }
+                        }
+                    }
+                })
+            })
+            .collect();
+        Issuers { shared, threads }
+    }
+
+    fn push(&self, job: Job) {
+        self.shared.jobs.lock().unwrap().0.push_back(job);
+        self.shared.ready.notify_one();
+    }
+
+    /// Stop and join every issuer; the jobs they never took are returned (no ReadFile was made for them).
+    fn stop(self) -> Vec<Job> {
+        let left: Vec<Job> = {
+            let mut g = self.shared.jobs.lock().unwrap();
+            g.1 = true;
+            g.0.drain(..).collect()
+        };
+        self.shared.ready.notify_all();
+        for t in self.threads {
+            let _ = t.join();
+        }
+        left
+    }
 }
 
 #[cfg(windows)]
@@ -261,6 +365,9 @@ mod win {
         pub internal: UlongPtr,
         pub bytes: Dword,
     }
+
+    /// ReadFile's refusal for a read at or past the end of the file (an issuer turns it into an ok, zero-byte completion).
+    pub const ERROR_HANDLE_EOF: Dword = 38;
 
     /// STATUS_END_OF_FILE: the NTSTATUS of a read that ran into the end of the file - legal at the table's last page.
     pub const STATUS_END_OF_FILE: UlongPtr = 0xC000_0011;
@@ -325,6 +432,10 @@ impl DirectFile {
                 ovs: Box::into_raw(ovs) as *mut win::Overlapped,
                 entries: vec![win::OverlappedEntry { key: 0, overlapped: std::ptr::null_mut(), internal: 0, bytes: 0 }; REAP_BATCH],
                 held: VecDeque::new(),
+                issuers: match io_threads() {
+                    1 => None,
+                    n => Some(Issuers::start(n, file as usize, port as usize)),
+                },
             });
         }
         #[cfg(not(windows))]
@@ -394,6 +505,11 @@ impl DirectFile {
                 ov.write(win::Overlapped { internal: 0, internal_high: 0, anon: [offset as usize], event: std::ptr::null_mut() });
                 ov
             };
+            if let Some(iss) = &self.issuers {
+                // An issuing thread makes the ReadFile; whatever it gets, one completion comes for this read.
+                iss.push(Job { ov: ov as usize, buf: base as usize, len: len as u32 });
+                return Ok(());
+            }
             // SAFETY: the handle is ours; the buffer is in slot i and stays there until its completion is reaped,
             // which is what makes the pointer legal for the whole read.
             let ok = unsafe { win::ReadFile(self.file, base as *mut c_void, len as win::Dword, std::ptr::null_mut(), ov) };
@@ -498,11 +614,16 @@ impl DirectFile {
             let Some(p) = self.slots[i].take() else { continue };
             self.in_flight -= 1;
             self.free.push(i);
-            // The read's own NTSTATUS: success, or STATUS_END_OF_FILE - a legal short read at the last page.
-            let ok = e.internal == 0 || e.internal == win::STATUS_END_OF_FILE;
+            // An issuer's marked packet (ReadFile refused at once), or the read's own NTSTATUS: success, or
+            // STATUS_END_OF_FILE - a legal short read at the last page.
+            let ok = match e.key {
+                KEY_FAILED => false,
+                KEY_EOF => true,
+                _ => e.internal == 0 || e.internal == win::STATUS_END_OF_FILE,
+            };
             self.held.push_back(Completion {
                 tag: p.tag,
-                bytes: e.bytes as usize,
+                bytes: if e.key == KEY_EOF { 0 } else { e.bytes as usize },
                 status: if ok { Status::Ok } else { Status::DeviceUnavailable },
                 buffer: p.buffer,
             });
@@ -527,6 +648,19 @@ impl Drop for DirectFile {
             // since the C exports is memory the engine lent us and will reuse the moment close returns.  So one
             // quiet second is not enough to give up: keep waiting while reads are pending, and only after thirty
             // quiet seconds in a row (a device that has stopped answering) let the ring go.
+            // The issuers first: once they are joined no new ReadFile can start, and the jobs they never took made
+            // no read at all - their slots come back now, with no completion to wait for.
+            if let Some(iss) = self.issuers.take() {
+                let base = self.ovs as usize;
+                let size = std::mem::size_of::<win::Overlapped>();
+                for job in iss.stop() {
+                    let i = (job.ov - base) / size;
+                    if self.slots[i].take().is_some() {
+                        self.in_flight -= 1;
+                        self.free.push(i);
+                    }
+                }
+            }
             let mut quiet = 0;
             while self.in_flight > 0 && quiet < 30 {
                 // SAFETY: valid handle; null means "everything on this handle".
