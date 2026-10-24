@@ -88,6 +88,24 @@ claimed. One load-time probe each put the n-gram reads at 96,952 rows/s on the C
 which is a single number, not a measurement - and the expected direction, since the Rust ring issues every read
 on the calling thread where the pool issues from four.
 
+*Is it faster? 2026-10-23, after M8.* No - not with this design. A DirectFile benchmark (random 8 KiB reads of the
+26.8 GB GGUF, the reader's own pattern; 3 rounds rotated, 150k reads each, medians) after the ring got fixed request
+slots and batched reaping (+8% at depth 256 over the first version):
+
+| depth | C++ pool | Rust ring |
+|---|---|---|
+| 256 (`--ple-inflight` default) | 146.1k reads/s | 129.4k |
+| 32 | 101.3k | 102.5k |
+| 8 | 51.8k | 52.2k |
+
+The C++ pool issues ReadFile from four threads, the ring from one; at depth 256 the kernel's per-read cost is the
+bound, and the pool wins by ~13%. End to end it shows: one engine (this branch's), nine interleaved launches, the
+n-gram reader through the Rust host ran -8.2% at the round median (+0.4% cold, -14.1%, -2.3%) - the reader is on the
+decode path every token, not only the prompt's. The same sweep tried `--pcie-frac 0.35` (+3.8% and -1.3% in its two
+cold launches, -2.7% in its warm one): no case for changing the live config. The sweep's own floor (0.4% over two warm
+launches) is too small to trust; read both against BENCH_NOISE's ~10%. What could beat the pool is Windows 11's I/O
+ring - many reads per submission call, the one cost that bounds depth 256 - and is the next thing to try here.
+
 **M6, the lifetime rule as a borrow.** The blob the Rust side hands down is provably alive for the layer it was
 asked in and the next one or two. Gate: M5's, plus a test that a consumer keeping a blob too long fails loudly
 rather than silently.
