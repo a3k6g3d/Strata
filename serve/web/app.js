@@ -1756,18 +1756,27 @@ function autosize() { const t = $("input"); t.style.height = "auto"; t.style.hei
 $("input").addEventListener("input", autosize);
 
 // Select text in one of Strata's answers and a small bar offers Reply (the selection goes into the message box as a
-// quote) and Start a side chat (a new chat that opens with the quote, so this one is left as it is).  Nothing is sent
-// on its own: the quote waits in the box for the question about it.
+// quote) and Start a side chat: a new chat that carries this one's conversation up to and including that answer - so
+// the model has the context - with the quote waiting, while this chat is left as it is.  Nothing is sent on its own,
+// and a side chat is kept (saved) only once something is sent in it, like any new chat.
 const selPop = document.createElement("div");
 selPop.className = "sel-pop";
 selPop.hidden = true;
 selPop.innerHTML = `<button type="button" data-sel="side">Start a side chat</button><button type="button" data-sel="reply">Reply</button>`;
 document.body.appendChild(selPop);
-let selText = "";
+let selText = "", selAt = -1;     // the selection, and the index (in `messages`) of the answer it is in
 function quoted(text) {
   return text.trim().split(/\r?\n/).map((l) => `> ${l}`).join("\n") + "\n\n";
 }
-function hideSelPop() { selPop.hidden = true; selText = ""; }
+function hideSelPop() { selPop.hidden = true; selText = ""; selAt = -1; }
+// The conversation a side chat starts from: this chat up to and including answer `at`, copied deep so the two chats
+// never share an edit.  An answer still being written is not history yet, so the copy stops before it.
+function sideChatHistory(list, at, writing) {
+  let end = Math.min(at, list.length - 1);
+  const w = writing ? list.indexOf(writing) : -1;
+  if (w >= 0 && w <= end) end = w - 1;
+  return end < 0 ? [] : JSON.parse(JSON.stringify(list.slice(0, end + 1)));
+}
 function showSelPop() {
   const sel = getSelection();
   const text = sel && !sel.isCollapsed ? sel.toString() : "";
@@ -1778,6 +1787,8 @@ function showSelPop() {
     return;
   }
   selText = text;
+  const row = node.closest(".st-msg");
+  selAt = row ? +row.dataset.i : -1;
   const r = sel.getRangeAt(0).getBoundingClientRect();
   selPop.hidden = false;
   const w = selPop.offsetWidth, h = selPop.offsetHeight;
@@ -1786,8 +1797,10 @@ function showSelPop() {
   selPop.style.left = `${left + scrollX}px`;
   selPop.style.top = `${top + scrollY}px`;
 }
-$("chat").addEventListener("mouseup", () => setTimeout(showSelPop, 0));   // after the browser has settled the range
-$("chat").addEventListener("keyup", (e) => { if (e.shiftKey) showSelPop(); });
+// on the whole page, not the chat column: a drag is often released past the end of a line, in the margin, and the
+// selection check above already keeps the bar to Strata's answers
+document.addEventListener("mouseup", (e) => { if (!selPop.contains(e.target)) setTimeout(showSelPop, 0); });  // after the range settles
+document.addEventListener("keyup", (e) => { if (e.shiftKey && e.target !== $("input")) showSelPop(); });   // Shift+arrows
 $("chat-scroll").addEventListener("scroll", hideSelPop, {passive: true});
 document.addEventListener("mousedown", (e) => { if (!selPop.contains(e.target)) hideSelPop(); });
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") hideSelPop(); });
@@ -1796,10 +1809,19 @@ selPop.addEventListener("click", async (e) => {
   const b = e.target.closest("[data-sel]");
   if (!b || !selText) return;
   const q = quoted(selText);
+  const history = selAt >= 0 ? sideChatHistory(messages, selAt, busy && busy.list === messages ? busy.msg : null) : [];
+  const from = current.custom ? current.title : autoTitle();
   hideSelPop();
   getSelection().removeAllRanges();
   if (b.dataset.sel === "side") {
     await newSession();                                        // the draft of this chat stays with it (stashDraft)
+    if (history.length) {
+      messages = history;
+      current.title = `Side chat: ${from}`;
+      current.custom = true;
+      $("chat-title").textContent = current.title;
+      renderChat();
+    }
     $("input").value = q;
   } else {
     const t = $("input");
