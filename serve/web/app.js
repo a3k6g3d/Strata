@@ -512,6 +512,7 @@ function setPanel(open, tab) {
   for (const b of document.querySelectorAll(".sidepanel__tab")) b.setAttribute("aria-selected", String(b.dataset.ptab === panelState.tab));
   $("panel-browser").hidden = panelState.tab !== "browser";
   $("panel-gallery").hidden = panelState.tab !== "gallery";
+  $("panel-file").hidden = panelState.tab !== "file";
   if (open && panelState.tab === "gallery") renderGallery();
 }
 function panelUrl(raw) {
@@ -1217,17 +1218,64 @@ function toolHtml(t, k) {
      : t.ms != null && t.state !== "skipped" ? `<span class="muted small">${fmt(t.ms / 1000, 1)} s</span>` : "") +
     `${icon("chevron", "st-icon st-icon--sm st-chev")}</summary><div class="st-collapse__body">${body}</div></details>`;
 }
+// <files:start>
+// Files the model wrote (docs/WEB_UI_REDESIGN.md, piece A): a "+added -removed" count in a group's summary, a card per
+// file under the answer, and a preview of it in the side panel.  All of it is read off the tool calls already in the
+// chat (write_file: path, content; edit_file: path, oldText, newText) - nothing is fetched from the disk.
+const FILE_TOOLS = /^(write_file|edit_file)$/;
+function lineCount(s) {
+  s = String(s == null ? "" : s);
+  return s === "" ? 0 : s.split(/\r?\n/).length - (/\r?\n$/.test(s) ? 1 : 0);
+}
+// What the calls did to each file, in order: path -> {path, name, add, del, wrote, edited, content}.  `content` is the
+// file as it stands after them, when this chat knows it - a write_file's text with every later edit_file applied - and
+// null when an edit came first (the file already existed; the page never saw it) or an edit's text was not found.
+// A write_file over an existing file counts all its lines as added: the page does not know what it replaced.
+function fileChanges(tools) {
+  const out = new Map();
+  for (const t of tools || []) {
+    const name = t.tool || t.name || "", a = t.arguments;
+    if (!FILE_TOOLS.test(name) || t.state !== "done" || !a || typeof a.path !== "string") continue;
+    let f = out.get(a.path);
+    if (!f) { f = {path: a.path, name: a.path.split(/[\\/]/).pop(), add: 0, del: 0, wrote: 0, edited: 0, content: null}; out.set(a.path, f); }
+    if (name === "write_file") {
+      f.wrote++;
+      f.add += lineCount(a.content);
+      f.content = String(a.content == null ? "" : a.content);
+    } else {
+      f.edited++;
+      f.add += lineCount(a.newText);
+      f.del += lineCount(a.oldText);
+      if (f.content != null) {
+        const was = String(a.oldText == null ? "" : a.oldText), now = String(a.newText == null ? "" : a.newText);
+        if (was && f.content.includes(was)) f.content = a.replace_all ? f.content.split(was).join(now) : f.content.replace(was, () => now);
+        else f.content = null;
+      }
+    }
+  }
+  return out;
+}
+const FILE_KIND = {html: "HTML", htm: "HTML", js: "JS", mjs: "JS", ts: "TS", py: "PY", md: "MD", txt: "TXT", json: "JSON",
+                   css: "CSS", csv: "CSV", yml: "YAML", yaml: "YAML", sh: "SH", ps1: "PS1", bat: "BAT", c: "C", cpp: "C++",
+                   h: "H", rs: "RS", go: "GO", java: "JAVA", xml: "XML", svg: "SVG", toml: "TOML", ini: "INI"};
+function fileKindOf(name) {
+  const dot = name.lastIndexOf("."), e = dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
+  return FILE_KIND[e] || (e ? e.slice(0, 4).toUpperCase() : "FILE");
+}
+function fileSize(n) { return n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`; }
+// <files:end>
 // Tool calls that follow each other (no text between them) sit in ONE collapsible group, like the tool lines in Claude
 // Code: a summary of what was done ("Ran 3 commands, searched 5 times"), what is happening now, and the calls inside.
 const SEARCH_TOOL = /^(grep|glob|search|find|web_search)/i;
 function groupLabel(items) {
-  const n = {cmd: 0, read: 0, search: 0, change: 0, web: 0, ask: 0, other: 0};
+  const n = {cmd: 0, read: 0, search: 0, change: 0, web: 0, ask: 0, other: 0, files: []};
   let failed = 0;
   for (const [t] of items) {
     const kind = t.kind, name = t.tool || t.name || "";
     if (kind === "exec") n.cmd++;
     else if (kind === "net") n.web++;
     else if (kind === "ask") n.ask++;
+    else if ((kind === "write" || kind === "danger") && FILE_TOOLS.test(name) && t.state === "done") n.files.push(t);
     else if (kind === "write" || kind === "danger") n.change++;
     else if (kind === "read") (SEARCH_TOOL.test(name) ? n.search++ : n.read++);
     else n.other++;
@@ -1238,6 +1286,13 @@ function groupLabel(items) {
   if (n.cmd) parts.push(`ran ${n.cmd === 1 ? "a command" : n.cmd + " commands"}`);
   if (n.read) parts.push(`read ${plural(n.read, "file or folder", "files and folders")}`);
   if (n.search) parts.push(`searched ${plural(n.search, "time", "times")}`);
+  if (n.files.length) {
+    const fc = [...fileChanges(n.files).values()];
+    if (fc.length) {
+      const add = fc.reduce((a, f) => a + f.add, 0), del = fc.reduce((a, f) => a + f.del, 0);
+      parts.push(`${fc.every((f) => !f.edited) ? "wrote" : "edited"} ${plural(fc.length, "file", "files")}${add || del ? ` +${add} \u2212${del}` : ""}`);
+    }
+  }
   if (n.change) parts.push(`changed ${plural(n.change, "thing", "things")}`);
   if (n.web) parts.push(`${plural(n.web, "web lookup", "web lookups")}`);
   if (n.ask) parts.push("asked you a question");
@@ -1355,6 +1410,26 @@ function waitNote() {
   return `<span class="muted wait-note">Waiting ${s} s${why}</span>`;
 }
 
+// A card per file the answer's calls wrote or edited (fileChanges): type, name, size, +/-, and Open.  Open is on only
+// where the page knows the file's text; the preview opens on that click and never by itself.
+function renderFileCards(el, m) {
+  let box = el.querySelector(".file-cards");
+  const files = [...fileChanges(m.tools).values()];
+  if (!files.length) { if (box) box.remove(); return; }
+  const sig = JSON.stringify(files.map((f) => [f.path, f.add, f.del, f.content == null ? -1 : f.content.length]));
+  if (!box) { box = document.createElement("div"); box.className = "file-cards"; el.querySelector(".st-bubble").after(box); }
+  if (box.dataset.sig === sig) return;                     // unchanged: leave the buttons alone (a click may be in progress)
+  box.dataset.sig = sig;
+  box.innerHTML = files.map((f, i) => {
+    const size = f.content == null ? "" : `${fileSize(new Blob([f.content]).size)} \u00b7 `;
+    const open = f.content == null
+      ? `<button type="button" class="st-btn st-btn--secondary" disabled title="This file was edited from a version this chat never saw, so there is nothing to show here">Open</button>`
+      : `<button type="button" class="st-btn st-btn--secondary" data-file-open>Open</button>`;
+    return `<div class="file-card" data-file="${i}"><span class="file-card__kind">${esc(fileKindOf(f.name))}</span>` +
+      `<span class="file-card__main"><span class="file-card__name">${esc(f.name)}</span>` +
+      `<span class="file-card__meta" title="${esc(f.path)}">${size}+${f.add} \u2212${f.del}</span></span>${open}</div>`;
+  }).join("");
+}
 function updateAssistant(el, m, streaming) {
   const det = el.querySelector("details.think");
   if (m.reasoning) {
@@ -1382,6 +1457,7 @@ function updateAssistant(el, m, streaming) {
     bubble.innerHTML = answerHtml(m);
     if (streaming) bubble.classList.add("cursor"); else bubble.classList.remove("cursor");
   }
+  renderFileCards(el, m);
   el.querySelector(".meta-text").textContent = m.meta || (streaming ? "" : m.stopped ? "Stopped" : "");
   el.querySelector("[data-msg-copy]").hidden = streaming || !m.text;
   const cont = el.querySelector("[data-continue]");
@@ -1754,6 +1830,33 @@ function retryFrom(i) {
 
 function autosize() { const t = $("input"); t.style.height = "auto"; t.style.height = `${Math.min(t.scrollHeight, innerHeight * 0.4)}px`; }
 $("input").addEventListener("input", autosize);
+
+// The File tab: what a file card's Open shows.  An HTML file runs in a frame with ONLY allow-scripts (no allow-same-origin,
+// forms, popups or downloads): it gets an opaque origin of its own, so model-written code cannot reach this page, its
+// storage or the API key, and nothing is loaded from the disk by path.  Everything else is shown as text.
+let filePreview = null;
+function showFilePreview(source) {
+  const f = filePreview, html = !!f && /\.html?$/i.test(f.name);
+  $("file-name").textContent = f ? f.path : "";
+  $("file-toggle").hidden = !html;
+  const asSource = source || !html;
+  $("file-frame").hidden = asSource;
+  $("file-text").hidden = !asSource;
+  $("file-toggle").textContent = asSource ? "Preview" : "Source";
+  $("file-text").textContent = f ? f.content : "";
+  $("file-frame").srcdoc = !asSource && f ? f.content : "";
+}
+$("chat").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-file-open]");
+  if (!b || b.disabled) return;
+  const card = b.closest(".file-card"), row = card.closest(".st-msg"), m = messages[+row.dataset.i];
+  const f = m && [...fileChanges(m.tools).values()][+card.dataset.file];
+  if (!f || f.content == null) return;
+  filePreview = f;
+  showFilePreview(false);
+  setPanel(true, "file");
+});
+$("file-toggle").addEventListener("click", () => showFilePreview($("file-frame").hidden ? false : true));
 
 // Select text in one of Strata's answers and a small bar offers Reply (the selection goes into the message box as a
 // quote) and Start a side chat: a new chat that carries this one's conversation up to and including that answer - so

@@ -113,6 +113,7 @@
         <div class="sidepanel__tabs" role="tablist">
           <button type="button" class="sidepanel__tab" role="tab" data-ptab="browser">Browser</button>
           <button type="button" class="sidepanel__tab" role="tab" data-ptab="gallery">Gallery <span class="sidepanel__count" id="gallery-count"></span></button>
+          <button type="button" class="sidepanel__tab" role="tab" data-ptab="file">File</button>
         </div>
         <button type="button" class="st-btn st-btn--icon" id="sidepanel-close" title="Close the side panel" aria-label="Close the side panel">&times;</button>
       </div>
@@ -125,6 +126,14 @@
         <div class="sidepanel__notice" id="panel-notice" hidden></div>
         <iframe id="panel-frame" title="Web page" sandbox="allow-scripts allow-forms allow-popups allow-same-origin allow-downloads" referrerpolicy="no-referrer" hidden></iframe>
         <div class="sidepanel__empty" id="panel-empty">Click a link in the chat and it opens here, or type an address above.<br><span class="muted small">Ctrl-click a link to open it in your own browser instead.</span></div>
+      </div>
+      <div class="sidepanel__body" id="panel-file" hidden>
+        <div class="sidepanel__bar">
+          <span class="gallery__name" id="file-name"></span>
+          <button type="button" class="st-btn st-btn--secondary" id="file-toggle" hidden>Source</button>
+        </div>
+        <iframe id="file-frame" title="File preview" sandbox="allow-scripts" referrerpolicy="no-referrer" hidden></iframe>
+        <pre class="file-text" id="file-text" hidden></pre>
       </div>
       <div class="sidepanel__body" id="panel-gallery" hidden>
         <div class="gallery__grid" id="gallery-grid"></div>
