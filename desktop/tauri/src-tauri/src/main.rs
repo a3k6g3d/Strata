@@ -122,13 +122,20 @@ fn host_port(url: &str) -> Option<(String, String)> {
     Some((if hostport.contains(':') { hostport } else { format!("{}:80", hostport) }, host))
 }
 
-// GET /v1/status: true when it answers 200 and says the model is not "loaded": false
+// true when the server answers 200 and says the model is not "loaded": false.  GET /health first: it is open even when the
+// server has an "api_key" (phone access), whereas /v1/status then answers 401 to a request without the key, which this app
+// does not send - with the key on, the app sat on "Starting Strata" until its timeout although the server was up.
+// /v1/status stays as the fallback for a server that has no /health.
 fn probe(url: &str) -> bool {
+    probe_path(url, "/health") || probe_path(url, "/v1/status")
+}
+
+fn probe_path(url: &str, path: &str) -> bool {
     let Some((addr, host)) = host_port(url) else { return false };
     let Some(sock) = addr.to_socket_addrs().ok().and_then(|mut a| a.next()) else { return false };
     let Ok(mut s) = TcpStream::connect_timeout(&sock, Duration::from_secs(2)) else { return false };
     let _ = s.set_read_timeout(Some(Duration::from_secs(2)));
-    let req = format!("GET /v1/status HTTP/1.0\r\nHost: {}\r\nConnection: close\r\n\r\n", host);
+    let req = format!("GET {} HTTP/1.0\r\nHost: {}\r\nConnection: close\r\n\r\n", path, host);
     if s.write_all(req.as_bytes()).is_err() {
         return false;
     }
