@@ -58,7 +58,7 @@ try:
         title = d.find_element(By.ID, "chat-title").text
         print(f"asking in one chat ({title[:28]!r}); {len(before)} chats in the list")
 
-        d.find_element(By.ID, "new-btn").click()
+        d.find_element(By.ID, "session-new").click()
         time.sleep(0.8)
         print("browsing to a new chat was allowed:", d.find_element(By.ID, "chat-title").text != title)
         print("  no warning in the way:", not d.find_elements(By.CSS_SELECTOR, ".st-toast--warn"))
@@ -80,7 +80,7 @@ try:
         print("  and it is still in the box, not thrown away:",
               d.execute_script("return document.getElementById('input').value") == "Hello there")
         # the half-typed question belongs to this chat: leaving must not carry it to the next one
-        d.find_element(By.ID, "new-btn").click()
+        d.find_element(By.ID, "session-new").click()
         time.sleep(0.6)
         print("  leaving takes it with the chat, it does not follow you:",
               d.execute_script("return document.getElementById('input').value") == "")
@@ -112,7 +112,7 @@ try:
         box = d.find_element(By.ID, "input")
         box.send_keys("a draft left here")
         row = d.execute_script("return document.querySelector('.sess--current').dataset.id")
-        d.find_element(By.ID, "new-btn").click()
+        d.find_element(By.ID, "session-new").click()
         time.sleep(0.6)
         print("  it does not follow you to the next chat:",
               d.execute_script("return document.getElementById('input').value") == "")

@@ -1559,8 +1559,8 @@ function renderFileCards(el, m) {
   box.innerHTML = files.map((f, i) => {
     const size = f.content == null ? "" : `${fileSize(new Blob([f.content]).size)} \u00b7 `;
     const open = f.content == null
-      ? `<button type="button" class="st-btn st-btn--secondary" disabled title="This file was edited from a version this chat never saw, so there is nothing to show here">Open</button>`
-      : `<button type="button" class="st-btn st-btn--secondary" data-file-open>Open</button>`;
+      ? `<button type="button" class="st-btn st-btn--secondary file-card__open" disabled title="This file was edited from a version this chat never saw, so there is nothing to show here">Open</button>`
+      : `<button type="button" class="st-btn st-btn--secondary file-card__open" data-file-open>Open</button>`;
     return `<div class="file-card" data-file="${i}"><span class="file-card__kind">${esc(fileKindOf(f.name))}</span>` +
       `<span class="file-card__main"><span class="file-card__name">${esc(f.name)}</span>` +
       `<span class="file-card__meta" title="${esc(f.path)}">${size}+${f.add} \u2212${f.del}</span></span>${open}</div>`;
@@ -2091,32 +2091,6 @@ $("chat-empty-asks").addEventListener("click", (e) => {
   if (!a) return;
   $("input").value = a.dataset.ask; autosize(); $("input").focus();
 });
-
-$("new-btn").onclick = () => {
-  const clear = () => {
-    if (!messages.length) return;
-    const backup = messages;
-    messages = [];
-    saveChat();
-    renderChat();
-    toast("info", "New chat", "The last one was cleared.", 6000, {label: "Undo", run: () => { messages = backup; saveChat(); renderChat(); }});
-  };
-  if (sessionsOn) { newSession(); return; }                 // the old chat stays in the list on the left
-  if (stillWriting(clear)) return;                          // no sessions to fall back on: the guard speaks for itself
-};
-$("export-btn").onclick = () => {
-  if (!messages.length) { toast("info", "Nothing to save yet"); return; }
-  const tools = (m) => (m.tools || []).filter((t) => t.result != null).map((t) =>
-    `<details><summary>Tool ${t.server ? `${t.server} / ` : ""}${t.tool || t.name}${t.ok ? "" : " (error)"}</summary>\n\n` +
-    `\`\`\`json\n${JSON.stringify(t.arguments || {}, null, 2)}\n\`\`\`\n\n\`\`\`\n${t.result}\n\`\`\`\n\n</details>\n\n`).join("");
-  const md = messages.map((m) => m.role === "user" ? `## You\n\n${m.text}\n` :
-    `## ${health.model}\n\n${m.reasoning ? `<details><summary>Thinking</summary>\n\n${m.reasoning}\n\n</details>\n\n` : ""}${tools(m)}${m.text || m.error || ""}\n`).join("\n");
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(new Blob([md], {type: "text/markdown"}));
-  a.download = `strata-chat-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-")}.md`;
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
-};
 
 // pictures and text files: the attach button, dropping them on the chat, or pasting a picture (issue #30)
 const TEXT_EXT = /\.(txt|md|markdown|rst|tex|py|pyi|ipynb|js|mjs|cjs|ts|tsx|jsx|vue|svelte|json|jsonl|csv|tsv|log|ya?ml|toml|ini|cfg|conf|env|xml|html?|css|scss|less|c|cc|cpp|cxx|h|hh|hpp|cu|cuh|rs|go|java|kt|kts|swift|rb|php|pl|lua|r|jl|scala|sql|sh|bash|zsh|fish|ps1|psm1|bat|cmd|diff|patch|gradle|cmake|mk|dockerfile|gitignore|proto|graphql)$/i;

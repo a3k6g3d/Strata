@@ -147,10 +147,9 @@ main { flex: 1; min-height: 0; display: flex; }
 .chat-top .chat-project select { max-width: 150px; }
 @media (pointer: coarse) { .proj__btn { width: 40px; height: 40px; } }
 /* a phone's composer bar has room for the controls, not their labels: the chip keeps its value (the drop-down's name
-   says Thinking), and Save as Markdown - a desk job - goes */
+   says Thinking) */
 @media (max-width: 640px) {
   .think-chip > span { display: none; }
-  #export-btn { display: none; }
   /* with tools on, the permission drop-down still does not fit beside them at 375 px: the bar takes a second row then,
      and the send button stays at the right end of whichever row it lands on */
   .st-composer__bar { flex-wrap: wrap; row-gap: 6px; }
@@ -500,15 +499,18 @@ main { flex: 1; min-height: 0; display: flex; }
 .sel-pop button:hover { background: var(--st-accent-tint); color: var(--st-accent-text); }
 @media (prefers-reduced-motion: reduce) { .sel-pop { animation: none; } }
 
-/* Files the model wrote: a card each under the answer, and the File tab (app.js, piece A) */
-.file-cards { display: flex; flex-direction: column; gap: var(--st-s-2); margin-top: var(--st-s-3); }
-.file-card { display: flex; align-items: center; gap: var(--st-s-3); padding: 10px 12px; background: var(--st-surface);
-  border: 1px solid var(--st-line); border-radius: var(--st-r-md); max-width: 560px; }
-.file-card__kind { flex: none; min-width: 44px; text-align: center; font: 700 var(--st-fs-xs)/1 var(--st-font-mono);
-  color: var(--st-ink-soft); background: var(--st-surface-2); border: 1px solid var(--st-line); border-radius: 6px; padding: 6px 8px; }
-.file-card__main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.file-card__name { font-weight: var(--st-fw-bold); color: var(--st-ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.file-card__meta { font-size: var(--st-fs-xs); color: var(--st-ink-muted); font-variant-numeric: tabular-nums; }
+/* Files the model wrote: a row each under the answer, and the File tab (app.js, piece A). One line per file, the
+   height of a tool line; the Open button only shows when the row is hovered (or when it is open, so it stays put). */
+.file-cards { display: flex; flex-direction: column; gap: 2px; margin-top: var(--st-s-3); }
+.file-card { display: flex; align-items: center; gap: var(--st-s-2); padding: 5px 8px; background: transparent;
+  border: 1px solid transparent; border-radius: var(--st-r-sm); max-width: 560px; }
+.file-card:hover { background: var(--st-surface); border-color: var(--st-line); }
+.file-card__kind { flex: none; font: 600 10px/1 var(--st-font-mono); color: var(--st-ink-muted); }
+.file-card .file-card__open { visibility: hidden; padding: 2px 8px; font-size: var(--st-fs-xs); }
+.file-card:hover .file-card__open, .file-card .file-card__open[disabled] { visibility: visible; }
+.file-card__main { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: var(--st-s-2); }
+.file-card__name { color: var(--st-ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-card__meta { flex: none; font-size: var(--st-fs-xs); color: var(--st-ink-muted); font-variant-numeric: tabular-nums; }
 #file-frame { flex: 1; width: 100%; min-height: 0; border: 0; background: #fff; }
 .file-text { flex: 1; margin: 0; padding: var(--st-s-3); overflow: auto; white-space: pre; font: var(--st-fs-sm)/1.5 var(--st-font-mono);
   color: var(--st-ink); background: var(--st-surface); }

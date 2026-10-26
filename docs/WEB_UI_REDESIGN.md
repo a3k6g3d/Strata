@@ -77,7 +77,7 @@ About. The Think chip (Off / Low / Medium / High) sits in the composer and write
 Sampling dialog does - each follows the other, and with "Use for other apps too" on, the shared defaults follow too.
 Found while checking at 375 px: with tools on, the permission drop-down never fit the composer bar on a phone (the send
 button was pushed 100 px off screen, before the chip too); below 640 px the bar now wraps to a second row, the chip drops
-its "Think" word and Save as Markdown is hidden.
+its "Think" word is hidden.
 
 Bottom of the chat list: the model name, quantization and GPU, with a green dot while the engine is up - from `/health`
 and `/v1/status` (`model`, `machine.gpu`), which the page already polls. In the composer, a chip for the thinking level

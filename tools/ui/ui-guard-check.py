@@ -43,7 +43,7 @@ try:
     else:
         title = d.find_element(By.ID, "chat-title").text
         old = d.execute_script("return document.querySelector('.sess--current')?.dataset.id || null")
-        d.find_element(By.ID, "new-btn").click()          # leaving is allowed now; the answer follows its own chat
+        d.find_element(By.ID, "session-new").click()      # leaving is allowed now; the answer follows its own chat
         time.sleep(0.6)
         print("a new chat opens while the other answer writes:", d.find_element(By.ID, "chat-title").text != title)
         box = d.find_element(By.ID, "input")
