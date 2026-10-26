@@ -49,7 +49,13 @@ function headers(json = false) {
   return h;
 }
 $("api-key").value = store.get("apikey", "");
-$("api-key").onchange = () => { store.set("apikey", $("api-key").value.trim()); toast("success", "API key saved", "Kept in this browser only."); };
+// The chat list, the projects and the settings are read once, when the page loads: a page that started without the key got 401s
+// and shows none of them.  So a changed key reloads the page (a moment after the toast), and everything is read again with it.
+$("api-key").onchange = () => {
+  store.set("apikey", $("api-key").value.trim());
+  toast("success", "API key saved", "Kept in this browser only. Reloading to load your chats.");
+  setTimeout(() => location.reload(), 900);
+};
 
 let health = {model: "strata", images: false, max_context: 0};
 async function loadHealth() {

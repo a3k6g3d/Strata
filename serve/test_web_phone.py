@@ -62,5 +62,14 @@ class Phone(unittest.TestCase):
         self.assertIn('showSessions(!narrow.matches && store.get("sessions_open", true));', js)
 
 
+class ApiKey(unittest.TestCase):
+    def test_saving_a_key_reloads_the_page(self):
+        # found 2026-10-25: a page that started without the key got 401s for the chat list and the settings and never asked
+        # again, so saving the key left the left-hand list empty until the page was reloaded by hand
+        js = (WEB / "app.js").read_text(encoding="utf-8")
+        i = js.index('$("api-key").onchange')
+        self.assertIn("location.reload()", js[i:i + 400])
+
+
 if __name__ == "__main__":
     unittest.main()
